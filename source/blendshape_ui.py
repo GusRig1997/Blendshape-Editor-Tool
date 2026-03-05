@@ -817,6 +817,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         act_reset  = menu_edit.addAction("Reset Default Options")
         act_reset.setToolTip("Restore all split options to their default values")
         act_reset.triggered.connect(self._reset_default_options)
+        menu_edit.addSeparator()
+        act_doc = menu_edit.addAction("Documentation")
+        act_doc.setToolTip("Open the online documentation in your web browser")
+        act_doc.triggered.connect(lambda: QtGui.QDesktopServices.openUrl(
+            QtCore.QUrl("https://blendshape-editor-tool.readthedocs.io")))
         outer_layout.setMenuBar(menu_bar)
 
         # ── Scroll area ───────────────────────────────────────────────────
