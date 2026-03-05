@@ -939,7 +939,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         outer_layout.addWidget(scroll, 1)
 
         # ── Nomenclature ──────────────────────────────────────────────────────
-        grp_nom, _body_nom, lay_nom = self._collapsible_section("Nomenclature", initial_state=0)
+        grp_nom, _body_nom, lay_nom = self._collapsible_section("Nomenclature", two_state=True, initial_state=0)
         lay_nom.setSpacing(6)
 
         btn_naming_conv = QtWidgets.QPushButton("Naming Convention…")
@@ -1021,7 +1021,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         root.addWidget(grp_nom)
 
         # ── Split (inclut les contrôles Locators) ─────────────────────────
-        grp_split, _body_split, lay_split = self._collapsible_section("Split")
+        grp_split, _body_split, lay_split = self._collapsible_section("Split", two_state=True)
         lay_split.setSpacing(6)
 
         # ── Locators ──────────────────────────────────────────────────────
@@ -1364,7 +1364,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         root.addWidget(grp_wrap)
 
         # ── Actions ───────────────────────────────────────────────────────
-        grp_act, _body_act, lay_act = self._collapsible_section("Actions")
+        grp_act, _body_act, lay_act = self._collapsible_section("Actions", two_state=True)
         lay_act.setSpacing(4)
 
         row_dup = QtWidgets.QHBoxLayout()
@@ -1709,7 +1709,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         root.addWidget(grp_mod)
 
         # ── Tools ─────────────────────────────────────────────────────────────
-        grp_tools, _body_tools, lay_tools = self._collapsible_section("Tools")
+        grp_tools, _body_tools, lay_tools = self._collapsible_section("Tools", two_state=True)
         lay_tools.setSpacing(6)
 
         grp_wire = QtWidgets.QGroupBox("Wire Setup")
