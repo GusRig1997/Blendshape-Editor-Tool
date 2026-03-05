@@ -3,4 +3,4 @@
   *.pyc
   docs/_build/
   .idea/
-  \#debug/
+  /#debug/
