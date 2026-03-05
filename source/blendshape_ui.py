@@ -218,6 +218,226 @@ def create_opposite_shape(symmetry_axis="Object X"):
         print(f"  ✓ Opposite created : {opposite_shape}")
 
 
+class CheckShapesDialog(QtWidgets.QDialog):
+    """
+    Dialog to check whether a list of expected blendShape targets exist
+    on the bs_node of the selected mesh or Shape Editor targets.
+    Shapes are organized in groups, editable and toggleable.
+    """
+
+    DEFAULT_SHAPES = {
+        "lips_splits": [
+            "C_upper_lip_up", "C_upper_lip_dn", "C_upper_lip_in", "C_upper_lip_out",
+            "C_lower_lip_up", "C_lower_lip_dn", "C_lower_lip_in", "C_lower_lip_out",
+            "L_upper_lip_a_up", "L_upper_lip_a_dn", "L_upper_lip_a_in", "L_upper_lip_a_out",
+            "L_upper_lip_b_up", "L_upper_lip_b_dn", "L_upper_lip_b_in", "L_upper_lip_b_out",
+            "R_upper_lip_a_up", "R_upper_lip_a_dn", "R_upper_lip_a_in", "R_upper_lip_a_out",
+            "R_upper_lip_b_up", "R_upper_lip_b_dn", "R_upper_lip_b_in", "R_upper_lip_b_out",
+            "L_lower_lip_a_up", "L_lower_lip_a_dn", "L_lower_lip_a_in", "L_lower_lip_a_out",
+            "L_lower_lip_b_up", "L_lower_lip_b_dn", "L_lower_lip_b_in", "L_lower_lip_b_out",
+            "R_lower_lip_a_up", "R_lower_lip_a_dn", "R_lower_lip_a_in", "R_lower_lip_a_out",
+            "R_lower_lip_b_up", "R_lower_lip_b_dn", "R_lower_lip_b_in", "R_lower_lip_b_out",
+        ],
+        "lips_puffs": [
+            "L_upper_lip_puff_in", "L_upper_lip_puff_out",
+            "R_upper_lip_puff_in", "R_upper_lip_puff_out",
+            "L_lower_lip_puff_in", "L_lower_lip_puff_out",
+            "R_lower_lip_puff_in", "R_lower_lip_puff_out",
+        ],
+        "lips_curls": [
+            "L_upper_lip_curl_in", "R_upper_lip_curl_in",
+            "L_upper_lip_curl_out", "R_upper_lip_curl_out",
+            "L_lower_lip_curl_in", "R_lower_lip_curl_in",
+            "L_lower_lip_curl_out", "R_lower_lip_curl_out",
+        ],
+        "jaw": [
+            "C_jaw_in", "C_jaw_out", "C_jaw_up", "C_jaw_dn", "C_jaw_lft", "C_jaw_rgt",
+        ],
+        "mouth": [
+            "C_mouth_up", "C_mouth_dn", "C_mouth_lft", "C_mouth_rgt",
+            "C_mouth_rot_pos", "C_mouth_rot_neg",
+        ],
+        "mouth_corners": [
+            "L_mouth_corner_in", "L_mouth_corner_out",
+            "L_mouth_corner_up", "L_mouth_corner_dn",
+            "R_mouth_corner_in", "R_mouth_corner_out",
+            "R_mouth_corner_up", "R_mouth_corner_dn",
+        ],
+        "cheekbones": [
+            "L_cheekbone_up", "R_cheekbone_up",
+            "L_cheekbone_a_up", "L_cheekbone_b_up", "L_cheekbone_c_up",
+            "R_cheekbone_a_up", "R_cheekbone_b_up", "R_cheekbone_c_up",
+            "L_cheekbone_dn", "R_cheekbone_dn",
+            "L_cheekbone_a_dn", "L_cheekbone_b_dn", "L_cheekbone_c_dn",
+            "R_cheekbone_a_dn", "R_cheekbone_b_dn", "R_cheekbone_c_dn",
+            "L_cheekbone_out", "R_cheekbone_out",
+        ],
+        "cheeks": [
+            "L_cheek_in", "L_cheek_out", "R_cheek_in", "R_cheek_out",
+        ],
+        "brows": [
+            "L_brow_up", "L_brow_dn", "L_brow_in",
+            "R_brow_up", "R_brow_dn", "R_brow_in",
+        ],
+        "brows_splits": [
+            "L_brow_a_up", "L_brow_b_up", "L_brow_c_up", "L_brow_d_up", "L_brow_e_up",
+            "R_brow_a_up", "R_brow_b_up", "R_brow_c_up", "R_brow_d_up", "R_brow_e_up",
+            "L_brow_a_dn", "L_brow_b_dn", "L_brow_c_dn", "L_brow_d_dn", "L_brow_e_dn",
+            "R_brow_a_dn", "R_brow_b_dn", "R_brow_c_dn", "R_brow_d_dn", "R_brow_e_dn",
+        ],
+        "neck": [
+            "L_neck_a", "R_neck_a", "L_neck_b", "R_neck_b",
+        ],
+    }
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Check Shapes")
+        self.setMinimumWidth(400)
+        self.resize(400, 640)
+        self._build_ui()
+        self._populate_tree()
+
+    def _build_ui(self):
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setSpacing(6)
+
+        # Tree
+        self.tree = QtWidgets.QTreeWidget()
+        self.tree.setHeaderHidden(True)
+        self.tree.setColumnCount(1)
+        self.tree.setSelectionMode(QtWidgets.QAbstractItemView.ExtendedSelection)
+        lay.addWidget(self.tree)
+
+        # Tree buttons
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_add_grp = QtWidgets.QPushButton("+ Group")
+        btn_add_shp = QtWidgets.QPushButton("+ Shape")
+        btn_remove  = QtWidgets.QPushButton("Remove")
+        for b in (btn_add_grp, btn_add_shp, btn_remove):
+            btn_row.addWidget(b)
+        lay.addLayout(btn_row)
+
+        # Separator
+        sep = QtWidgets.QFrame()
+        sep.setFrameShape(QtWidgets.QFrame.HLine)
+        sep.setStyleSheet("color: rgba(255,255,255,30);")
+        lay.addWidget(sep)
+
+        # Check button
+        btn_check = QtWidgets.QPushButton("Check")
+        btn_check.setFixedHeight(28)
+        lay.addWidget(btn_check)
+
+        # Results
+        self.txt_results = QtWidgets.QTextEdit()
+        self.txt_results.setReadOnly(True)
+        self.txt_results.setFixedHeight(110)
+        self.txt_results.setPlaceholderText(
+            "Select targets in the Shape Editor or a mesh in the scene, then click Check.")
+        lay.addWidget(self.txt_results)
+
+        btn_add_grp.clicked.connect(self._add_group)
+        btn_add_shp.clicked.connect(self._add_shape)
+        btn_remove.clicked.connect(self._remove_selected)
+        btn_check.clicked.connect(self._run_check)
+
+    def _populate_tree(self):
+        for grp, shapes in self.DEFAULT_SHAPES.items():
+            self._add_group_item(grp, shapes)
+
+    def _add_group_item(self, name, shapes=None):
+        item = QtWidgets.QTreeWidgetItem([name])
+        item.setCheckState(0, QtCore.Qt.Checked)
+        item.setFlags(item.flags() | QtCore.Qt.ItemIsEditable)
+        font = item.font(0)
+        font.setBold(True)
+        item.setFont(0, font)
+        self.tree.addTopLevelItem(item)
+        for shp in (shapes or []):
+            child = QtWidgets.QTreeWidgetItem([shp])
+            child.setFlags(child.flags() | QtCore.Qt.ItemIsEditable)
+            item.addChild(child)
+        item.setExpanded(True)
+        return item
+
+    def _add_group(self):
+        item = self._add_group_item("new_group")
+        self.tree.editItem(item, 0)
+
+    def _add_shape(self):
+        sel = self.tree.selectedItems()
+        if not sel:
+            return
+        item   = sel[0]
+        parent = item if item.parent() is None else item.parent()
+        child  = QtWidgets.QTreeWidgetItem(["new_shape"])
+        child.setFlags(child.flags() | QtCore.Qt.ItemIsEditable)
+        parent.addChild(child)
+        parent.setExpanded(True)
+        self.tree.editItem(child, 0)
+
+    def _remove_selected(self):
+        for item in self.tree.selectedItems():
+            parent = item.parent()
+            if parent is None:
+                self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(item))
+            else:
+                parent.removeChild(item)
+
+    def _run_check(self):
+        # Resolve bs_node
+        bs_node = None
+        targets = get_selected_targets()
+        if targets:
+            bs_node = targets[0][0]
+        else:
+            sel = cmds.ls(sl=True, transforms=True)
+            if sel:
+                bs_node = _find_blendshape_on_mesh(sel[0])
+
+        if not bs_node:
+            self.txt_results.setPlainText(
+                "No blendShape node found.\n"
+                "Select targets in the Shape Editor or a mesh in the scene.")
+            return
+
+        existing = set(cmds.listAttr(bs_node + ".w", multi=True) or [])
+
+        COLOR_OK      = QtGui.QColor("#4CAF50")
+        COLOR_MISSING = QtGui.QColor("#F44336")
+        COLOR_DEFAULT = QtGui.QColor(self.palette().color(QtGui.QPalette.Text))
+
+        missing = []
+        present = 0
+
+        for i in range(self.tree.topLevelItemCount()):
+            grp_item = self.tree.topLevelItem(i)
+            enabled  = grp_item.checkState(0) == QtCore.Qt.Checked
+            for j in range(grp_item.childCount()):
+                shp_item = grp_item.child(j)
+                shp_name = shp_item.text(0)
+                if not enabled:
+                    shp_item.setForeground(0, COLOR_DEFAULT)
+                    continue
+                if shp_name in existing:
+                    shp_item.setForeground(0, COLOR_OK)
+                    present += 1
+                else:
+                    shp_item.setForeground(0, COLOR_MISSING)
+                    missing.append(shp_name)
+
+        total = present + len(missing)
+        if missing:
+            lines = [f"bs_node : {bs_node}",
+                     f"{present}/{total} present  —  {len(missing)} missing:\n"]
+            lines += [f"  • {s}" for s in missing]
+            self.txt_results.setPlainText("\n".join(lines))
+        else:
+            self.txt_results.setPlainText(
+                f"✓  All {total} shapes present in '{bs_node}'.")
+
+
 class NamingConventionDialog(QtWidgets.QDialog):
     """
     Full naming convention editor:
@@ -817,6 +1037,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         act_reset  = menu_edit.addAction("Reset Default Options")
         act_reset.setToolTip("Restore all split options to their default values")
         act_reset.triggered.connect(self._reset_default_options)
+        menu_edit.addSeparator()
+        act_check = menu_edit.addAction("Check Shapes…")
+        act_check.setToolTip("Open the Check Shapes dialog to verify expected targets on a blendShape node")
+        act_check.triggered.connect(self._open_check_shapes)
         menu_edit.addSeparator()
         act_doc = menu_edit.addAction("Documentation")
         act_doc.setToolTip("Open the online documentation in your web browser")
@@ -2633,6 +2857,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         except Exception as e:
             import traceback; traceback.print_exc()
             self._set_status(f"✗ Bake Wire: {e}", error=True)
+
+    def _open_check_shapes(self):
+        dlg = CheckShapesDialog(parent=self)
+        dlg.show()
 
     def _open_naming_convention(self):
         dlg = NamingConventionDialog(parent_ui=self)
