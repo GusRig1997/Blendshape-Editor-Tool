@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python:*)",
+      "Bash(del:*)",
+      "Bash(wmic memorychip:*)",
+      "Bash(wmic path:*)",
+      "WebFetch(domain:help.autodesk.com)",
+      "WebFetch(domain:adamjperin.wordpress.com)",
+      "WebFetch(domain:stackoverflow.com)",
+      "WebSearch",
+      "Bash(cp:*)"
+    ]
+  }
+}
