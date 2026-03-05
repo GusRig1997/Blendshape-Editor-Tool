@@ -1,0 +1,5 @@
+  .claude/
+  __pycache__/
+  *.pyc
+  docs/_build/
+  .idea/
