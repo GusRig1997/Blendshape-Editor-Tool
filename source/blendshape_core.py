@@ -476,6 +476,54 @@ def prune_small_deltas(bs_node, logical_index, tolerance):
     return len(to_zero)
 
 
+def apply_mesh_moves_to_target(bs_node, base_mesh, logical_index):
+    """
+    Reads vertex tweaks (pnts[]) from the base mesh's output shape,
+    adds them to the blendShape target at logical_index, then zeros
+    out the tweaks on the mesh.
+
+    Intended for the case where the user sculpted the mesh directly
+    (without entering blendShape edit mode) and wants to recover
+    those edits into the target without losing work.
+
+    Returns the number of vertices affected.
+    """
+    # 1. Get the output shape of the base mesh
+    shapes = cmds.listRelatives(base_mesh, shapes=True, noIntermediate=True) or []
+    if not shapes:
+        raise RuntimeError(f"No output shape found on '{base_mesh}'")
+    mesh_shape = shapes[0]
+
+    # 2. Collect non-zero tweaks from the mesh's pnts[]
+    pnt_indices = cmds.getAttr(f"{mesh_shape}.pnts", multiIndices=True) or []
+    tweaks = {}
+    for i in pnt_indices:
+        val = cmds.getAttr(f"{mesh_shape}.pnts[{i}]")[0]
+        if any(abs(v) > 1e-6 for v in val):
+            tweaks[i] = val
+
+    if not tweaks:
+        raise RuntimeError("No vertex moves found on the mesh (pnts[] are all zero).")
+
+    # 3. Get existing target deltas
+    original_deltas = get_target_deltas(bs_node, logical_index)
+
+    # 4. Compute new deltas = existing + tweaks
+    new_deltas = dict(original_deltas)
+    for vi, (dx, dy, dz) in tweaks.items():
+        ox, oy, oz = original_deltas.get(vi, (0.0, 0.0, 0.0))
+        new_deltas[vi] = (ox + dx, oy + dy, oz + dz)
+
+    # 5. Write back via _bake_deltas (handles live regen mesh or creates one)
+    _bake_deltas(bs_node, logical_index, new_deltas, original_deltas)
+
+    # 6. Zero out the tweaks on the source mesh
+    for i in pnt_indices:
+        cmds.setAttr(f"{mesh_shape}.pnts[{i}]", 0, 0, 0, type="float3")
+
+    return len(tweaks)
+
+
 def _insert_indices_after(bs_node, source_index, new_indices, source_is_directory=False):
 
     key = -source_index if source_is_directory else source_index
@@ -509,29 +557,58 @@ def _insert_indices_after(bs_node, source_index, new_indices, source_is_director
 
 def purge_empty_bs_slots(bs_node):
     """
-    Removes empty (unaliased) target slots from a blendShape node.
+    Removes phantom target slots from a blendShape node and cleans up
+    stale targetDirectory references.
 
-    Maya sometimes leaves orphaned inputTargetGroup indices with no weight alias
-    when targets are deleted or operations are interrupted. These ghost slots
-    accumulate and can cause index collisions when adding new targets.
+    A slot is phantom when weight[N] exists but has no alias — it shows up as
+    'w[N]' in the Shape Editor with no deformation data.
+
+    Per phantom slot:
+      - If inputTargetGroup[N] also exists → blendShapeDeleteTargetGroup (full removal)
+      - Otherwise                          → removeMultiInstance on w[N] only
+
+    After purging, stale childIndices entries in targetDirectory pointing to
+    deleted slots are removed so the Shape Editor display stays consistent.
 
     Called automatically before every new target creation via duplicate_target().
+    Returns the number of phantom slots removed.
     """
-    list_idx = [
-        x for x in (cmds.listAttr(f"{bs_node}.inputTarget[0].inputTargetGroup", sn=True, m=True) or [])
-        if not len(x) > 15
-    ]
-    aliases = cmds.aliasAttr(bs_node, query=True) or []
-    list_alias = [
-        x.split("[")[-1].replace("]", "")
-        for x in aliases
-        if x.startswith("weight")
-    ]
-    for a_idx in list_idx:
-        idx = a_idx.split("itg[")[-1].replace("]", "")
-        if idx not in list_alias:
+    purged = 0
+    weight_indices = sorted(cmds.getAttr(f"{bs_node}.w", multiIndices=True) or [])
+
+    for idx in weight_indices:
+        # Query the alias for this specific slot — the most reliable approach,
+        # avoids any short-name / long-name ambiguity in the flat aliasAttr list.
+        alias = cmds.aliasAttr(f"{bs_node}.w[{idx}]", q=True)
+        if alias:
+            continue  # Valid named target — leave it alone
+
+        # No alias → phantom slot
+        try:
             mel.eval(f"blendShapeDeleteTargetGroup {bs_node} {idx};")
-            print(f"  purged empty slot [{idx}] on {bs_node}")
+            print(f"  purged phantom slot [{idx}] on {bs_node}")
+            purged += 1
+        except Exception:
+            # blendShapeDeleteTargetGroup failed (no ITG) — remove weight directly
+            try:
+                cmds.removeMultiInstance(f"{bs_node}.w[{idx}]", b=True)
+                print(f"  removed orphaned weight [{idx}] on {bs_node}")
+                purged += 1
+            except Exception as e:
+                print(f"  could not purge slot [{idx}] on {bs_node}: {e}")
+
+    # Remove stale targetDirectory references pointing to now-deleted slots
+    if purged:
+        valid = set(cmds.getAttr(f"{bs_node}.w", multiIndices=True) or [])
+        for d in (cmds.getAttr(f"{bs_node}.targetDirectory", multiIndices=True) or []):
+            attr = f"{bs_node}.targetDirectory[{d}].childIndices"
+            children = list(cmds.getAttr(attr) or [])
+            # Negative values are directory references — keep them untouched
+            filtered = [c for c in children if c < 0 or c in valid]
+            if filtered != children:
+                cmds.setAttr(attr, filtered, type="Int32Array")
+
+    return purged
 
 
 def duplicate_target(bs_node, base_mesh, original_index, new_name):
@@ -566,7 +643,19 @@ def duplicate_target(bs_node, base_mesh, original_index, new_name):
     cmds.blendShape(bs_node, e=True, target=(base_mesh, next_idx, temp_dup, 1.0))
     cmds.delete(temp_dup)
 
-    cmds.aliasAttr(new_name, f"{bs_node}.w[{next_idx}]")
+    try:
+        cmds.aliasAttr(new_name, f"{bs_node}.w[{next_idx}]")
+    except Exception:
+        # Alias assignment failed — clean up the slot immediately so it doesn't
+        # become a phantom w[N] target
+        try:
+            mel.eval(f"blendShapeDeleteTargetGroup {bs_node} {next_idx};")
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"Could not assign alias '{new_name}' on {bs_node}.w[{next_idx}] — "
+            f"name may already be in use or contain invalid characters."
+        )
 
     # 6. Reorder Shape Editor display: insert just after the source target
     _insert_indices_after(bs_node, original_index, [next_idx])

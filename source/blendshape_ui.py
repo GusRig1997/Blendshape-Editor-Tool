@@ -176,46 +176,58 @@ def create_opposite_shape(symmetry_axis="Object X"):
 
         # Duplicate via duplicate_target — works correctly with multiple selections
         base_mesh        = get_base_mesh(bs_name)
-        dup_idx          = duplicate_target(bs_name, base_mesh, index, f"{shape}_Copy")
+        dup_idx          = None
         duplicated_shape = f"{shape}_Copy"
+        try:
+            dup_idx = duplicate_target(bs_name, base_mesh, index, duplicated_shape)
 
-        # Flip the duplicate — space/axis may have been overridden by user dialog
-        if 'space' not in dir() or matched_in_primary or opposite_shape is None:
-            space, axis = FLIP_AXIS_MAP.get(symmetry_axis, (1, 'x'))
-        sym_state = cmds.symmetricModelling(symmetry=True, q=True)
-        cmds.blendShape(bs_name, e=True,
-                        flipTarget=[(0, dup_idx)],
-                        mirrorDirection=0,
-                        symmetrySpace=space,
-                        symmetryAxis=axis)
-        if not sym_state == 1:
-            cmds.symmetricModelling(symmetry=False)
-        cmds.setAttr(f"{bs_name}.{duplicated_shape}", 0)
+            # Flip the duplicate — space/axis may have been overridden by user dialog
+            if 'space' not in dir() or matched_in_primary or opposite_shape is None:
+                space, axis = FLIP_AXIS_MAP.get(symmetry_axis, (1, 'x'))
+            sym_state = cmds.symmetricModelling(symmetry=True, q=True)
+            cmds.blendShape(bs_name, e=True,
+                            flipTarget=[(0, dup_idx)],
+                            mirrorDirection=0,
+                            symmetrySpace=space,
+                            symmetryAxis=axis)
+            if not sym_state == 1:
+                cmds.symmetricModelling(symmetry=False)
+            cmds.setAttr(f"{bs_name}.{duplicated_shape}", 0)
 
-        # Replace the existing opposite target if it already exists
-        existing_shapes = cmds.listAttr(f'{bs_name}.w', m=True) or []
-        if opposite_shape in existing_shapes:
-            existing_index = get_bs_weight_attribute_logical_index(bs_name, opposite_shape)
-            old_shape   = f"{bs_name}.weight[{existing_index}]"
-            new_shape   = f"{bs_name}.weight[{dup_idx}]"
-            shape_value = cmds.getAttr(old_shape)
+            # Replace the existing opposite target if it already exists
+            existing_shapes = cmds.listAttr(f'{bs_name}.w', m=True) or []
+            if opposite_shape in existing_shapes:
+                existing_index = get_bs_weight_attribute_logical_index(bs_name, opposite_shape)
+                old_shape   = f"{bs_name}.weight[{existing_index}]"
+                new_shape   = f"{bs_name}.weight[{dup_idx}]"
+                shape_value = cmds.getAttr(old_shape)
 
-            out_conns = cmds.listConnections(old_shape, plugs=True, destination=True, s=False) or []
-            for conn in out_conns:
-                cmds.connectAttr(new_shape, conn, force=True)
+                out_conns = cmds.listConnections(old_shape, plugs=True, destination=True, s=False) or []
+                for conn in out_conns:
+                    cmds.connectAttr(new_shape, conn, force=True)
 
-            in_conns = cmds.listConnections(old_shape, plugs=True, s=True, d=False) or []
-            for conn in in_conns:
-                cmds.connectAttr(conn, new_shape, force=True)
-                cmds.disconnectAttr(conn, old_shape)
+                in_conns = cmds.listConnections(old_shape, plugs=True, s=True, d=False) or []
+                for conn in in_conns:
+                    cmds.connectAttr(conn, new_shape, force=True)
+                    cmds.disconnectAttr(conn, old_shape)
 
-            mel.eval(f"blendShapeDeleteTargetGroup {bs_name} {existing_index};")
-            if not in_conns:
-                cmds.setAttr(f"{bs_name}.{duplicated_shape}", shape_value)
+                mel.eval(f"blendShapeDeleteTargetGroup {bs_name} {existing_index};")
+                if not in_conns:
+                    cmds.setAttr(f"{bs_name}.{duplicated_shape}", shape_value)
 
-        # Rename the flipped duplicate to the opposite name
-        cmds.aliasAttr(opposite_shape, f"{bs_name}.{duplicated_shape}")
-        print(f"  ✓ Opposite created : {opposite_shape}")
+            # Rename the flipped duplicate to the opposite name
+            cmds.aliasAttr(opposite_shape, f"{bs_name}.{duplicated_shape}")
+            print(f"  ✓ Opposite created : {opposite_shape}")
+
+        except Exception:
+            # Clean up the _Copy slot so it doesn't become a phantom target
+            if dup_idx is not None:
+                try:
+                    mel.eval(f"blendShapeDeleteTargetGroup {bs_name} {dup_idx};")
+                    print(f"  ✗ Cleaned up temp slot [{dup_idx}] after error on '{shape}'")
+                except Exception:
+                    pass
+            raise
 
 
 class CheckShapesDialog(QtWidgets.QDialog):
@@ -1588,8 +1600,17 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         root.addWidget(grp_wrap)
 
         # ── Actions ───────────────────────────────────────────────────────
-        grp_act, _body_act, lay_act = self._collapsible_section("Actions", two_state=True)
+        grp_act, _body_act, lay_act = self._collapsible_section("Actions", initial_state=1)
         lay_act.setSpacing(4)
+
+        _w_clean, self.btn_clean_bs = self._icon_btn(
+            f"{_icons_dir}/clean_bsnode.png", "Clean Blendshape Node",
+            "Removes phantom (empty/unaliased) target slots from the blendShape node(s)\n"
+            "of the selected targets in the Shape Editor.\n"
+            "Handles both orphaned inputTargetGroup slots and orphaned weight aliases\n"
+            "that appear as empty targets after interrupted operations.")
+        self.btn_clean_bs.clicked.connect(self._run_clean_bs)
+        lay_act.addWidget(_w_clean)
 
         row_dup = QtWidgets.QHBoxLayout()
         row_dup.setSpacing(2)
@@ -1653,6 +1674,18 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_opp.addWidget(self.combo_opp_axis)
         lay_act.addLayout(row_opp)
 
+        _w_apply, self.btn_apply_moves = self._icon_btn(
+            f"{_icons_dir}/paste_delta.png", "Apply Moves",
+            "Transfers vertex tweaks (pnts[]) from the mesh to the selected target.\n"
+            "Use when you sculpted the mesh directly without entering edit mode first.\n"
+            "The vertex moves are added to the target's existing deltas,\n"
+            "then zeroed out on the mesh.\n"
+            "Works on 1 selected target only.")
+        self.btn_apply_moves.clicked.connect(self._run_apply_moves)
+        lay_act.addWidget(_w_apply)
+
+        grp_act.add_compact_action(
+            f"{_icons_dir}/clean_bsnode.png", "Clean Blendshape Node", self._run_clean_bs)
         grp_act.add_compact_action(
             f"{_icons_dir}/duplicate.png", "Duplicate Target", self._run_duplicate)
         grp_act.add_compact_action(
@@ -1661,6 +1694,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             f"{_icons_dir}/flip.png", "Flip Target", self._run_flip)
         grp_act.add_compact_action(
             f"{_icons_dir}/create_opposite.png", "Create Opposite Target", self._run_opposite)
+        grp_act.add_compact_action(
+            f"{_icons_dir}/paste_delta.png", "Apply Moves", self._run_apply_moves)
         root.addWidget(grp_act)
 
         # ── Modify ────────────────────────────────────────────────────────
@@ -1933,7 +1968,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         root.addWidget(grp_mod)
 
         # ── Tools ─────────────────────────────────────────────────────────────
-        grp_tools, _body_tools, lay_tools = self._collapsible_section("Tools", two_state=True)
+        grp_tools, _body_tools, lay_tools = self._collapsible_section("Tools", two_state=True, initial_state=0)
         lay_tools.setSpacing(6)
 
         grp_wire = QtWidgets.QGroupBox("Wire Setup")
@@ -3010,8 +3045,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                                                 invert_axis=self.chk_invert_axis.isChecked())
 
                 # Zero all blendShape weights once before the split loop
-                for attr in (cmds.listAttr(f"{bs_node}.w", multi=True) or []):
-                    cmds.setAttr(f"{bs_node}.{attr}", 0.0)
+                for idx in (cmds.getAttr(f"{bs_node}.w", multiIndices=True) or []):
+                    cmds.setAttr(f"{bs_node}.w[{idx}]", 0.0)
 
                 # Build the list of (loc_idx, final_name) pairs to create
                 if symmetric:
@@ -3202,6 +3237,47 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
+
+    @undo_chunk
+    def _run_clean_bs(self):
+        try:
+            targets = get_selected_targets()
+            if not targets:
+                self._set_status("Select at least one target in the Shape Editor.", error=True)
+                return
+            seen = set()
+            total = 0
+            for bs_node, _, _ in targets:
+                if bs_node in seen:
+                    continue
+                seen.add(bs_node)
+                total += purge_empty_bs_slots(bs_node)
+            nodes = ", ".join(seen)
+            if total:
+                self._set_status(f"✓ Cleaned {total} phantom slot(s) on: {nodes}")
+            else:
+                self._set_status(f"✓ No phantom slots found on: {nodes}")
+        except Exception as e:
+            traceback.print_exc()
+            self._set_status(f"✗ Clean BS: {e}", error=True)
+
+    @undo_chunk
+    def _run_apply_moves(self):
+        try:
+            targets = get_selected_targets()
+            if not targets:
+                self._set_status("Select exactly one target in the Shape Editor.", error=True)
+                return
+            if len(targets) > 1:
+                self._set_status("Apply Moves works on 1 target only — select a single target.", error=True)
+                return
+            bs_node, logical_index, target_name = targets[0]
+            base_mesh = get_base_mesh(bs_node)
+            n = apply_mesh_moves_to_target(bs_node, base_mesh, logical_index)
+            self._set_status(f"✓ Apply Moves: {n} vertex move(s) added to '{target_name}'")
+        except Exception as e:
+            traceback.print_exc()
+            self._set_status(f"✗ Apply Moves: {e}", error=True)
     @undo_chunk
     def _run_edge_loop_split(self):
         """
