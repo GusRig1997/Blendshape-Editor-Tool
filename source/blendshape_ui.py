@@ -31,11 +31,12 @@ def _save_user_duos(data):
         json.dump(data, f, indent=2)
 
 
-def create_opposite_shape(symmetry_axis="Object X"):
+def create_opposite_shape(symmetry_axis="Topology", topo_edge=None):
     """
     Supports multiple selection in the Shape Editor.
     Duplicates each selected target, flips it, and renames it with the opposite naming convention.
-    symmetry_axis : one of "Object X", "Object Y", "Object Z" — matches FLIP_AXIS_MAP.
+    symmetry_axis : one of "Object X", "Object Y", "Object Z", "Topology" — matches FLIP_AXIS_MAP.
+    topo_edge     : required when symmetry_axis == "Topology" (e.g. "head_msh.e[3077]").
     """
     targets = get_selected_targets()
     if not targets:
@@ -87,23 +88,10 @@ def create_opposite_shape(symmetry_axis="Object X"):
                 if tuple(_p) not in _existing:
                     AXIS_DUOS[_ax].append(_p)
 
-    # Build axis lookup: duo -> axis name
-    DUO_TO_AXIS = {}
-    for ax_name, duos in AXIS_DUOS.items():
-        for duo in duos:
-            key = tuple(sorted(duo))
-            if key not in DUO_TO_AXIS:
-                DUO_TO_AXIS[key] = ax_name
-
     # Try axis-specific pairs first, then fall back to all pairs
     primary_duos  = AXIS_DUOS.get(symmetry_axis, [])
     fallback_duos = [d for ax, duos in AXIS_DUOS.items() for d in duos
                      if ax != symmetry_axis and d not in primary_duos]
-    suffix_duos   = primary_duos + fallback_duos
-
-    # Cache user decisions per axis mismatch to avoid repeated popups
-    # key: (shape_token, suggested_axis) -> bool (True = use suggested, False = keep chosen)
-    _user_decisions = {}
 
     for bs_name, index, shape in targets:
         # Find opposite name from naming convention
@@ -111,6 +99,7 @@ def create_opposite_shape(symmetry_axis="Object X"):
         opposite_shape = None
         matched_duo    = None
         matched_in_primary = False
+        flip_axis_name = symmetry_axis  # may be overridden by fallback dialog
 
         for duos in primary_duos:
             fix = [x for x in names if x in duos]
@@ -124,40 +113,12 @@ def create_opposite_shape(symmetry_axis="Object X"):
                     opposite_shape = shape.replace(duos[1], duos[0])
                 break
 
-        # If not found in primary, check fallback and warn
+        # If not found in primary, check fallback (no axis mismatch warning)
         if not matched_in_primary:
             for duos in fallback_duos:
                 fix = [x for x in names if x in duos]
                 if fix:
-                    matched_duo     = duos
-                    suggested_axis  = DUO_TO_AXIS.get(tuple(sorted(duos)), symmetry_axis)
-                    decision_key    = (fix[0], suggested_axis)
-
-                    if decision_key not in _user_decisions:
-                        # Show confirmation dialog
-                        _ax_sug = suggested_axis.replace("Object ", "")
-                        _ax_sel = symmetry_axis.replace("Object ", "")
-                        msg = (
-                            f"Target '{shape}' contains token '{fix[0]}' "
-                            f"which matches axis '{_ax_sug}', "
-                            f"not the selected '{_ax_sel}' axis.\n\n"
-                            f"Switch flip to '{_ax_sug}' for this target?"
-                        )
-                        reply = QtWidgets.QMessageBox.question(
-                            None,
-                            "Axis Mismatch",
-                            msg,
-                            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
-                            QtWidgets.QMessageBox.Yes
-                        )
-                        _user_decisions[decision_key] = (reply == QtWidgets.QMessageBox.Yes)
-
-                    if _user_decisions[decision_key]:
-                        # Use suggested axis for this target
-                        space, axis = FLIP_AXIS_MAP.get(suggested_axis, (1, 'x'))
-                    else:
-                        space, axis = FLIP_AXIS_MAP.get(symmetry_axis, (1, 'x'))
-
+                    matched_duo = duos
                     if fix[0] == duos[0]:
                         opposite_shape = shape.replace(duos[0], duos[1])
                     else:
@@ -181,17 +142,8 @@ def create_opposite_shape(symmetry_axis="Object X"):
         try:
             dup_idx = duplicate_target(bs_name, base_mesh, index, duplicated_shape)
 
-            # Flip the duplicate — space/axis may have been overridden by user dialog
-            if 'space' not in dir() or matched_in_primary or opposite_shape is None:
-                space, axis = FLIP_AXIS_MAP.get(symmetry_axis, (1, 'x'))
-            sym_state = cmds.symmetricModelling(symmetry=True, q=True)
-            cmds.blendShape(bs_name, e=True,
-                            flipTarget=[(0, dup_idx)],
-                            mirrorDirection=0,
-                            symmetrySpace=space,
-                            symmetryAxis=axis)
-            if not sym_state == 1:
-                cmds.symmetricModelling(symmetry=False)
+            # Flip the duplicate — flip_axis_name set at loop start, may be overridden by fallback dialog
+            do_flip_target(bs_name, dup_idx, None, 0, flip_axis_name, topo_edge)
             cmds.setAttr(f"{bs_name}.{duplicated_shape}", 0)
 
             # Replace the existing opposite target if it already exists
@@ -1629,18 +1581,26 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_dup.addWidget(self.spin_duplicate_passes)
         lay_act.addLayout(row_dup)
 
+        _axis_items = ["Object X", "Object Y", "Object Z", "Topology"]
+
         row_mirror = QtWidgets.QHBoxLayout()
         row_mirror.setSpacing(2)
         _w_mirror, self.btn_mirror = self._icon_btn(
             f"{_icons_dir}/mirror.png", "Mirror Target",
             "Copies the active target to the opposite side.\n"
-            "Uses the direction selected in the combobox.")
+            "Uses the axis and direction selected in the comboboxes.")
         self.btn_mirror.clicked.connect(self._run_mirror)
+        self.combo_mirror_axis = QtWidgets.QComboBox()
+        self.combo_mirror_axis.addItems(_axis_items)
+        self.combo_mirror_axis.setCurrentIndex(3)
+        self.combo_mirror_axis.setFixedWidth(90)
+        self.combo_mirror_axis.setToolTip("Symmetry axis used for the mirror operation")
         self.combo_mirror_dir = QtWidgets.QComboBox()
         self.combo_mirror_dir.addItems(["-", "+"])
-        self.combo_mirror_dir.setFixedWidth(90)
+        self.combo_mirror_dir.setFixedWidth(45)
         self.combo_mirror_dir.setToolTip("Mirror direction: positive to negative or negative to positive")
         row_mirror.addWidget(_w_mirror, 1)
+        row_mirror.addWidget(self.combo_mirror_axis)
         row_mirror.addWidget(self.combo_mirror_dir)
         lay_act.addLayout(row_mirror)
 
@@ -1652,7 +1612,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Useful for creating the opposite side of an asymmetric shape.")
         self.btn_flip.clicked.connect(self._run_flip)
         self.combo_flip_axis = QtWidgets.QComboBox()
-        self.combo_flip_axis.addItems(["Object X", "Object Y", "Object Z"])
+        self.combo_flip_axis.addItems(_axis_items)
+        self.combo_flip_axis.setCurrentIndex(3)
         self.combo_flip_axis.setFixedWidth(90)
         self.combo_flip_axis.setToolTip("Symmetry axis used for the flip operation")
         row_flip.addWidget(_w_flip, 1)
@@ -1667,12 +1628,31 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Supports L_/R_, lft/rgt, up/dn, fwd/bwd conventions.")
         self.btn_opposite.clicked.connect(self._run_opposite)
         self.combo_opp_axis = QtWidgets.QComboBox()
-        self.combo_opp_axis.addItems(["Object X", "Object Y", "Object Z"])
+        self.combo_opp_axis.addItems(_axis_items)
+        self.combo_opp_axis.setCurrentIndex(3)
         self.combo_opp_axis.setFixedWidth(90)
         self.combo_opp_axis.setToolTip("Symmetry axis used for the Create Opposite operation")
         row_opp.addWidget(_w_opp, 1)
         row_opp.addWidget(self.combo_opp_axis)
         lay_act.addLayout(row_opp)
+
+        row_topo = QtWidgets.QHBoxLayout()
+        row_topo.setSpacing(2)
+        _lbl_edge = QtWidgets.QLabel("Edge:")
+        _lbl_edge.setFixedWidth(32)
+        self.line_topo_edge = QtWidgets.QLineEdit()
+        self.line_topo_edge.setPlaceholderText("mesh.e[N] — topology central edge")
+        self.line_topo_edge.setToolTip(
+            "Central edge used for topology symmetry (Mirror / Flip / Create Opposite).\n"
+            "Select the edge in the viewport and click Get.")
+        self.btn_get_topo_edge = QtWidgets.QPushButton("Get")
+        self.btn_get_topo_edge.setFixedWidth(36)
+        self.btn_get_topo_edge.setToolTip("Get the selected edge from the viewport")
+        self.btn_get_topo_edge.clicked.connect(self._get_topo_edge)
+        row_topo.addWidget(_lbl_edge)
+        row_topo.addWidget(self.line_topo_edge, 1)
+        row_topo.addWidget(self.btn_get_topo_edge)
+        lay_act.addLayout(row_topo)
 
         _w_apply, self.btn_apply_moves = self._icon_btn(
             f"{_icons_dir}/paste_delta.png", "Apply Moves",
@@ -2384,9 +2364,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Actions ───────────────────────────────────────────────────────────
         self.spin_duplicate_passes.setValue(1)
+        self.combo_mirror_axis.setCurrentIndex(3)
         self.combo_mirror_dir.setCurrentIndex(0)
-        self.combo_flip_axis.setCurrentIndex(0)
-        self.combo_opp_axis.setCurrentIndex(0)
+        self.combo_flip_axis.setCurrentIndex(3)
+        self.combo_opp_axis.setCurrentIndex(3)
 
         # ── Modify Deltas ─────────────────────────────────────────────────────
         self.slider_smooth_opacity.blockSignals(True)
@@ -3232,7 +3213,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
     @undo_chunk
     def _run_opposite(self):
         try:
-            create_opposite_shape(symmetry_axis=self.combo_opp_axis.currentText())
+            create_opposite_shape(
+                symmetry_axis=self.combo_opp_axis.currentText(),
+                topo_edge=self._topo_edge())
             self._set_status("✓ Opposite(s) created")
         except Exception as e:
             traceback.print_exc()
@@ -3464,37 +3447,53 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
+    def _get_topo_edge(self):
+        edges = cmds.filterExpand(cmds.ls(sl=True), selectionMask=32) or []
+        if not edges:
+            self._set_status("✗ Select a central edge in the viewport first.", error=True)
+            return
+        self.line_topo_edge.setText(edges[0])
+        self._set_status(f"✓ Edge set: {edges[0]}")
+
+    def _topo_edge(self):
+        """Returns the current topology edge string, or None if empty."""
+        return self.line_topo_edge.text().strip() or None
+
     @undo_chunk
     def _run_flip(self):
         targets = self._get_targets_or_warn()
         if not targets:
             return
-        direction = 0 if self.combo_mirror_dir.currentIndex() == 0 else 1
+        direction  = 0 if self.combo_mirror_dir.currentIndex() == 0 else 1
+        flip_axis  = self.combo_flip_axis.currentText()
+        topo_edge  = self._topo_edge()
 
         try:
-            flip_axis = self.combo_flip_axis.currentText()
             for bs_node, logical_index, _ in targets:
-                base_mesh   = get_base_mesh(bs_node)
+                base_mesh  = get_base_mesh(bs_node)
                 base_shapes = cmds.listRelatives(base_mesh, shapes=True, type="mesh", fullPath=True)
-                base_shape  = base_shapes[0] if base_shapes else base_mesh
-                do_flip_target(bs_node, logical_index, base_shape, direction, flip_axis)
+                base_shape = base_shapes[0] if base_shapes else base_mesh
+                do_flip_target(bs_node, logical_index, base_shape, direction, flip_axis, topo_edge)
             self._set_status(f"✓ Flip on {len(targets)} target{'s' if len(targets) > 1 else ''}")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
+
     @undo_chunk
     def _run_mirror(self):
         targets = self._get_targets_or_warn()
         if not targets:
             return
-        direction = 0 if self.combo_mirror_dir.currentIndex() == 0 else 1
+        direction    = 0 if self.combo_mirror_dir.currentIndex() == 0 else 1
+        mirror_axis  = self.combo_mirror_axis.currentText()
+        topo_edge    = self._topo_edge()
 
         try:
             for bs_node, logical_index, _ in targets:
                 base_mesh   = get_base_mesh(bs_node)
                 base_shapes = cmds.listRelatives(base_mesh, shapes=True, type="mesh", fullPath=True)
                 base_shape  = base_shapes[0] if base_shapes else base_mesh
-                do_mirror_target(bs_node, logical_index, base_shape, direction)
+                do_mirror_target(bs_node, logical_index, base_shape, direction, mirror_axis, topo_edge)
             self._set_status(f"✓ Mirror on {len(targets)} target{'s' if len(targets) > 1 else ''}")
         except Exception as e:
             traceback.print_exc()

@@ -723,25 +723,66 @@ FLIP_AXIS_MAP = {
     "Object X": (1, 'x'),
     "Object Y": (1, 'y'),
     "Object Z": (1, 'z'),
+    "Topology": (0, None),
 }
 
-def do_flip_target(bs_node, logical_index, base_shape, mirror_direction, symmetry_axis="Object X"):
+
+def _setup_topo_sym(topo_edge):
+    """Sets symmetricModelling to topology mode. Returns previous symmetry state."""
+    if not topo_edge:
+        raise ValueError("Topology symmetry requires a central edge. Use 'Get Edge' in the UI.")
+    was_sym = cmds.symmetricModelling(q=True, symmetry=True)
+    cmds.symmetricModelling(topo_edge, e=True, topoSymmetry=True)
+    return was_sym
+
+
+def _restore_sym_state(was_sym):
+    """Restores symmetricModelling state after a topology flip/mirror."""
+    cmds.symmetricModelling(e=True, topoSymmetry=False)
+    if not was_sym:
+        cmds.symmetricModelling(e=True, symmetry=False)
+
+
+def do_flip_target(bs_node, logical_index, base_shape, mirror_direction,
+                   symmetry_axis="Topology", topo_edge=None):
     space, axis = FLIP_AXIS_MAP.get(symmetry_axis, (1, 'x'))
-    cmds.blendShape(bs_node, edit=True,
-                    flipTarget=[(0, logical_index)],
-                    mirrorDirection=mirror_direction,
-                    symmetrySpace=space,
-                    symmetryAxis=axis)
+    if space == 0:  # Topology
+        was_sym = _setup_topo_sym(topo_edge)
+        try:
+            cmds.blendShape(bs_node, edit=True,
+                            flipTarget=[(0, logical_index)],
+                            mirrorDirection=mirror_direction,
+                            symmetrySpace=0)
+        finally:
+            _restore_sym_state(was_sym)
+    else:
+        cmds.blendShape(bs_node, edit=True,
+                        flipTarget=[(0, logical_index)],
+                        mirrorDirection=mirror_direction,
+                        symmetrySpace=space,
+                        symmetryAxis=axis)
     print(f"  ✓ Flip : {bs_node}.w[{logical_index}] ({symmetry_axis})")
 
 
-def do_mirror_target(bs_node, logical_index, base_shape, mirror_direction):
-    cmds.blendShape(bs_node, edit=True,
-                    mirrorTarget=[(0, logical_index)],
-                    mirrorDirection=mirror_direction,
-                    symmetrySpace=1,
-                    symmetryAxis='x')
-    print(f"  ✓ Mirror : {bs_node}.w[{logical_index}]")
+def do_mirror_target(bs_node, logical_index, base_shape, mirror_direction,
+                     symmetry_axis="Topology", topo_edge=None):
+    space, axis = FLIP_AXIS_MAP.get(symmetry_axis, (1, 'x'))
+    if space == 0:  # Topology
+        was_sym = _setup_topo_sym(topo_edge)
+        try:
+            cmds.blendShape(bs_node, edit=True,
+                            mirrorTarget=[(0, logical_index)],
+                            mirrorDirection=mirror_direction,
+                            symmetrySpace=0)
+        finally:
+            _restore_sym_state(was_sym)
+    else:
+        cmds.blendShape(bs_node, edit=True,
+                        mirrorTarget=[(0, logical_index)],
+                        mirrorDirection=mirror_direction,
+                        symmetrySpace=space,
+                        symmetryAxis=axis)
+    print(f"  ✓ Mirror : {bs_node}.w[{logical_index}] ({symmetry_axis})")
 
 
 def multiply_target_deltas(bs_node, logical_index, fx, fy, fz, vtx_indices=None):
@@ -1491,8 +1532,8 @@ def _create_wrap_deformer(driver_mesh, driven_mesh):
     Creates a wrap deformer: driven_mesh is deformed by driver_mesh.
     Returns (wrap_node, base_transform) for later cleanup.
     """
-    # Scene-wide snapshot before creation — more reliable than listHistory
-    before_wraps = set(cmds.ls(type='wrap') or [])
+    before_wraps      = set(cmds.ls(type='wrap') or [])
+    before_transforms = set(cmds.ls(type='transform') or [])
 
     # Select driven first, then driver — Maya wrap convention
     cmds.select([driven_mesh, driver_mesh])
@@ -1507,13 +1548,12 @@ def _create_wrap_deformer(driver_mesh, driven_mesh):
         )
     wrap_node = new_wraps[0]
 
-    base_conns = cmds.listConnections(
-        f"{wrap_node}.basePoints[0]", source=True, destination=False
-    ) or []
-    base_transform = None
-    if base_conns:
-        parents = cmds.listRelatives(base_conns[0], parent=True) or []
-        base_transform = parents[0] if parents else base_conns[0]
+    # Identify the base mesh Maya created — snapshot diff is the only reliable method.
+    # listConnections on basePoints[0] can return a transform instead of a shape,
+    # causing listRelatives to walk up to a parent group and delete it.
+    after_transforms = set(cmds.ls(type='transform') or [])
+    new_transforms   = after_transforms - before_transforms
+    base_transform   = list(new_transforms)[0] if new_transforms else None
 
     print(f"  ✓ Wrap created : {wrap_node}  (base: {base_transform})")
     return wrap_node, base_transform
