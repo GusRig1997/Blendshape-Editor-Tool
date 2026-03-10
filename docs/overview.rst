@@ -16,16 +16,19 @@ The interface is divided into a fixed top shelf and a scrollable body.
 
    * - Area
      - Description
-   * - **Maya Tools Shelf** *(top, fixed)*
-     - Quick-access sculpt tools, Shape Editor, Add Target, Delta View
+   * - **Maya Tools Shelf** *(top, fixed — 2 rows)*
+     - Row 1: sculpt brushes, Shape Editor, Smooth Target, Erase, Delta View.
+       Row 2: Relax / Pinch / Amplify brushes, Add Target, Clean BS Node,
+       Reset All Targets to 0.
    * - **Nomenclature** *(collapsible)*
      - Naming convention setup, target rename utilities, and Check Shapes
    * - **Split** *(collapsible, open by default)*
      - Radial / 1D split of targets using spatial locators; Edge Loop Split
    * - **Secondary Meshes** *(collapsible)*
      - Extract and connect targets on secondary meshes via wrap deformers
-   * - **Actions** *(collapsible, compact by default)*
-     - Duplicate, Mirror, Flip, Create Opposite Target, Apply Moves
+   * - **Actions** *(collapsible, open by default)*
+     - Duplicate, Mirror, Flip, Create Opposite Target, Apply Moves,
+       Bake Deformers
    * - **Modify Deltas** *(collapsible)*
      - Post-sculpt delta operations (multiply, push, smooth, prune, etc.)
    * - **Tools** *(collapsible)*

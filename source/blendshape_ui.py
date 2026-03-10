@@ -1216,7 +1216,6 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             header.setText(LABELS[s])
             shelf_widget.setVisible(s == 1)
             body.setVisible(s == 2)
-            QtCore.QTimer.singleShot(0, self.adjustSize)
 
         def _on_click():
             cur = state[0]
@@ -1352,10 +1351,20 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # ── Maya Tools Shelf ──────────────────────────────────────────────
         shelf_frame = QtWidgets.QFrame()
         shelf_frame.setFrameShape(QtWidgets.QFrame.NoFrame)
-        shelf_frame.setFixedHeight(42)
-        shelf_lay = QtWidgets.QHBoxLayout(shelf_frame)
-        shelf_lay.setContentsMargins(4, 3, 4, 3)
+        shelf_frame.setFixedHeight(80)
+        shelf_vlay = QtWidgets.QVBoxLayout(shelf_frame)
+        shelf_vlay.setContentsMargins(4, 3, 4, 3)
+        shelf_vlay.setSpacing(2)
+
+        shelf_lay = QtWidgets.QHBoxLayout()   # row 1 — sculpt / shape tools
+        shelf_lay.setContentsMargins(0, 0, 0, 0)
         shelf_lay.setSpacing(2)
+        shelf_vlay.addLayout(shelf_lay)
+
+        row2_lay = QtWidgets.QHBoxLayout()    # row 2 — node-level tools
+        row2_lay.setContentsMargins(0, 0, 0, 0)
+        row2_lay.setSpacing(2)
+        shelf_vlay.addLayout(row2_lay)
 
         def _shelf_btn(icon_path, tooltip, mel_cmd=None, callback=None, dbl_click=None):
             btn = QtWidgets.QToolButton()
@@ -1403,20 +1412,6 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # Target tools — right
         shelf_lay.addWidget(_shelf_btn(
             f"{_icons_dir}/blendShapeEditor.png", "Shape Editor", mel_cmd="ShapeEditor"))
-        self.btn_add_target = _shelf_btn(
-            f"{_icons_dir}/add_target.png",
-            "Add Target  [left-click]\n"
-            "  Add an empty target to the blendshape(s) of selected targets in the Shape Editor.\n"
-            "\n"
-            "Right-click for more options:\n"
-            "  • Add Empty Target — same as left-click\n"
-            "  • Add Selection as New Target — select source mesh(es) + target mesh (last)\n"
-            "  • Add Selection as New Corrective Target — select corrective mesh(es) + target mesh (last),\n"
-            "    inverts the deformation stack via invertShape()",
-            callback=self._run_add_target)
-        self.btn_add_target.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        self.btn_add_target.customContextMenuRequested.connect(self._show_add_target_context_menu)
-        shelf_lay.addWidget(self.btn_add_target)
         for _ic, _tt, _cmd in [
             (f"{_icons_dir}/SmoothTarget.png", "Smooth Target\nDouble-click: Tool Settings", "SetMeshSmoothTargetTool"),
             (f"{_icons_dir}/Erase.png",        "Erase Target\nDouble-click: Tool Settings",  "SetMeshEraseTool"),
@@ -1444,6 +1439,59 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         shelf_lay.addWidget(self.btn_exit_delta_view)
 
         shelf_lay.addStretch()
+
+        # ── Row 2 — extra sculpt tools + node-level tools ─────────────────
+        for _ic, _tt, _cmd in [
+            (f"{_icons_dir}/Relax.png",   "Relax\nDouble-click: Tool Settings",   "SetMeshRelaxTool"),
+            (f"{_icons_dir}/Pinch.png",   "Pinch\nDouble-click: Tool Settings",   "SetMeshPinchTool"),
+            (f"{_icons_dir}/Amplify.png", "Amplify\nDouble-click: Tool Settings", "SetMeshAmplifyTool"),
+        ]:
+            row2_lay.addWidget(_shelf_btn(_ic, _tt, _cmd, dbl_click=self._open_tool_settings))
+
+        _sep_r2a = QtWidgets.QFrame()
+        _sep_r2a.setFrameShape(QtWidgets.QFrame.VLine)
+        _sep_r2a.setFrameShadow(QtWidgets.QFrame.Sunken)
+        _sep_r2a.setFixedWidth(6)
+        row2_lay.addWidget(_sep_r2a)
+
+        self.btn_add_target = _shelf_btn(
+            f"{_icons_dir}/add_target.png",
+            "Add Target  [left-click]\n"
+            "  Add an empty target to the blendshape(s) of selected targets in the Shape Editor.\n"
+            "\n"
+            "Right-click for more options:\n"
+            "  • Add Empty Target — same as left-click\n"
+            "  • Add Selection as New Target — select source mesh(es) + target mesh (last)\n"
+            "  • Add Selection as New Corrective Target — select corrective mesh(es) + target mesh (last),\n"
+            "    inverts the deformation stack via invertShape()",
+            callback=self._run_add_target)
+        self.btn_add_target.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.btn_add_target.customContextMenuRequested.connect(self._show_add_target_context_menu)
+        row2_lay.addWidget(self.btn_add_target)
+
+        self.btn_clean_bs = _shelf_btn(
+            f"{_icons_dir}/clean_bsnode.png",
+            "Clean Blendshape Node\n"
+            "Removes phantom (empty/unaliased) target slots from the blendShape node(s)\n"
+            "of the selected targets in the Shape Editor.",
+            callback=self._run_clean_bs)
+        row2_lay.addWidget(self.btn_clean_bs)
+
+        self.btn_reset_weights = _shelf_btn(
+            f"{_icons_dir}/reset_bsnode.png",
+            "Reset All Targets to 0\n"
+            "Sets every target weight on the blendShape node(s) to 0.\n"
+            "Requires at least one target selected in the Shape Editor.",
+            callback=self._run_reset_all_weights)
+        row2_lay.addWidget(self.btn_reset_weights)
+
+        _sep_r2b = QtWidgets.QFrame()
+        _sep_r2b.setFrameShape(QtWidgets.QFrame.VLine)
+        _sep_r2b.setFrameShadow(QtWidgets.QFrame.Sunken)
+        _sep_r2b.setFixedWidth(6)
+        row2_lay.addWidget(_sep_r2b)
+
+        row2_lay.addStretch()
 
         # Shelf pinned above the scroll — always visible
         shelf_wrapper = QtWidgets.QWidget()
@@ -1944,7 +1992,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         root.addWidget(grp_wrap)
 
         # ── Actions ───────────────────────────────────────────────────────
-        grp_act, _body_act, lay_act = self._collapsible_section("Actions", initial_state=1)
+        grp_act, _body_act, lay_act = self._collapsible_section("Actions", initial_state=2)
         lay_act.setSpacing(4)
 
         row_topo = QtWidgets.QHBoxLayout()
@@ -1964,15 +2012,6 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_topo.addWidget(self.line_topo_edge, 1)
         row_topo.addWidget(self.btn_get_topo_edge)
         lay_act.addLayout(row_topo)
-
-        _w_clean, self.btn_clean_bs = self._icon_btn(
-            f"{_icons_dir}/clean_bsnode.png", "Clean Blendshape Node",
-            "Removes phantom (empty/unaliased) target slots from the blendShape node(s)\n"
-            "of the selected targets in the Shape Editor.\n"
-            "Handles both orphaned inputTargetGroup slots and orphaned weight aliases\n"
-            "that appear as empty targets after interrupted operations.")
-        self.btn_clean_bs.clicked.connect(self._run_clean_bs)
-        lay_act.addWidget(_w_clean)
 
         row_dup = QtWidgets.QHBoxLayout()
         row_dup.setSpacing(2)
@@ -2056,8 +2095,20 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.btn_apply_moves.clicked.connect(self._run_apply_moves)
         lay_act.addWidget(_w_apply)
 
-        grp_act.add_compact_action(
-            f"{_icons_dir}/clean_bsnode.png", "Clean Blendshape Node", self._run_clean_bs)
+        _w_bake, self.btn_bake_deformers = self._icon_btn(
+            f"{_icons_dir}/wrap_extract.png", "Bake Deformers",
+            "Bakes the contribution of all deformers stacked above the blendShape into the\n"
+            "selected targets. For each target the tool activates it at weight 1.0, samples\n"
+            "the mesh with all deformers evaluated, and stores the result as the new delta set.\n\n"
+            "Typical workflow:\n"
+            "  1. Add a Delta Mush (or any deformer) on the base mesh and adjust it.\n"
+            "  2. Select the targets to improve in the Shape Editor.\n"
+            "  3. Click Bake Deformers.\n"
+            "  4. Delete the deformer.\n\n"
+            "Works on all targets selected in the Shape Editor.")
+        self.btn_bake_deformers.clicked.connect(self._run_bake_deformers)
+        lay_act.addWidget(_w_bake)
+
         grp_act.add_compact_action(
             f"{_icons_dir}/duplicate.png", "Duplicate Target", self._run_duplicate)
         grp_act.add_compact_action(
@@ -2068,6 +2119,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             f"{_icons_dir}/create_opposite.png", "Create Opposite Target", self._run_opposite)
         grp_act.add_compact_action(
             f"{_icons_dir}/paste_delta.png", "Apply Moves", self._run_apply_moves)
+        grp_act.add_compact_action(
+            f"{_icons_dir}/wrap_extract.png", "Bake Deformers", self._run_bake_deformers)
         root.addWidget(grp_act)
 
         # ── Modify ────────────────────────────────────────────────────────
@@ -3745,6 +3798,25 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             self._set_status(f"✗ Clean BS: {e}", error=True)
 
     @undo_chunk
+    def _run_reset_all_weights(self):
+        targets = self._get_targets_or_warn()
+        if not targets:
+            return
+        try:
+            seen = set()
+            total = 0
+            for bs_node, _, _ in targets:
+                if bs_node in seen:
+                    continue
+                seen.add(bs_node)
+                total += reset_all_target_weights(bs_node)
+            nodes = ", ".join(seen)
+            self._set_status(f"✓ Reset {total} weight(s) to 0 on: {nodes}")
+        except Exception as e:
+            traceback.print_exc()
+            self._set_status(f"✗ Reset Weights: {e}", error=True)
+
+    @undo_chunk
     def _run_apply_moves(self):
         try:
             targets = get_selected_targets()
@@ -3761,6 +3833,27 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ Apply Moves: {e}", error=True)
+
+    @undo_chunk
+    def _run_bake_deformers(self):
+        targets = self._get_targets_or_warn()
+        if not targets:
+            return
+        try:
+            seen = {}
+            for bs_node, logical_index, _ in targets:
+                seen.setdefault(bs_node, []).append(logical_index)
+            total = 0
+            for bs_node, indices in seen.items():
+                base_mesh = get_base_mesh(bs_node)
+                if not base_mesh:
+                    continue
+                total += bake_deformers_to_targets(bs_node, base_mesh, indices)
+            self._set_status(f"✓ Bake Deformers: {total} target(s) baked")
+        except Exception as e:
+            traceback.print_exc()
+            self._set_status(f"✗ Bake Deformers: {e}", error=True)
+
     @undo_chunk
     # ── Edge Loop Split — Get handlers ────────────────────────────────────
     def _els_get_upper_vtx(self):

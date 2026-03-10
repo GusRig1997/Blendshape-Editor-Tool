@@ -2,12 +2,12 @@ Actions
 =======
 
 The **Actions** section groups the most common target-level operations:
-duplicate, mirror, flip, create an opposite target, and apply mesh moves.
+duplicate, mirror, flip, create an opposite target, apply mesh moves,
+and bake deformers.
 All operations are undoable as a single step and support multi-target
 selection in the Shape Editor.
 
-The section starts in **compact** mode (single-row shelf). Click the header
-to expand it fully.
+The section is **open by default**.
 
 ----
 
@@ -155,3 +155,40 @@ normal sculpt workflow.
    * - **Apply Moves** button
      - Reads ``pnts[]`` from the base mesh, bakes the values into the selected
        target's deltas, and zeroes the mesh deformation.
+       Works on **1 selected target** only.
+
+----
+
+Bake Deformers
+--------------
+
+Bakes the contribution of all deformers stacked above the blendShape into
+the selected targets. For each target the tool activates it at weight 1.0,
+samples the fully evaluated mesh (deformers active), and stores the result
+as the new delta set.
+
+**Typical workflow:**
+
+1. Add a Delta Mush (or any deformer) on the base mesh and tune it.
+2. Select the targets to improve in the Shape Editor.
+3. Click **Bake Deformers**.
+4. Delete the deformer.
+
+**How the bake is computed:**
+
+- *Neutral sample* — all targets set to 0, deformers active → reference positions.
+- *Per-target sample* — one target at 1.0, deformers active → baked positions.
+- *New delta* = baked positions − neutral positions.
+
+Only the deformer's *additional* contribution when the target is active is
+captured; any constant effect at the neutral pose is factored out.
+
+.. list-table::
+   :widths: 30 70
+   :header-rows: 1
+
+   * - Control
+     - Description
+   * - **Bake Deformers** button
+     - Processes all targets selected in the Shape Editor.
+       Original blendShape weights are saved and restored after the operation.

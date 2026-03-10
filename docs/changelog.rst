@@ -52,6 +52,32 @@ v.03.006 *(in progress)*
 - The **Edge** field (topology-symmetry centered edge) is now the first
   control in the Actions section, above all operation buttons.
 
+**Maya Tools Shelf — second row**
+
+- The top shelf now has two rows.
+- Row 2 adds three sculpt brushes: **Relax**, **Pinch**, **Amplify**
+  (all with double-click to open Tool Settings).
+- **Add Target**, **Clean Blendshape Node**, and **Reset All Targets to 0**
+  are now grouped together in Row 2, separated from the sculpt tools.
+- Space after the separator is reserved for future tools.
+
+**New buttons**
+
+- **Reset All Targets to 0** (shelf row 2) — sets every target weight on the
+  blendShape node(s) to 0; useful to return to neutral after previewing shapes.
+- **Bake Deformers** (Actions section) — bakes the contribution of all
+  deformers above the blendShape into the selected targets, then the deformer
+  can be deleted. Works on multiple targets in one pass.
+
+**Actions section — open by default**
+
+- The Actions section now starts fully open instead of compact.
+
+**Bug fix — scroll jump on section toggle**
+
+- Fixed a bug where opening or closing any collapsible section caused the
+  scroll area to jump to the top of the panel.
+
 **UI stability**
 
 - Fixed flickering double-open when dragging the installer into Maya a

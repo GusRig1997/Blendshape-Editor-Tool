@@ -524,6 +524,78 @@ def apply_mesh_moves_to_target(bs_node, base_mesh, logical_index):
     return len(tweaks)
 
 
+def bake_deformers_to_targets(bs_node, base_mesh, logical_indices):
+    """
+    For each target in logical_indices:
+      - Activates the target at weight 1.0 (all others at 0).
+      - Samples the mesh vertex positions with all deformers still active.
+      - Computes delta = baked_pos - neutral_pos
+        (neutral = all targets at 0, deformers still evaluated at the rest pose).
+      - Writes the result as the target's new complete delta set.
+
+    Typical use-case: add a Delta Mush (or any deformer) on top of the blendShape
+    to improve the shapes, run this function to bake the result into the targets,
+    then delete the deformer.
+
+    Returns the number of targets processed.
+    """
+    from maya.api import OpenMaya as om2
+
+    shapes = cmds.listRelatives(base_mesh, shapes=True, noIntermediate=True) or []
+    if not shapes:
+        raise RuntimeError(f"No output shape found on '{base_mesh}'")
+    mesh_shape = shapes[0]
+
+    all_indices = cmds.getAttr(f"{bs_node}.weight", multiIndices=True) or []
+    saved_weights = {i: cmds.getAttr(f"{bs_node}.w[{i}]") for i in all_indices}
+
+    def _sample_positions():
+        sel = om2.MSelectionList()
+        sel.add(mesh_shape)
+        dag = sel.getDagPath(0)
+        fn  = om2.MFnMesh(dag)
+        return fn.getPoints(om2.MSpace.kObject)
+
+    try:
+        # All targets off → neutral pose (deformers still active)
+        for i in all_indices:
+            cmds.setAttr(f"{bs_node}.w[{i}]", 0.0)
+        cmds.dgeval(f"{mesh_shape}.worldMesh[0]")
+        neutral_pts = _sample_positions()
+
+        EPS   = 1e-6
+        count = 0
+
+        for idx in logical_indices:
+            cmds.setAttr(f"{bs_node}.w[{idx}]", 1.0)
+            cmds.dgeval(f"{mesh_shape}.worldMesh[0]")
+            baked_pts = _sample_positions()
+            cmds.setAttr(f"{bs_node}.w[{idx}]", 0.0)
+
+            new_deltas = {}
+            for vi in range(len(neutral_pts)):
+                dx = baked_pts[vi].x - neutral_pts[vi].x
+                dy = baked_pts[vi].y - neutral_pts[vi].y
+                dz = baked_pts[vi].z - neutral_pts[vi].z
+                if abs(dx) > EPS or abs(dy) > EPS or abs(dz) > EPS:
+                    new_deltas[vi] = (dx, dy, dz)
+
+            # Fetch original deltas; zero out any vertex no longer in the baked set
+            original_deltas = get_target_deltas(bs_node, idx)
+            for vi in original_deltas:
+                if vi not in new_deltas:
+                    new_deltas[vi] = (0.0, 0.0, 0.0)
+
+            _bake_deltas(bs_node, idx, new_deltas, original_deltas)
+            count += 1
+
+        return count
+
+    finally:
+        for i, w in saved_weights.items():
+            cmds.setAttr(f"{bs_node}.w[{i}]", w)
+
+
 def _insert_indices_after(bs_node, source_index, new_indices, source_is_directory=False):
 
     key = -source_index if source_is_directory else source_index
@@ -554,6 +626,14 @@ def _insert_indices_after(bs_node, source_index, new_indices, source_is_director
         return True
 
     return False
+
+def reset_all_target_weights(bs_node):
+    """Sets every target weight on bs_node to 0.0. Returns the number of weights reset."""
+    indices = cmds.getAttr(f"{bs_node}.weight", multiIndices=True) or []
+    for i in indices:
+        cmds.setAttr(f"{bs_node}.w[{i}]", 0.0)
+    return len(indices)
+
 
 def purge_empty_bs_slots(bs_node):
     """
