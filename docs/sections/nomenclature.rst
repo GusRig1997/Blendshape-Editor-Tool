@@ -53,6 +53,31 @@ reflect the result (e.g. *Preview → e.g. R_cheekbone_up*).
    The **Prefix** text field is greyed out automatically when the
    ``{prefix}`` token is not present in the current order.
 
+**Side tokens**
+
+Three single-character fields define the side labels used in generated names:
+
+.. list-table::
+   :widths: 20 20 60
+   :header-rows: 1
+
+   * - Field
+     - Default
+     - Description
+   * - **Left**
+     - ``L``
+     - Token written for the left side.
+   * - **Center**
+     - ``C``
+     - Token written for the center / bilateral side.
+   * - **Right**
+     - ``R``
+     - Token written for the right side.
+
+Change these if your project uses a different side convention (e.g.
+``lft`` / ``ctr`` / ``rgt``). The Split section and symmetric operations
+read these values at runtime.
+
 ----
 
 Opposite Target — Naming Pairs
@@ -133,3 +158,82 @@ Select **exactly two** targets in the Shape Editor, then click
 **Swap Names** to exchange their names.
 The vertex deltas are untouched — only the name attributes are swapped.
 The operation is fully undoable.
+
+----
+
+Check Shapes
+------------
+
+Click **Check Shapes…** to open the dialog. It compares the targets present
+on the selected blendShape node against a reference list of expected shape
+names.
+
+Reference List
+^^^^^^^^^^^^^^
+
+The reference list is stored as a JSON file. By default the tool ships with
+``resources/check_shapes_default.json``.
+
+Use the **File** menu inside the dialog to manage the list:
+
+.. list-table::
+   :widths: 25 75
+   :header-rows: 1
+
+   * - Menu item
+     - Action
+   * - **Load…**
+     - Opens a file browser to load any ``.json`` file as the reference list.
+       The last loaded path is remembered across sessions.
+   * - **Save…**
+     - Saves the current list (including any edits made in the dialog) to a
+       ``.json`` file of your choice.
+   * - **Reset to Default**
+     - Reloads the built-in ``check_shapes_default.json`` and discards the
+       remembered path.
+
+The current file name is shown in the dialog's title bar.
+
+Check Results
+^^^^^^^^^^^^^
+
+Targets are grouped into categories defined in the JSON file. Each target
+name is displayed with a status indicator:
+
+- **Green** — target exists on the blendShape node.
+- **Red** — target is missing.
+
+Match Existing to List
+^^^^^^^^^^^^^^^^^^^^^^
+
+Click **Match existing to List** to automatically suggest renames for targets
+whose names do not match the reference list exactly but are close enough to
+identify.
+
+The tool compares targets using token sets (order-independent), so
+``up_brow_L`` would match ``L_brow_up`` in the reference list.
+It also detects targets that are missing only a side prefix (``C_``, ``L_``,
+or ``R_``) and proposes adding it.
+
+A **Rename Suggestions** dialog opens with a table showing:
+
+.. list-table::
+   :widths: 30 30 40
+   :header-rows: 1
+
+   * - Column
+     - Description
+     - Notes
+   * - **Current Name**
+     - Existing target name on the blendShape node
+     -
+   * - **Proposed Name**
+     - Suggested rename from the reference list
+     - Shown in orange as *(Not sure)* when the match is ambiguous
+   * - **Apply?**
+     - Checkbox to include this rename in the batch
+     - Ambiguous matches are unchecked by default
+
+Use **Check All** / **Uncheck All** to select or deselect all rows, then
+**Apply Checked** to execute the renames. Renames are performed via
+``aliasAttr`` and are fully undoable.

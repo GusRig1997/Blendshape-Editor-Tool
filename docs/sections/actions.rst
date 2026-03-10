@@ -2,9 +2,34 @@ Actions
 =======
 
 The **Actions** section groups the most common target-level operations:
-duplicate, mirror, flip, and create an opposite target.
+duplicate, mirror, flip, create an opposite target, and apply mesh moves.
 All operations are undoable as a single step and support multi-target
 selection in the Shape Editor.
+
+The section starts in **compact** mode (single-row shelf). Click the header
+to expand it fully.
+
+----
+
+Topology Edge
+-------------
+
+The **Edge** field at the top of the section stores the centered edge used
+for topology-symmetry operations (Mirror, Flip, and Create Opposite Target
+when **Topology** axis is selected).
+
+.. list-table::
+   :widths: 30 70
+   :header-rows: 1
+
+   * - Control
+     - Description
+   * - **Edge** *(read-only field)*
+     - Stores one centered edge on the symmetry seam. Select the edge in the
+       viewport and click **Get** to capture it.
+
+The edge is required only when the **Topology** axis is active. For
+object-space axes (X / Y / Z) the field is ignored.
 
 ----
 
@@ -40,6 +65,9 @@ Copies the active target to its opposite side.
 
    * - Control
      - Description
+   * - **Axis** *(combo: X / Y / Z / Topology)*
+     - Symmetry axis. **Topology** uses the edge stored in the **Edge** field
+       above (topology-symmetry, mesh-independent).
    * - **Direction** *(combo: +, −)*
      - ``+`` copies from the positive side to the negative side.
        ``−`` copies from negative to positive.
@@ -60,8 +88,9 @@ correcting asymmetric sculpts or creating a mirrored version in-place.
 
    * - Control
      - Description
-   * - **Axis** *(combo: Object X / Y / Z)*
-     - Symmetry axis used for the flip.
+   * - **Axis** *(combo: X / Y / Z / Topology)*
+     - Symmetry axis. **Topology** uses the edge stored in the **Edge** field
+       above.
    * - **Flip Target** button
      - Runs the flip. The target name is preserved.
 
@@ -80,8 +109,9 @@ renames it automatically using the naming pair conventions defined in
 
    * - Control
      - Description
-   * - **Axis** *(combo: Object X / Y / Z)*
+   * - **Axis** *(combo: X / Y / Z / Topology)*
      - Symmetry axis for the flip and the naming pair lookup.
+       **Topology** uses the edge stored in the **Edge** field above.
    * - **Create Opposite Target** button
      - Runs the operation on all targets selected in the Shape Editor.
 
@@ -102,3 +132,26 @@ A warning is shown if no matching pair is found for the selected axis.
 .. note::
    Custom naming pairs added in the **Naming Convention** dialog are
    included in the lookup automatically and persist between sessions.
+
+----
+
+Apply Moves
+-----------
+
+Transfers the current mesh deformation (``pnts[]`` offsets applied directly
+on the mesh in the viewport) into the selected blendShape target, then
+resets the mesh back to neutral.
+
+Use this when you sculpt or move vertices directly on the base mesh and want
+to store those moves as a blendShape target delta without entering the
+normal sculpt workflow.
+
+.. list-table::
+   :widths: 30 70
+   :header-rows: 1
+
+   * - Control
+     - Description
+   * - **Apply Moves** button
+     - Reads ``pnts[]`` from the base mesh, bakes the values into the selected
+       target's deltas, and zeroes the mesh deformation.

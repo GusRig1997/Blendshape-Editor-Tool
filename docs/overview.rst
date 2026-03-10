@@ -19,16 +19,16 @@ The interface is divided into a fixed top shelf and a scrollable body.
    * - **Maya Tools Shelf** *(top, fixed)*
      - Quick-access sculpt tools, Shape Editor, Add Target, Delta View
    * - **Nomenclature** *(collapsible)*
-     - Naming convention setup and target rename utilities
+     - Naming convention setup, target rename utilities, and Check Shapes
    * - **Split** *(collapsible, open by default)*
-     - Radial / 1D split of targets using spatial locators
+     - Radial / 1D split of targets using spatial locators; Edge Loop Split
    * - **Secondary Meshes** *(collapsible)*
      - Extract and connect targets on secondary meshes via wrap deformers
-   * - **Actions** *(collapsible, open by default)*
-     - Duplicate, Mirror, Flip, Create Opposite Target
+   * - **Actions** *(collapsible, compact by default)*
+     - Duplicate, Mirror, Flip, Create Opposite Target, Apply Moves
    * - **Modify Deltas** *(collapsible)*
      - Post-sculpt delta operations (multiply, push, smooth, prune, etc.)
-   * - **Tools** *(collapsible, open by default)*
+   * - **Tools** *(collapsible)*
      - Wire Setup — curve-based lip/mouth deformation rig
    * - **Status bar** *(bottom, fixed)*
      - Real-time feedback for every operation (green = success, red = error)
@@ -38,7 +38,14 @@ Key Features
 
 - **Locator-based spatial split** — divide any target into N weighted regions
   using 1-D projection or 3-D radial falloff with four curve shapes.
-- **Symmetric naming** — auto-generates paired L_/R_ targets from a single split.
+- **Edge Loop Split** — split any target into upper/lower halves along a
+  stored edge loop, with persistent setup fields (Upper Vtx, Lower Vtx,
+  Edgeloop) filled once and reused across multiple targets.
+- **Symmetric naming** — auto-generates paired ``L_`` / ``C_`` / ``R_``
+  targets from a single split; side tokens are fully configurable.
+- **Check Shapes** — compare existing targets against an external JSON
+  reference list, with a *Match Existing to List* tool that suggests
+  token-based renames including missing side prefixes.
 - **Secondary mesh pipeline** — extract wrap targets, extract-only, and
   connect matching targets between two meshes.
 - **Full delta editing suite** — multiply, normal push, Laplacian smooth,
@@ -47,8 +54,8 @@ Key Features
   sculpt each shape curve, and bake results back as blendShape targets.
 - **Undo safety** — every operation is wrapped in a single Maya undo chunk
   (one Ctrl+Z reverts the entire action).
-- **Persistent preferences** — naming convention pairs are saved to a JSON
-  file in the Maya user preferences directory.
+- **Persistent preferences** — naming convention pairs, Check Shapes file
+  path, and UI position are saved across sessions.
 
 Edit Menu
 ---------

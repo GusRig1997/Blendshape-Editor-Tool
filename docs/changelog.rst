@@ -1,8 +1,70 @@
 Changelog
 =========
 
-v.03.003 *(in progress)*
+v.03.006 *(in progress)*
 ------------------------
+
+**Edge Loop Split — persistent setup fields**
+
+- The Edge Loop Split no longer reads from the live viewport selection.
+  Three dedicated persistent fields must be filled once per session:
+  *Upper Vtx*, *Lower Vtx*, and *Edgeloop* (captured via **Get** buttons).
+- The three fields are grouped under a collapsible **Edge Loop Options**
+  disclosure row. Click it to expand or collapse the setup panel.
+- The ``seed_upper`` / ``seed_lower`` naming is now used throughout the
+  core function, replacing the ambiguous ``seed_a`` / ``seed_b``.
+
+**Center side renamed M_ → C_**
+
+- All auto-generated center/bilateral targets now use ``C_`` as the side
+  token instead of ``M_``.
+- The default side tokens in the Naming Convention dialog are now
+  ``R`` / ``C`` / ``L``.
+- The built-in Check Shapes default list has been updated accordingly.
+
+**Check Shapes — external JSON**
+
+- The reference list is now stored in
+  ``resources/check_shapes_default.json`` (shipped with the tool) instead
+  of being hard-coded in the source.
+- A **File** menu (Load… / Save… / Reset to Default) replaces the old
+  button toolbar. The last loaded file path is remembered across sessions.
+- The current file name is shown in the dialog title bar.
+
+**Check Shapes — Match Existing to List**
+
+- New **Match existing to List** button opens a *Rename Suggestions* dialog.
+- Matches targets to the reference list using token sets (order-independent).
+- Also detects targets missing a side prefix (``C_``, ``L_``, or ``R_``)
+  and proposes adding it.
+- Ambiguous matches are highlighted in orange *(Not sure)* and unchecked by
+  default.
+
+**Naming Convention — side token fields**
+
+- Three new fields in the Naming Convention dialog: **Left**, **Center**,
+  **Right** (defaults: ``L``, ``C``, ``R``).
+- The Split and symmetric operations read these values at runtime, so
+  non-standard side conventions work without code changes.
+
+**Actions section — topology edge field moved to top**
+
+- The **Edge** field (topology-symmetry centered edge) is now the first
+  control in the Actions section, above all operation buttons.
+
+**UI stability**
+
+- Fixed flickering double-open when dragging the installer into Maya a
+  second time.
+- UI position and dock state are now preserved between sessions
+  (``retain=True``).
+- Removed ``importlib.reload`` from the shelf button command; the installer
+  now re-opens the tool cleanly after installation.
+
+----
+
+v.03.003
+--------
 
 - Naming Convention dialog (token order, prefix, custom opposite-target pairs)
 - Rename Targets: Set Prefix / Suffix + Search & Replace directly from the UI
@@ -13,9 +75,12 @@ v.03.003 *(in progress)*
 - Remove Locator supports multi-row selection; side/suffix refresh on remove
 - Tools section added (open by default)
 - Wire Setup: curve-based lip/mouth rig (Create Wire Setup + Bake Wire to Mesh)
+
   - Configurable Dropoff, Rotation, Spans, Flat Curve
   - Pre-bake empty-shape warning with user confirmation
   - *Delete Wire Setup after Bake* option
+
+----
 
 v.03.002
 --------
@@ -30,6 +95,8 @@ v.03.002
 - Compact-default sections (Nomenclature, Secondary Meshes, Modify Deltas)
   with bounce cycle
 - Version label in footer, removed from window title
+
+----
 
 v1.0.0
 ------

@@ -10,9 +10,32 @@ from blendshape_core import _save_shape_editor_selection, _restore_shape_editor_
 import json, os
 
 
+class _DblClickFilter(QtCore.QObject):
+    """Event filter that fires a callback on mouse double-click."""
+    def __init__(self, callback, parent=None):
+        super().__init__(parent)
+        self._cb = callback
+
+    def eventFilter(self, obj, event):
+        if event.type() == QtCore.QEvent.MouseButtonDblClick:
+            self._cb()
+            return True
+        return super().eventFilter(obj, event)
+
+
 def _user_naming_prefs_path():
     return os.path.join(cmds.internalVar(userPrefDir=True),
                         "blendshape_editor_naming.json")
+
+
+def _check_shapes_default_json_path():
+    """Returns the path to the default check_shapes JSON shipped with the tool."""
+    src_dir  = os.path.dirname(os.path.abspath(__file__))
+    tool_dir = os.path.dirname(src_dir)
+    return os.path.join(tool_dir, "resources", "check_shapes_default.json")
+
+
+_CHECK_SHAPES_OPTIONVAR = "blendshapeEditor_checkShapesLastFile"
 
 
 def _load_user_duos():
@@ -182,6 +205,115 @@ def create_opposite_shape(symmetry_axis="Topology", topo_edge=None):
             raise
 
 
+class RenameMatchDialog(QtWidgets.QDialog):
+    """
+    Shows a list of suggested renames (token-equivalent matches between existing
+    blendShape targets and the JSON list). The user checks which ones to apply.
+    """
+
+    def __init__(self, bs_node, suggestions, parent=None):
+        """
+        suggestions : list of (current_alias, logical_index, proposed_name, is_ambiguous)
+        """
+        super().__init__(parent)
+        self.bs_node     = bs_node
+        self.suggestions = suggestions
+        self.setWindowTitle("Match existing to List")
+        self.setMinimumWidth(520)
+        self.resize(520, 400)
+        self._build_ui()
+
+    def _build_ui(self):
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setSpacing(6)
+
+        info = QtWidgets.QLabel(
+            f"Found <b>{len(self.suggestions)}</b> target(s) with token-equivalent names "
+            f"in the list. Check the ones you want to rename.")
+        info.setWordWrap(True)
+        lay.addWidget(info)
+
+        # Table
+        self.table = QtWidgets.QTableWidget(len(self.suggestions), 3)
+        self.table.setHorizontalHeaderLabels(["Current name", "Proposed name", ""])
+        self.table.horizontalHeader().setStretchLastSection(False)
+        self.table.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        self.table.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.ResizeToContents)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
+
+        COLOR_AMBIGUOUS = QtGui.QColor("#FF9800")
+
+        for row, (current, _idx, proposed, is_ambiguous) in enumerate(self.suggestions):
+            item_current  = QtWidgets.QTableWidgetItem(current)
+            item_proposed = QtWidgets.QTableWidgetItem(proposed)
+            item_current.setFlags(QtCore.Qt.ItemIsEnabled)
+            item_proposed.setFlags(QtCore.Qt.ItemIsEnabled)
+
+            item_check = QtWidgets.QTableWidgetItem()
+            item_check.setFlags(QtCore.Qt.ItemIsUserCheckable | QtCore.Qt.ItemIsEnabled)
+            item_check.setCheckState(QtCore.Qt.Checked if not is_ambiguous else QtCore.Qt.Unchecked)
+
+            if is_ambiguous:
+                item_proposed.setText(f"{proposed}  (Not sure)")
+                item_proposed.setForeground(COLOR_AMBIGUOUS)
+                item_check.setToolTip("Multiple matches found — verify before applying")
+
+            self.table.setItem(row, 0, item_current)
+            self.table.setItem(row, 1, item_proposed)
+            self.table.setItem(row, 2, item_check)
+
+        lay.addWidget(self.table)
+
+        # Buttons row
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_check_all   = QtWidgets.QPushButton("Check All")
+        btn_uncheck_all = QtWidgets.QPushButton("Uncheck All")
+        btn_apply       = QtWidgets.QPushButton("Apply Checked")
+        btn_cancel      = QtWidgets.QPushButton("Cancel")
+        btn_apply.setFixedHeight(28)
+        btn_cancel.setFixedHeight(28)
+        btn_row.addWidget(btn_check_all)
+        btn_row.addWidget(btn_uncheck_all)
+        btn_row.addStretch()
+        btn_row.addWidget(btn_apply)
+        btn_row.addWidget(btn_cancel)
+        lay.addLayout(btn_row)
+
+        btn_check_all.clicked.connect(lambda: self._set_all_checks(QtCore.Qt.Checked))
+        btn_uncheck_all.clicked.connect(lambda: self._set_all_checks(QtCore.Qt.Unchecked))
+        btn_apply.clicked.connect(self._apply)
+        btn_cancel.clicked.connect(self.reject)
+
+    def _set_all_checks(self, state):
+        for row in range(self.table.rowCount()):
+            self.table.item(row, 2).setCheckState(state)
+
+    def _apply(self):
+        renamed = []
+        errors  = []
+        for row, (current, idx, proposed, _ambig) in enumerate(self.suggestions):
+            if self.table.item(row, 2).checkState() != QtCore.Qt.Checked:
+                continue
+            # Strip "(Not sure)" suffix that may have been added visually
+            clean_proposed = proposed
+            try:
+                cmds.aliasAttr(clean_proposed, f"{self.bs_node}.w[{idx}]")
+                renamed.append(f"{current} → {clean_proposed}")
+            except Exception as e:
+                errors.append(f"{current}: {e}")
+
+        msg = []
+        if renamed:
+            msg.append(f"Renamed {len(renamed)} target(s):\n" + "\n".join(f"  {r}" for r in renamed))
+        if errors:
+            msg.append(f"\nErrors ({len(errors)}):\n" + "\n".join(f"  {e}" for e in errors))
+        QtWidgets.QMessageBox.information(self, "Match existing to List", "\n".join(msg) or "Nothing applied.")
+        self.accept()
+
+
 class CheckShapesDialog(QtWidgets.QDialog):
     """
     Dialog to check whether a list of expected blendShape targets exist
@@ -193,14 +325,14 @@ class CheckShapesDialog(QtWidgets.QDialog):
         "lips_splits": [
             "C_upper_lip_up", "C_upper_lip_dn", "C_upper_lip_in", "C_upper_lip_out",
             "C_lower_lip_up", "C_lower_lip_dn", "C_lower_lip_in", "C_lower_lip_out",
-            "L_upper_lip_a_up", "L_upper_lip_a_dn", "L_upper_lip_a_in", "L_upper_lip_a_out",
-            "L_upper_lip_b_up", "L_upper_lip_b_dn", "L_upper_lip_b_in", "L_upper_lip_b_out",
-            "R_upper_lip_a_up", "R_upper_lip_a_dn", "R_upper_lip_a_in", "R_upper_lip_a_out",
-            "R_upper_lip_b_up", "R_upper_lip_b_dn", "R_upper_lip_b_in", "R_upper_lip_b_out",
-            "L_lower_lip_a_up", "L_lower_lip_a_dn", "L_lower_lip_a_in", "L_lower_lip_a_out",
-            "L_lower_lip_b_up", "L_lower_lip_b_dn", "L_lower_lip_b_in", "L_lower_lip_b_out",
-            "R_lower_lip_a_up", "R_lower_lip_a_dn", "R_lower_lip_a_in", "R_lower_lip_a_out",
-            "R_lower_lip_b_up", "R_lower_lip_b_dn", "R_lower_lip_b_in", "R_lower_lip_b_out",
+            "L_upper_lip_up_a", "L_upper_lip_dn_a", "L_upper_lip_in_a", "L_upper_lip_out_a",
+            "L_upper_lip_up_b", "L_upper_lip_dn_b", "L_upper_lip_in_b", "L_upper_lip_out_b",
+            "R_upper_lip_up_a", "R_upper_lip_dn_a", "R_upper_lip_in_a", "R_upper_lip_out_a",
+            "R_upper_lip_up_b", "R_upper_lip_dn_b", "R_upper_lip_in_b", "R_upper_lip_out_b",
+            "L_lower_lip_up_a", "L_lower_lip_dn_a", "L_lower_lip_in_a", "L_lower_lip_out_a",
+            "L_lower_lip_up_b", "L_lower_lip_dn_b", "L_lower_lip_in_b", "L_lower_lip_out_b",
+            "R_lower_lip_up_a", "R_lower_lip_dn_a", "R_lower_lip_in_a", "R_lower_lip_out_a",
+            "R_lower_lip_up_b", "R_lower_lip_dn_b", "R_lower_lip_in_b", "R_lower_lip_out_b",
         ],
         "lips_puffs": [
             "L_upper_lip_puff_in", "L_upper_lip_puff_out",
@@ -229,11 +361,11 @@ class CheckShapesDialog(QtWidgets.QDialog):
         ],
         "cheekbones": [
             "L_cheekbone_up", "R_cheekbone_up",
-            "L_cheekbone_a_up", "L_cheekbone_b_up", "L_cheekbone_c_up",
-            "R_cheekbone_a_up", "R_cheekbone_b_up", "R_cheekbone_c_up",
+            "L_cheekbone_up_a", "L_cheekbone_up_b", "L_cheekbone_up_c",
+            "R_cheekbone_up_a", "R_cheekbone_up_b", "R_cheekbone_up_c",
             "L_cheekbone_dn", "R_cheekbone_dn",
-            "L_cheekbone_a_dn", "L_cheekbone_b_dn", "L_cheekbone_c_dn",
-            "R_cheekbone_a_dn", "R_cheekbone_b_dn", "R_cheekbone_c_dn",
+            "L_cheekbone_dn_a", "L_cheekbone_dn_b", "L_cheekbone_dn_c",
+            "R_cheekbone_dn_a", "R_cheekbone_dn_b", "R_cheekbone_dn_c",
             "L_cheekbone_out", "R_cheekbone_out",
         ],
         "cheeks": [
@@ -244,10 +376,10 @@ class CheckShapesDialog(QtWidgets.QDialog):
             "R_brow_up", "R_brow_dn", "R_brow_in",
         ],
         "brows_splits": [
-            "L_brow_a_up", "L_brow_b_up", "L_brow_c_up", "L_brow_d_up", "L_brow_e_up",
-            "R_brow_a_up", "R_brow_b_up", "R_brow_c_up", "R_brow_d_up", "R_brow_e_up",
-            "L_brow_a_dn", "L_brow_b_dn", "L_brow_c_dn", "L_brow_d_dn", "L_brow_e_dn",
-            "R_brow_a_dn", "R_brow_b_dn", "R_brow_c_dn", "R_brow_d_dn", "R_brow_e_dn",
+            "L_brow_up_a", "L_brow_up_b", "L_brow_up_c", "L_brow_up_d", "L_brow_up_e",
+            "R_brow_up_a", "R_brow_up_b", "R_brow_up_c", "R_brow_up_d", "R_brow_up_e",
+            "L_brow_dn_a", "L_brow_dn_b", "L_brow_dn_c", "L_brow_dn_d", "L_brow_dn_e",
+            "R_brow_dn_a", "R_brow_dn_b", "R_brow_dn_c", "R_brow_dn_d", "R_brow_dn_e",
         ],
         "neck": [
             "L_neck_a", "R_neck_a", "L_neck_b", "R_neck_b",
@@ -260,11 +392,30 @@ class CheckShapesDialog(QtWidgets.QDialog):
         self.setMinimumWidth(400)
         self.resize(400, 640)
         self._build_ui()
-        self._populate_tree()
+        # Load last used file, or fall back to default JSON, or fall back to DEFAULT_SHAPES
+        last = cmds.optionVar(q=_CHECK_SHAPES_OPTIONVAR) \
+               if cmds.optionVar(exists=_CHECK_SHAPES_OPTIONVAR) else ""
+        if last and os.path.isfile(last):
+            self._load_shapes_from_path(last)
+        else:
+            self._load_shapes_from_path(_check_shapes_default_json_path())
 
     def _build_ui(self):
         lay = QtWidgets.QVBoxLayout(self)
         lay.setSpacing(6)
+
+        # ── Menu bar ──────────────────────────────────────────────────────
+        menu_bar  = QtWidgets.QMenuBar(self)
+        menu_bar.setStyleSheet("QMenuBar { font-size: 11px; } QMenuBar::item { padding: 2px 8px; }")
+        menu_file = menu_bar.addMenu("File")
+        act_load  = menu_file.addAction("Load…")
+        act_load.setToolTip("Load a JSON shapes list from disk")
+        act_save  = menu_file.addAction("Save…")
+        act_save.setToolTip("Save the current list to a JSON file")
+        menu_file.addSeparator()
+        act_reset = menu_file.addAction("Reset to Default")
+        act_reset.setToolTip("Reload the default shapes list shipped with the tool")
+        lay.setMenuBar(menu_bar)
 
         # Tree
         self.tree = QtWidgets.QTreeWidget()
@@ -288,10 +439,18 @@ class CheckShapesDialog(QtWidgets.QDialog):
         sep.setStyleSheet("color: rgba(255,255,255,30);")
         lay.addWidget(sep)
 
-        # Check button
+        # Check + Match buttons
         btn_check = QtWidgets.QPushButton("Check")
         btn_check.setFixedHeight(28)
         lay.addWidget(btn_check)
+
+        btn_match = QtWidgets.QPushButton("Match existing to List")
+        btn_match.setFixedHeight(28)
+        btn_match.setToolTip(
+            "Scans the blendShape node for targets whose name tokens match a JSON list entry\n"
+            "but are in the wrong order (e.g. L_brow_a_up → L_brow_up_a, M_ → C_).\n"
+            "Opens a dialog showing all suggestions — you choose which ones to apply.")
+        lay.addWidget(btn_match)
 
         # Results
         self.txt_results = QtWidgets.QTextEdit()
@@ -301,14 +460,74 @@ class CheckShapesDialog(QtWidgets.QDialog):
             "Select targets in the Shape Editor or a mesh in the scene, then click Check.")
         lay.addWidget(self.txt_results)
 
+        act_load.triggered.connect(self._load_json)
+        act_save.triggered.connect(self._save_json)
+        act_reset.triggered.connect(self._reset_default)
         btn_add_grp.clicked.connect(self._add_group)
         btn_add_shp.clicked.connect(self._add_shape)
         btn_remove.clicked.connect(self._remove_selected)
         btn_check.clicked.connect(self._run_check)
+        btn_match.clicked.connect(self._run_match_to_list)
 
-    def _populate_tree(self):
-        for grp, shapes in self.DEFAULT_SHAPES.items():
+    def _populate_tree(self, data):
+        self.tree.clear()
+        for grp, shapes in data.items():
             self._add_group_item(grp, shapes)
+
+    # ── JSON helpers ──────────────────────────────────────────────────────
+
+    def _tree_to_dict(self):
+        data = {}
+        for i in range(self.tree.topLevelItemCount()):
+            grp  = self.tree.topLevelItem(i)
+            name = grp.text(0)
+            data[name] = [grp.child(j).text(0) for j in range(grp.childCount())]
+        return data
+
+    def _load_shapes_from_path(self, path):
+        default_path = _check_shapes_default_json_path()
+        if path and os.path.isfile(path):
+            try:
+                with open(path, "r") as f:
+                    data = json.load(f)
+                self._populate_tree(data)
+                label = "default" if os.path.abspath(path) == os.path.abspath(default_path) \
+                        else os.path.basename(path)
+                self.setWindowTitle(f"Check Shapes  —  {label}")
+                return
+            except Exception as e:
+                QtWidgets.QMessageBox.warning(self, "Load Error", f"Could not read file:\n{e}")
+        # Fallback to hard-coded DEFAULT_SHAPES
+        self._populate_tree(self.DEFAULT_SHAPES)
+        self.setWindowTitle("Check Shapes  —  default (built-in)")
+
+    def _load_json(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load Check Shapes", "", "JSON files (*.json)")
+        if not path:
+            return
+        self._load_shapes_from_path(path)
+        cmds.optionVar(sv=(_CHECK_SHAPES_OPTIONVAR, path))
+
+    def _save_json(self):
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Check Shapes", "", "JSON files (*.json)")
+        if not path:
+            return
+        if not path.endswith(".json"):
+            path += ".json"
+        try:
+            with open(path, "w") as f:
+                json.dump(self._tree_to_dict(), f, indent=4)
+            cmds.optionVar(sv=(_CHECK_SHAPES_OPTIONVAR, path))
+            self.setWindowTitle(f"Check Shapes  —  {os.path.basename(path)}")
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Save Error", f"Could not save file:\n{e}")
+
+    def _reset_default(self):
+        default = _check_shapes_default_json_path()
+        self._load_shapes_from_path(default)
+        cmds.optionVar(sv=(_CHECK_SHAPES_OPTIONVAR, default))
 
     def _add_group_item(self, name, shapes=None):
         item = QtWidgets.QTreeWidgetItem([name])
@@ -349,17 +568,17 @@ class CheckShapesDialog(QtWidgets.QDialog):
             else:
                 parent.removeChild(item)
 
-    def _run_check(self):
-        # Resolve bs_node
-        bs_node = None
+    def _resolve_bs_node(self):
         targets = get_selected_targets()
         if targets:
-            bs_node = targets[0][0]
-        else:
-            sel = cmds.ls(sl=True, transforms=True)
-            if sel:
-                bs_node = _find_blendshape_on_mesh(sel[0])
+            return targets[0][0]
+        sel = cmds.ls(sl=True, transforms=True)
+        if sel:
+            return _find_blendshape_on_mesh(sel[0])
+        return None
 
+    def _run_check(self):
+        bs_node = self._resolve_bs_node()
         if not bs_node:
             self.txt_results.setPlainText(
                 "No blendShape node found.\n"
@@ -400,6 +619,84 @@ class CheckShapesDialog(QtWidgets.QDialog):
         else:
             self.txt_results.setPlainText(
                 f"✓  All {total} shapes present in '{bs_node}'.")
+
+    def _run_match_to_list(self):
+        bs_node = self._resolve_bs_node()
+        if not bs_node:
+            QtWidgets.QMessageBox.warning(
+                self, "Match existing to List",
+                "No blendShape node found.\n"
+                "Select targets in the Shape Editor or a mesh in the scene.")
+            return
+
+        # Collect existing aliases
+        alias_pairs = cmds.aliasAttr(bs_node, q=True) or []
+        # aliasAttr returns a flat list: [alias, attr, alias, attr, ...]
+        existing = {}  # alias → logical_index
+        for i in range(0, len(alias_pairs) - 1, 2):
+            alias = alias_pairs[i]
+            attr  = alias_pairs[i + 1]  # e.g. "weight[12]"
+            try:
+                idx = int(attr.split("[")[1].rstrip("]"))
+                existing[alias] = idx
+            except (IndexError, ValueError):
+                pass
+
+        # Collect all JSON names (flat set)
+        json_names = []
+        for grp in range(self.tree.topLevelItemCount()):
+            grp_item = self.tree.topLevelItem(grp)
+            for j in range(grp_item.childCount()):
+                json_names.append(grp_item.child(j).text(0))
+        json_name_set = set(json_names)
+
+        # Build token lookup: frozenset(tokens) → [json_names]
+        # Normalize M → C when tokenizing
+        def _norm_tokens(name):
+            toks = name.split("_")
+            return frozenset("C" if t == "M" else t for t in toks)
+
+        token_map = {}
+        for jname in json_names:
+            key = _norm_tokens(jname)
+            token_map.setdefault(key, []).append(jname)
+
+        # Find suggestions
+        suggestions = []  # list of (current_alias, idx, proposed_name, is_ambiguous)
+        for alias, idx in sorted(existing.items()):
+            if alias in json_name_set:
+                continue  # already correct
+
+            # Pass 1 — token reorder (same tokens, wrong order, handles M→C)
+            key = _norm_tokens(alias)
+            matches = token_map.get(key, [])
+
+            # Pass 2 — missing side prefix (e.g. jaw_up → C_jaw_up)
+            if not matches:
+                side_matches = [f"{s}_{alias}" for s in ("C", "L", "R")
+                                if f"{s}_{alias}" in json_name_set]
+                # Also try token-reorder with each prefixed candidate
+                if not side_matches:
+                    for s in ("C", "L", "R"):
+                        key_prefixed = _norm_tokens(f"{s}_{alias}")
+                        side_matches += token_map.get(key_prefixed, [])
+                matches = side_matches
+
+            if not matches:
+                continue
+            is_ambiguous = len(matches) > 1
+            proposed = matches[0]
+            suggestions.append((alias, idx, proposed, is_ambiguous))
+
+        if not suggestions:
+            QtWidgets.QMessageBox.information(
+                self, "Match existing to List",
+                "No rename suggestions found.\n"
+                "All existing targets either already match the list or have no token equivalent.")
+            return
+
+        dlg = RenameMatchDialog(bs_node, suggestions, parent=self)
+        dlg.exec_()
 
 
 class NamingConventionDialog(QtWidgets.QDialog):
@@ -535,6 +832,25 @@ class NamingConventionDialog(QtWidgets.QDialog):
         row_pfx.addWidget(self._edit_prefix, 1)
         lay_auto.addLayout(row_pfx)
 
+        # Side tokens
+        row_sides = QtWidgets.QHBoxLayout()
+        row_sides.addWidget(QtWidgets.QLabel("Sides"))
+        for attr, label, tip in (
+            ("_edit_side_left",   "Left",   "Token used for the left side  (e.g. L)"),
+            ("_edit_side_center", "Center", "Token used for the center side (e.g. C)"),
+            ("_edit_side_right",  "Right",  "Token used for the right side  (e.g. R)"),
+        ):
+            lbl = QtWidgets.QLabel(label)
+            lbl.setStyleSheet("color: #888888; font-size: 10px;")
+            edit = QtWidgets.QLineEdit()
+            edit.setFixedWidth(40)
+            edit.setToolTip(tip)
+            row_sides.addWidget(lbl)
+            row_sides.addWidget(edit)
+            setattr(self, attr, edit)
+        row_sides.addStretch()
+        lay_auto.addLayout(row_sides)
+
         # Wire signals
         self._combo.currentTextChanged.connect(self._populate_tokens_from_preset)
         self._token_list.model().rowsMoved.connect(lambda *_: self._refresh_preview())
@@ -626,6 +942,9 @@ class NamingConventionDialog(QtWidgets.QDialog):
     def _init_from_parent(self):
         self._edit_prefix.setText(self._parent_ui._nom_prefix)
         self._populate_tokens_direct(self._parent_ui._nom_token_order)
+        self._edit_side_left.setText(self._parent_ui._nom_side_left)
+        self._edit_side_center.setText(self._parent_ui._nom_side_center)
+        self._edit_side_right.setText(self._parent_ui._nom_side_right)
         self._refresh_prefix_state()
         self._refresh_preview()
 
@@ -721,6 +1040,9 @@ class NamingConventionDialog(QtWidgets.QDialog):
             for i in range(self._token_list.count())
         ]
         self._parent_ui._nom_prefix = self._edit_prefix.text().strip()
+        self._parent_ui._nom_side_left   = self._edit_side_left.text().strip()   or "L"
+        self._parent_ui._nom_side_center = self._edit_side_center.text().strip() or "C"
+        self._parent_ui._nom_side_right  = self._edit_side_right.text().strip()  or "R"
 
         # Save naming pairs
         result = {}
@@ -757,6 +1079,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # Naming convention state — edited via Naming Convention dialog
         self._nom_token_order = ["{side}", "{target}", "{suffix}"]
         self._nom_prefix = ""
+        self._nom_side_left   = "L"
+        self._nom_side_center = "C"
+        self._nom_side_right  = "R"
         self._build_ui()
         self.resize(_SHELF_W, _DEFAULT_H)
 
@@ -1032,7 +1357,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         shelf_lay.setContentsMargins(4, 3, 4, 3)
         shelf_lay.setSpacing(2)
 
-        def _shelf_btn(icon_path, tooltip, mel_cmd=None, callback=None):
+        def _shelf_btn(icon_path, tooltip, mel_cmd=None, callback=None, dbl_click=None):
             btn = QtWidgets.QToolButton()
             btn.setFixedSize(36, 36)
             btn.setIconSize(QtCore.QSize(34, 34))
@@ -1055,15 +1380,18 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 btn.clicked.connect(lambda _=False, cmd=mel_cmd: mel.eval(cmd))
             elif callback:
                 btn.clicked.connect(callback)
+            if dbl_click:
+                _f = _DblClickFilter(dbl_click, btn)
+                btn.installEventFilter(_f)
             return btn
 
         # Sculpt tools — left
         for _ic, _tt, _cmd in [
-            (f"{_icons_dir}/Grab.png",    "Sculpt Grab",    "SetMeshGrabTool"),
-            (f"{_icons_dir}/Flatten.png", "Sculpt Flatten", "SetMeshFlattenTool"),
-            (f"{_icons_dir}/Bulge.png",   "Sculpt Bulge",   "SetMeshBulgeTool"),
+            (f"{_icons_dir}/Grab.png",    "Sculpt Grab\nDouble-click: Tool Settings",    "SetMeshGrabTool"),
+            (f"{_icons_dir}/Flatten.png", "Sculpt Flatten\nDouble-click: Tool Settings", "SetMeshFlattenTool"),
+            (f"{_icons_dir}/Bulge.png",   "Sculpt Bulge\nDouble-click: Tool Settings",   "SetMeshBulgeTool"),
         ]:
-            shelf_lay.addWidget(_shelf_btn(_ic, _tt, _cmd))
+            shelf_lay.addWidget(_shelf_btn(_ic, _tt, _cmd, dbl_click=self._open_tool_settings))
 
         # Separator
         _sep = QtWidgets.QFrame()
@@ -1090,10 +1418,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.btn_add_target.customContextMenuRequested.connect(self._show_add_target_context_menu)
         shelf_lay.addWidget(self.btn_add_target)
         for _ic, _tt, _cmd in [
-            (f"{_icons_dir}/SmoothTarget.png", "Smooth Target", "SetMeshSmoothTargetTool"),
-            (f"{_icons_dir}/Erase.png",        "Erase Target",  "SetMeshEraseTool"),
+            (f"{_icons_dir}/SmoothTarget.png", "Smooth Target\nDouble-click: Tool Settings", "SetMeshSmoothTargetTool"),
+            (f"{_icons_dir}/Erase.png",        "Erase Target\nDouble-click: Tool Settings",  "SetMeshEraseTool"),
         ]:
-            shelf_lay.addWidget(_shelf_btn(_ic, _tt, _cmd))
+            shelf_lay.addWidget(_shelf_btn(_ic, _tt, _cmd, dbl_click=self._open_tool_settings))
 
         # Separator — visualization tools
         _sep2 = QtWidgets.QFrame()
@@ -1261,7 +1589,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "(i.e. from your left to right when facing the character).\n"
             "The selection order maps directly to zone naming:\n"
             "  1 locator  →  symmetric L_ / R_ pair\n"
-            "  3 locators →  R_ / M_ / L_\n"
+            "  3 locators →  R_ / C_ / L_\n"
             "  4+ locators → alphabetical  (a, b, c…)",
             self._get_locators_from_selection)
         btn_rm     = _side_btn("−", "Remove selected row",    self._remove_row)
@@ -1364,7 +1692,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.chk_symmetric = QtWidgets.QCheckBox("Symmetric L / R")
         self.chk_symmetric.setToolTip(
             "Auto-fills suffixes for symmetric L/R splits.\n"
-            "Odd locators: R_b R_a M_ L_a L_b\n"
+            "Odd locators: R_b R_a C_ L_a L_b\n"
             "Even locators: R_b R_a L_a L_b"
         )
         self.chk_symmetric.stateChanged.connect(self._on_symmetric_changed)
@@ -1465,15 +1793,79 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.btn_split.clicked.connect(self._run_split)
         lay_split.addWidget(_w_split)
 
+        # ── Edge Loop Split button ────────────────────────────────────────
         _w_els, self.btn_edge_loop_split = self._icon_btn(
             f"{_icons_dir}/edge_split.png", "Edge Loop Split",
-            "Splits the active target along a selected edge loop.\n"
-            "Select the edge loop + 2 vertices: one on the upper side, one on the lower side.\n"
-            "  → Select edges (edge loop) then Shift+click vtx_upper then Shift+click vtx_lower\n"
-            "Creates <target>_upper and <target>_lower with Laplacian falloff.\n"
-            "Falloff radius = spin_radius value when Radius is enabled, else 2.")
+            "Splits selected targets along the stored edge loop.\n"
+            "Set Vertices and Edgeloop via the Setup section below.\n"
+            "The Radius setting controls the falloff blend at the seam (default: 1).\n"
+            "Enable Radius and increase the value for a softer transition.")
         self.btn_edge_loop_split.clicked.connect(self._run_edge_loop_split)
         lay_split.addWidget(_w_els)
+
+        # ── Edge Loop Split setup — collapsible ───────────────────────────
+        self._els_setup_toggle = QtWidgets.QToolButton()
+        self._els_setup_toggle.setText("  Edge Loop Options")
+        self._els_setup_toggle.setArrowType(QtCore.Qt.RightArrow)
+        self._els_setup_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self._els_setup_toggle.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self._els_setup_toggle.setFixedHeight(18)
+        self._els_setup_toggle.setStyleSheet(
+            "QToolButton { background: transparent; border: none; "
+            "font-size: 10px; color: #888888; "
+            "text-align: center; }"
+            "QToolButton:hover { color: #aaaaaa; }")
+        lay_split.addWidget(self._els_setup_toggle)
+
+        els_setup_widget = QtWidgets.QWidget()
+        els_setup_widget.setVisible(False)
+        els_setup_lay = QtWidgets.QVBoxLayout(els_setup_widget)
+        els_setup_lay.setContentsMargins(0, 2, 0, 2)
+        els_setup_lay.setSpacing(4)
+
+        def _els_field(edit_attr, placeholder, get_handler):
+            row = QtWidgets.QHBoxLayout()
+            edit = QtWidgets.QLineEdit()
+            edit.setReadOnly(True)
+            edit.setPlaceholderText(placeholder)
+            btn_get = QtWidgets.QPushButton("Get")
+            btn_get.setFixedWidth(40)
+            btn_get.clicked.connect(get_handler)
+            row.addWidget(edit)
+            row.addWidget(btn_get)
+            setattr(self, edit_attr, edit)
+            return row
+
+        lbl_edges = QtWidgets.QLabel("Edgeloop")
+        lbl_seeds = QtWidgets.QLabel("Vertices")
+        _lbl_w = max(lbl_edges.sizeHint().width(), lbl_seeds.sizeHint().width())
+        lbl_edges.setFixedWidth(_lbl_w)
+        lbl_seeds.setFixedWidth(_lbl_w)
+
+        row_seeds = QtWidgets.QHBoxLayout()
+        row_seeds.addWidget(lbl_seeds)
+        row_seeds.addLayout(_els_field(
+            "edit_els_upper_vtx", "upper vertex", self._els_get_upper_vtx))
+        row_seeds.addLayout(_els_field(
+            "edit_els_lower_vtx", "lower vertex", self._els_get_lower_vtx))
+        els_setup_lay.addLayout(row_seeds)
+
+        row_edges = QtWidgets.QHBoxLayout()
+        row_edges.addWidget(lbl_edges)
+        row_edges.addLayout(_els_field(
+            "edit_els_edges", "split edgeloop", self._els_get_edges))
+        els_setup_lay.addLayout(row_edges)
+
+        lay_split.addWidget(els_setup_widget)
+
+        def _toggle_els_setup():
+            visible = not els_setup_widget.isVisible()
+            els_setup_widget.setVisible(visible)
+            self._els_setup_toggle.setArrowType(
+                QtCore.Qt.DownArrow if visible else QtCore.Qt.RightArrow)
+
+        self._els_setup_toggle.clicked.connect(_toggle_els_setup)
 
         grp_split.add_compact_action(
             f"{_icons_dir}/locator.png", "Create Locator", self._create_locator)
@@ -1483,7 +1875,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "(i.e. from your left to right when facing the character).\n"
             "The selection order maps directly to zone naming:\n"
             "  1 locator  →  symmetric L_ / R_ pair\n"
-            "  3 locators →  R_ / M_ / L_\n"
+            "  3 locators →  R_ / C_ / L_\n"
             "  4+ locators → alphabetical  (a, b, c…)",
             self._get_locators_from_selection)
         grp_split.add_compact_action(
@@ -1554,6 +1946,24 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # ── Actions ───────────────────────────────────────────────────────
         grp_act, _body_act, lay_act = self._collapsible_section("Actions", initial_state=1)
         lay_act.setSpacing(4)
+
+        row_topo = QtWidgets.QHBoxLayout()
+        row_topo.setSpacing(2)
+        _lbl_edge = QtWidgets.QLabel("Edge")
+        _lbl_edge.setFixedWidth(40)
+        self.line_topo_edge = QtWidgets.QLineEdit()
+        self.line_topo_edge.setPlaceholderText("Topological centered edge")
+        self.line_topo_edge.setToolTip(
+            "Central edge used for topology symmetry (Mirror / Flip / Create Opposite).\n"
+            "Select the edge in the viewport and click Get.")
+        self.btn_get_topo_edge = QtWidgets.QPushButton("Get")
+        self.btn_get_topo_edge.setFixedWidth(36)
+        self.btn_get_topo_edge.setToolTip("Get the selected edge from the viewport")
+        self.btn_get_topo_edge.clicked.connect(self._get_topo_edge)
+        row_topo.addWidget(_lbl_edge)
+        row_topo.addWidget(self.line_topo_edge, 1)
+        row_topo.addWidget(self.btn_get_topo_edge)
+        lay_act.addLayout(row_topo)
 
         _w_clean, self.btn_clean_bs = self._icon_btn(
             f"{_icons_dir}/clean_bsnode.png", "Clean Blendshape Node",
@@ -1635,24 +2045,6 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_opp.addWidget(_w_opp, 1)
         row_opp.addWidget(self.combo_opp_axis)
         lay_act.addLayout(row_opp)
-
-        row_topo = QtWidgets.QHBoxLayout()
-        row_topo.setSpacing(2)
-        _lbl_edge = QtWidgets.QLabel("Edge:")
-        _lbl_edge.setFixedWidth(32)
-        self.line_topo_edge = QtWidgets.QLineEdit()
-        self.line_topo_edge.setPlaceholderText("mesh.e[N] — topology central edge")
-        self.line_topo_edge.setToolTip(
-            "Central edge used for topology symmetry (Mirror / Flip / Create Opposite).\n"
-            "Select the edge in the viewport and click Get.")
-        self.btn_get_topo_edge = QtWidgets.QPushButton("Get")
-        self.btn_get_topo_edge.setFixedWidth(36)
-        self.btn_get_topo_edge.setToolTip("Get the selected edge from the viewport")
-        self.btn_get_topo_edge.clicked.connect(self._get_topo_edge)
-        row_topo.addWidget(_lbl_edge)
-        row_topo.addWidget(self.line_topo_edge, 1)
-        row_topo.addWidget(self.btn_get_topo_edge)
-        lay_act.addLayout(row_topo)
 
         _w_apply, self.btn_apply_moves = self._icon_btn(
             f"{_icons_dir}/paste_delta.png", "Apply Moves",
@@ -1968,6 +2360,61 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_wire.setContentsMargins(8, 8, 8, 8)
         lay_wire.setSpacing(6)
 
+        # Paint Wire Weights — shelf button
+        _wire_shelf_row = QtWidgets.QHBoxLayout()
+        btn_paint_wire = QtWidgets.QToolButton()
+        btn_paint_wire.setFixedSize(40, 40)
+        btn_paint_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        btn_paint_wire.setToolTip("Paint Wire Weights\nOpens the Paint Attributes tool on wire_setup_wire.weights.")
+        btn_paint_wire.setStyleSheet("""
+            QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
+            QToolButton:hover { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """)
+        _pw_px = QtGui.QPixmap(f"{_icons_dir}/paint_wire.png")
+        if not _pw_px.isNull():
+            btn_paint_wire.setIcon(QtGui.QIcon(
+                _pw_px.scaled(32, 32, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
+            btn_paint_wire.setIconSize(QtCore.QSize(32, 32))
+        btn_paint_wire.clicked.connect(self._run_paint_wire)
+        btn_paint_wire.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        btn_paint_wire.customContextMenuRequested.connect(
+            lambda _: self._open_tool_settings()
+        )
+        _f_pw = _DblClickFilter(self._open_tool_settings, btn_paint_wire)
+        btn_paint_wire.installEventFilter(_f_pw)
+        _wire_shelf_row.addWidget(btn_paint_wire)
+
+        # Mirror Wire Weights — shelf button
+        btn_mirror_wire = QtWidgets.QToolButton()
+        btn_mirror_wire.setFixedSize(40, 40)
+        btn_mirror_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        btn_mirror_wire.setToolTip(
+            "Mirror Wire Weights (YZ)\n"
+            "Mirrors wire deformer weights from -X to +X.\n\n"
+            "WARNING: Your mesh must be symmetrical and in neutral pose,\n"
+            "otherwise results will be unpredictable."
+        )
+        btn_mirror_wire.setStyleSheet("""
+            QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
+            QToolButton:hover { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """)
+        _mw_px = QtGui.QPixmap(f"{_icons_dir}/mirror_wire.png")
+        if not _mw_px.isNull():
+            btn_mirror_wire.setIcon(QtGui.QIcon(
+                _mw_px.scaled(32, 32, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
+            btn_mirror_wire.setIconSize(QtCore.QSize(32, 32))
+        btn_mirror_wire.clicked.connect(self._run_mirror_wire_weights)
+        btn_mirror_wire.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        btn_mirror_wire.customContextMenuRequested.connect(
+            lambda _: cmds.MirrorDeformerWeightsOptions()
+        )
+        _wire_shelf_row.addWidget(btn_mirror_wire)
+
+        _wire_shelf_row.addStretch(1)
+        lay_wire.addLayout(_wire_shelf_row)
+
         # Base Mesh
         row_wbase = QtWidgets.QHBoxLayout()
         lbl_wbase = QtWidgets.QLabel("Base Mesh")
@@ -2185,12 +2632,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         letters = "abcdefghijklmnopqrstuvwxyz"
         suffixes = []
 
-        # suffixes store only the letter part — prefix (R_/L_/M_) is handled in _run_split
+        # suffixes store only the letter part — prefix (R_/L_/C_) is handled in _run_split
         # n=1 : [""]          → R_name   L_name
         # n=2 : ["", ""]      → R_name   L_name
-        # n=3 : ["", "", ""]  → R_name   M_name  L_name
+        # n=3 : ["", "", ""]  → R_name   C_name  L_name
         # n=4 : ["_b","_a","_a","_b"] → R_name_b  R_name_a  L_name_a  L_name_b
-        # n=5 : ["_b","_a","","_a","_b"] → R_name_b  R_name_a  M_name  L_name_a  L_name_b
+        # n=5 : ["_b","_a","","_a","_b"] → R_name_b  R_name_a  C_name  L_name_a  L_name_b
 
         if n == 1:
             suffixes = [""]
@@ -2215,18 +2662,21 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 suffixes.append(letters[i-1])
 
         # Sides per row
+        _SL = self._nom_side_left
+        _SC = self._nom_side_center
+        _SR = self._nom_side_right
         if n == 1:
             sides = [""]
         elif n == 2:
-            sides = ["R", "L"]
+            sides = [_SR, _SL]
         elif n == 3:
-            sides = ["R", "M", "L"]
+            sides = [_SR, _SC, _SL]
         elif n % 2 == 1:
             half = n // 2
-            sides = (["R"] * half) + ["M"] + (["L"] * half)
+            sides = ([_SR] * half) + [_SC] + ([_SL] * half)
         else:
             half = n // 2
-            sides = (["R"] * half) + (["L"] * half)
+            sides = ([_SR] * half) + ([_SL] * half)
 
         for row in range(n):
             # Side column (col 1)
@@ -2392,6 +2842,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # ── Nomenclature — Tool's Auto-naming (pairs JSON preserved) ──────────
         self._nom_token_order = ["{side}", "{target}", "{suffix}"]
         self._nom_prefix = ""
+        self._nom_side_left   = "L"
+        self._nom_side_center = "C"
+        self._nom_side_right  = "R"
 
     def _run_delta_view(self):
         """
@@ -2748,7 +3201,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         Assembles the final target name from self._nom_token_order and self._nom_prefix.
         Empty tokens are dropped — no double underscores produced.
           {prefix} → self._nom_prefix
-          {side}   → e.g. "R", "L", "M"  (empty string = token skipped)
+          {side}   → e.g. "R", "L", "C"  (empty string = token skipped)
           {target} → base_name
           {suffix} → e.g. "a", "b", "up"  (empty string = token skipped)
         """
@@ -2800,6 +3253,52 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         return [self.list_wire_shapes.item(i).text().strip()
                 for i in range(self.list_wire_shapes.count())
                 if self.list_wire_shapes.item(i).text().strip()]
+
+    def _run_paint_wire(self):
+        wire_node = "wire_setup_wire"
+        mesh = "wire_setup_msh"
+        if not cmds.objExists(wire_node):
+            self._set_status("✗ Paint Wire: wire_setup_wire not found in scene", error=True)
+            return
+        if not cmds.objExists(mesh):
+            self._set_status("✗ Paint Wire: wire_setup_msh not found in scene", error=True)
+            return
+        sel = cmds.ls(sl=True, transforms=True)
+        if mesh not in sel:
+            cmds.select(mesh, replace=True)
+        mel.eval(f'artSetToolAndSelectAttr "artAttrCtx" "wire.{wire_node}.weights"')
+        mel.eval('artAttrInitPaintableAttr')
+        mel.eval('toolPropertyShow')
+        self._set_status("✓ Paint Wire tool opened")
+
+    def _open_tool_settings(self):
+        """Open Maya's Tool Settings window for the currently active tool."""
+        for cmd in ("toolPropertyWindow;", 'toolPropertyWindow1 ("");',
+                    "artAttrValues artAttrContext;", "toolPropertyShow;",
+                    "dR_updateToolSettings;"):
+            try:
+                mel.eval(cmd)
+            except Exception:
+                pass
+        self._set_status("✓ Tool Settings opened")
+
+    def _run_paint_wire_settings(self):
+        self._open_tool_settings()
+
+    def _run_mirror_wire_weights(self):
+        wire_node = "wire_setup_wire"
+        mesh = "wire_setup_msh"
+        if not cmds.objExists(wire_node):
+            self._set_status("✗ Mirror Wire: wire_setup_wire not found in scene", error=True)
+            return
+        if not cmds.objExists(mesh):
+            self._set_status("✗ Mirror Wire: wire_setup_msh not found in scene", error=True)
+            return
+        mel.eval(
+            f'copyDeformerWeights -sd {wire_node} -ss {mesh} -ds {mesh}'
+            f' -mirrorMode YZ -surfaceAssociation closestPoint'
+        )
+        self._set_status("✓ Wire weights mirrored (YZ)")
 
     @undo_chunk
     def _run_create_wire_setup(self):
@@ -3031,15 +3530,16 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
                 # Build the list of (loc_idx, final_name) pairs to create
                 if symmetric:
-                    # Strip existing L_/R_/M_ prefix so we can rebuild with the correct side
+                    # Strip existing side prefix so we can rebuild with the correct side
                     base_name = target_name
-                    for pfx in ("L_", "R_", "M_", "l_", "r_", "m_"):
+                    _sides_pfx = {self._nom_side_left, self._nom_side_center, self._nom_side_right}
+                    for pfx in [f"{s}_" for s in _sides_pfx] + [f"{s.lower()}_" for s in _sides_pfx]:
                         if target_name.startswith(pfx):
                             base_name = target_name[len(pfx):]
                             break
                     if n_locs == 1:
                         pairs = [(i, self._build_target_name(base_name, sv, ""))
-                                 for i, sv in enumerate(["R", "L"])]
+                                 for i, sv in enumerate([self._nom_side_right, self._nom_side_left])]
                     else:
                         pairs = [(i, self._build_target_name(base_name, sides[i], suffixes[i]))
                                  for i in range(n_locs)]
@@ -3262,35 +3762,74 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             traceback.print_exc()
             self._set_status(f"✗ Apply Moves: {e}", error=True)
     @undo_chunk
+    # ── Edge Loop Split — Get handlers ────────────────────────────────────
+    def _els_get_upper_vtx(self):
+        sel = [s for s in (cmds.ls(sl=True, flatten=True) or []) if ".vtx[" in s]
+        if not sel:
+            self._set_status("✗ Edge Loop Split: select a vertex first", error=True)
+            return
+        self.edit_els_upper_vtx.setText(sel[0])
+        self._set_status(f"✓ Upper vertex: {sel[0]}")
+
+    def _els_get_lower_vtx(self):
+        sel = [s for s in (cmds.ls(sl=True, flatten=True) or []) if ".vtx[" in s]
+        if not sel:
+            self._set_status("✗ Edge Loop Split: select a vertex first", error=True)
+            return
+        self.edit_els_lower_vtx.setText(sel[0])
+        self._set_status(f"✓ Lower vertex: {sel[0]}")
+
+    def _els_get_edges(self):
+        edges = [s for s in (cmds.ls(sl=True, flatten=True) or []) if ".e[" in s]
+        if not edges:
+            self._set_status("✗ Edge Loop Split: select edges first", error=True)
+            return
+        self.edit_els_edges.setText(str(edges))
+        self._set_status(f"✓ {len(edges)} edge(s) captured")
+
     def _run_edge_loop_split(self):
         """
         UI handler for Edge Loop Split.
-        Select: edge loop + 2 vertices (1 upper, 1 lower) then click the button.
+        Reads Upper Vtx, Lower Vtx and Edge Loop from their dedicated fields.
+        Processes all targets selected in the Shape Editor.
         """
         targets = self._get_targets_or_warn()
         if not targets:
             return
-        bs_node, logical_index, target_name = targets[0]
-        if len(targets) > 1:
-            self._set_status(
-                f"Edge Loop Split: using first target '{target_name}' only")
 
-        sel_flat = cmds.ls(sl=True, flatten=True) or []
-        edges    = [s for s in sel_flat if ".e["   in s]
-        seeds    = [s for s in sel_flat if ".vtx[" in s]
+        upper_str = self.edit_els_upper_vtx.text().strip()
+        lower_str = self.edit_els_lower_vtx.text().strip()
+        edges_raw = self.edit_els_edges.text().strip()
 
-        if not edges:
-            self._set_status(
-                "✗ Edge Loop Split: select edge loop + 2 vertices (one per side)", error=True)
+        if not upper_str:
+            self._set_status("✗ Edge Loop Split: Upper Vtx not set — use the Get button", error=True)
             return
-        if len(seeds) < 2:
-            self._set_status(
-                f"✗ Edge Loop Split: need 2 vertices — 1 upper + 1 lower "
-                f"({len(seeds)} selected)", error=True)
+        if not lower_str:
+            self._set_status("✗ Edge Loop Split: Lower Vtx not set — use the Get button", error=True)
+            return
+        if not edges_raw:
+            self._set_status("✗ Edge Loop Split: Edge Loop not set — use the Get button", error=True)
             return
 
-        seed_a = int(seeds[0].split(".vtx[")[1].rstrip("]"))
-        seed_b = int(seeds[1].split(".vtx[")[1].rstrip("]"))
+        if ".vtx[" not in upper_str:
+            self._set_status("✗ Edge Loop Split: Upper Vtx value is not a valid vertex", error=True)
+            return
+        if ".vtx[" not in lower_str:
+            self._set_status("✗ Edge Loop Split: Lower Vtx value is not a valid vertex", error=True)
+            return
+
+        seed_upper = int(upper_str.split(".vtx[")[1].rstrip("]"))
+        seed_lower = int(lower_str.split(".vtx[")[1].rstrip("]"))
+
+        # Parse edges list — stored as Python list repr: "['mesh.e[0]', 'mesh.e[1]']"
+        try:
+            import ast
+            edges = ast.literal_eval(edges_raw)
+            if not isinstance(edges, list):
+                raise ValueError("not a list")
+        except Exception:
+            self._set_status("✗ Edge Loop Split: Edge Loop field is malformed — re-capture with Get", error=True)
+            return
 
         seam_edges = set()
         seam_vis   = set()
@@ -3302,25 +3841,38 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 seam_vis.add(a);  seam_vis.add(b)
                 seam_edges.add(frozenset({a, b}))
 
-        if seed_a in seam_vis or seed_b in seam_vis:
-            self._set_status("✗ Edge Loop Split: seed vertices must not be on the seam", error=True)
+        if not seam_edges:
+            self._set_status("✗ Edge Loop Split: no valid edges found — re-capture with Get", error=True)
             return
 
-        radius      = max(1, int(self.spin_radius.value())) if self.chk_radius.isChecked() else 1
-        curve_name  = self.combo_curve.currentText()
-        falloff_fn  = CURVE_FUNCTIONS.get(curve_name, linear)
+        if seed_upper in seam_vis:
+            self._set_status("✗ Edge Loop Split: Upper vertex is on the seam — pick one clearly above", error=True)
+            return
+        if seed_lower in seam_vis:
+            self._set_status("✗ Edge Loop Split: Lower vertex is on the seam — pick one clearly below", error=True)
+            return
+
+        radius     = max(1, int(self.spin_radius.value())) if self.chk_radius.isChecked() else 1
+        curve_name = self.combo_curve.currentText()
+        falloff_fn = CURVE_FUNCTIONS.get(curve_name, linear)
 
         try:
-            # Zero all blendShape weights so the original target is at 0
-            for attr in (cmds.listAttr(f"{bs_node}.w", multi=True) or []):
-                cmds.setAttr(f"{bs_node}.{attr}", 0.0)
+            # Zero all weights on each involved bs_node once
+            for bs_node in {t[0] for t in targets}:
+                for attr in (cmds.listAttr(f"{bs_node}.w", multi=True) or []):
+                    cmds.setAttr(f"{bs_node}.{attr.lstrip('.')}", 0.0)
 
-            upper_idx, lower_idx = edge_loop_split_target(
-                bs_node, logical_index, target_name,
-                seam_edges, seed_a, seed_b,
-                falloff_radius=radius, falloff_func=falloff_fn)
+            done = []
+            for bs_node, logical_index, target_name in targets:
+                edge_loop_split_target(
+                    bs_node, logical_index, target_name,
+                    seam_edges, seed_upper, seed_lower,
+                    falloff_radius=radius, falloff_func=falloff_fn)
+                done.append(target_name)
+
+            names_str = ", ".join(f"'{n}'" for n in done)
             self._set_status(
-                f"✓ Edge Loop Split : '{target_name}_upper' + '{target_name}_lower'"
+                f"✓ Edge Loop Split : {names_str}"
                 f"  (radius={radius}, curve={curve_name}, seam={len(seam_edges)} edges)")
         except Exception as e:
             import traceback
@@ -3935,13 +4487,22 @@ def show():
 
     WS_CTRL = BlendshapeEditorUI.TOOL_NAME + "WorkspaceControl"
 
-    # If the workspace control already exists just raise it
     if cmds.workspaceControl(WS_CTRL, q=True, exists=True):
-        cmds.workspaceControl(WS_CTRL, edit=True, restore=True)
-        return
+        if _win is None:
+            # Module was reloaded — stale workspaceControl, must recreate
+            try:
+                cmds.deleteUI(WS_CTRL)
+            except Exception:
+                pass
+            try:
+                cmds.workspaceControlState(WS_CTRL, remove=True)
+            except Exception:
+                pass
+        else:
+            # UI already exists (open or retained/closed) — just raise it
+            # retain=True means Maya remembers position automatically
+            cmds.workspaceControl(WS_CTRL, e=True, restore=True)
+            return
 
     _win = BlendshapeEditorUI()
-    _win.show(dockable=True, floating=True, retain=False)
-
-
-show()
+    _win.show(dockable=True, floating=True, retain=True)

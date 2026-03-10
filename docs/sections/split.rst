@@ -25,8 +25,9 @@ The table on the left lists every locator used in the split.
      - Short name of the locator (full path stored internally).
    * - **Side**
      - When Symmetric OFF
-     - Side token (``R`` / ``L`` / ``M``) used in the generated name.
+     - Side token (``R`` / ``C`` / ``L``) used in the generated name.
        Auto-filled and locked when Symmetric is ON.
+       Side tokens are configurable in **Naming Convention → Sides**.
    * - **Suffix**
      - When Symmetric OFF
      - Directional suffix (e.g. ``in``, ``out``, ``mid``).
@@ -102,7 +103,9 @@ Defines the projection direction used to compute influence weights.
 
     - 1 locator → single bilateral target
     - 2 locators → R / L
-    - 3 locators → R / M / L
+    - 3 locators → R / C / L
+
+  Side tokens (R, C, L) can be customised in **Naming Convention → Sides**.
 
 ----
 
@@ -150,6 +153,7 @@ Split Target
 
   - Works on all targets selected in the Shape Editor.
   - Target names follow the token order configured in **Nomenclature**.
+  - Split letter suffix is always placed last (e.g. ``L_brow_up_a``).
 
 ----
 
@@ -157,12 +161,56 @@ Edge Loop Split
 ---------------
 
 **Edge Loop Split** button
-  Specialised split driven by a selected edge loop rather than locators.
+  Splits each selected target into two weighted halves along a stored
+  edge loop. Creates ``<target>_upper`` and ``<target>_lower`` targets.
+  The original target is preserved unchanged.
 
-  1. Select an edge loop on the mesh.
-  2. Select the target(s) in the Shape Editor.
-  3. Click **Edge Loop Split**.
+  Unlike the standard split, Edge Loop Split does not use locators.
+  Instead, three persistent fields must be filled before running:
 
-  The falloff is centred on the selected edges, with the same curve
-  options as the standard split. A smoothing pass is applied to the
-  resulting delta field.
+  1. **Upper Vtx** — a vertex clearly on the upper side of the seam.
+  2. **Lower Vtx** — a vertex clearly on the lower side of the seam.
+  3. **Edgeloop** — the edges forming the split boundary.
+
+  These fields are stored persistently within the session. Fill them
+  once, then run the split on as many targets as needed.
+
+Edge Loop Options
+^^^^^^^^^^^^^^^^^
+
+Click **Edge Loop Options** (the disclosure row below the button) to
+expand or collapse the three setup fields.
+
+.. list-table::
+   :widths: 25 75
+   :header-rows: 1
+
+   * - Field
+     - Description
+   * - **Vertices — Upper / Lower**
+       *(read-only)*
+     - Stores one vertex per side. Select a vertex in the viewport and
+       click **Get** to capture it. The vertex must not lie on the seam
+       edge loop itself.
+   * - **Edgeloop** *(read-only)*
+     - Stores the seam edge loop. Select the edges in the viewport and
+       click **Get** to capture them.
+
+**Workflow**
+
+1. Expand **Edge Loop Options**.
+2. Select a vertex on the upper side → click **Get** next to *Upper*.
+3. Select a vertex on the lower side → click **Get** next to *Lower*.
+4. Select the edge loop → click **Get** next to *Edgeloop*.
+5. Select the target(s) in the Shape Editor.
+6. Click **Edge Loop Split**.
+
+**Falloff**
+
+The same **Radius** and **Curve** settings as the standard split apply.
+Radius controls the falloff width around the seam edges (default: 1 hop).
+Enable and increase the Radius for a softer transition.
+
+.. note::
+   Seed vertices must not lie on the seam edge loop. If a seed is on
+   the seam, the operation raises an error with a clear message.

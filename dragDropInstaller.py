@@ -124,8 +124,6 @@ def _add_to_shelf():
 
     command = (
         f"import {TOOL_NAME}\n"
-        f"import importlib\n"
-        f"importlib.reload({TOOL_NAME})\n"
         f"{TOOL_NAME}.show()"
     )
 

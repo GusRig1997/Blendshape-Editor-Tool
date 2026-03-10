@@ -1185,8 +1185,24 @@ def create_delta_joint(bs_node, logical_index, target_name):
     return grp, posed_mesh, deform_jnt, zero_jnt
 
 
+import re as _re
+
+_SIDE_PREFIX_RE = _re.compile(r'^(L|R|C|M)_(.+)$')
+
+def _els_name(target_name, side):
+    """Return the edge-loop-split name for one side ('upper' or 'lower').
+    Inserts the side label after the side prefix if present, otherwise prepends it.
+      brow_up      -> upper_brow_up  / lower_brow_up
+      L_brow_up    -> L_upper_brow_up / L_lower_brow_up
+    """
+    m = _SIDE_PREFIX_RE.match(target_name)
+    if m:
+        return f"{m.group(1)}_{side}_{m.group(2)}"
+    return f"{side}_{target_name}"
+
+
 def edge_loop_split_target(bs_node, logical_index, target_name,
-                            seam_edges, seed_a, seed_b, falloff_radius=1,
+                            seam_edges, seed_upper, seed_lower, falloff_radius=1,
                             falloff_func=None):
     """
     Splits a blendShape target into two along a partial or full edge loop.
@@ -1199,8 +1215,8 @@ def edge_loop_split_target(bs_node, logical_index, target_name,
 
     Algorithm:
       1. Build LOCAL adjacency (delta_vis + seam_vis), seam edges removed
-      2. BFS from seed_a blocked by seam_vis  → reachable_a + distances_a
-      3. BFS from seed_b blocked by seam_vis  → reachable_b + distances_b
+      2. BFS from seed_upper blocked by seam_vis  → reachable_upper + distances_upper
+      3. BFS from seed_lower blocked by seam_vis  → reachable_lower + distances_lower
       4. Assign each delta vertex to the closer seed (by BFS distance)
       5. Seam vertices → 0.5 / 0.5 blend
       6. Falloff: weight ramps from 0.5 at seam to 1.0 at falloff_radius hops
@@ -1208,8 +1224,8 @@ def edge_loop_split_target(bs_node, logical_index, target_name,
     Parameters
     ----------
     seam_edges     : set of frozenset({a, b}) — selected edges as vertex pairs
-    seed_a         : int — vertex on the UPPER side
-    seed_b         : int — vertex on the LOWER side
+    seed_upper     : int — vertex on the UPPER side
+    seed_lower     : int — vertex on the LOWER side
     falloff_radius : int — topological falloff distance in hops (default 1)
     falloff_func   : callable(t) -> w, t in [0,1]. Defaults to linear.
                      Pass one of CURVE_FUNCTIONS values for custom shaping.
@@ -1230,12 +1246,12 @@ def edge_loop_split_target(bs_node, logical_index, target_name,
         seam_vis.update(e)
 
     # ── Validate seeds ─────────────────────────────────────────────────────
-    if seed_a in seam_vis:
+    if seed_upper in seam_vis:
         raise RuntimeError(
-            f"Seed A (vtx[{seed_a}]) is on the seam — pick a vertex clearly on the upper side.")
-    if seed_b in seam_vis:
+            f"Upper seed (vtx[{seed_upper}]) is on the seam — pick a vertex clearly on the upper side.")
+    if seed_lower in seam_vis:
         raise RuntimeError(
-            f"Seed B (vtx[{seed_b}]) is on the seam — pick a vertex clearly on the lower side.")
+            f"Lower seed (vtx[{seed_lower}]) is on the seam — pick a vertex clearly on the lower side.")
 
     # ── Read source deltas ─────────────────────────────────────────────────
     deltas    = get_target_deltas(bs_node, logical_index)
@@ -1243,8 +1259,8 @@ def edge_loop_split_target(bs_node, logical_index, target_name,
 
     # ── Local active region ────────────────────────────────────────────────
     active_vis = delta_vis | seam_vis
-    active_vis.add(seed_a)
-    active_vis.add(seed_b)
+    active_vis.add(seed_upper)
+    active_vis.add(seed_lower)
 
     # ── Build local adjacency — seam edges removed ─────────────────────────
     om_sel = om.MSelectionList()
@@ -1275,40 +1291,40 @@ def edge_loop_split_target(bs_node, logical_index, target_name,
                     q.append(nb)
         return dist
 
-    dist_from_a = _bfs_dist_from_seed(seed_a, seam_vis)
-    dist_from_b = _bfs_dist_from_seed(seed_b, seam_vis)
+    dist_from_upper = _bfs_dist_from_seed(seed_upper, seam_vis)
+    dist_from_lower = _bfs_dist_from_seed(seed_lower, seam_vis)
 
     # ── Side assignment ────────────────────────────────────────────────────
     # Each vertex goes to whichever seed is topologically closer.
     # Seam vertices stay at 0.5 / 0.5.
-    # Unreachable from either seed → default side A (edge case: isolated island)
-    side_a = set()
-    side_b = set()
+    # Unreachable from either seed → default side upper (edge case: isolated island)
+    side_upper = set()
+    side_lower = set()
     for vi in active_vis - seam_vis:
-        da = dist_from_a.get(vi, None)
-        db = dist_from_b.get(vi, None)
-        if da is not None and db is not None:
-            if da <= db:
-                side_a.add(vi)
+        du = dist_from_upper.get(vi, None)
+        dl = dist_from_lower.get(vi, None)
+        if du is not None and dl is not None:
+            if du <= dl:
+                side_upper.add(vi)
             else:
-                side_b.add(vi)
-        elif da is not None:
-            side_a.add(vi)
-        elif db is not None:
-            side_b.add(vi)
+                side_lower.add(vi)
+        elif du is not None:
+            side_upper.add(vi)
+        elif dl is not None:
+            side_lower.add(vi)
         else:
-            side_a.add(vi)  # isolated — default to A
+            side_upper.add(vi)  # isolated — default to upper
 
-    d_a = delta_vis & side_a
-    d_b = delta_vis & side_b
+    d_upper = delta_vis & side_upper
+    d_lower = delta_vis & side_lower
     d_s = delta_vis & seam_vis
     print(f"  Edge Loop Split — seam:{len(seam_vis)} vtx  "
-          f"delta A:{len(d_a)}  delta B:{len(d_b)}  delta seam:{len(d_s)}")
+          f"delta upper:{len(d_upper)}  delta lower:{len(d_lower)}  delta seam:{len(d_s)}")
 
-    if not d_a:
-        cmds.warning("Side A (upper) has no delta vertices — check seed_a position.")
-    if not d_b:
-        cmds.warning("Side B (lower) has no delta vertices — check seed_b position.")
+    if not d_upper:
+        cmds.warning("Upper side has no delta vertices — check seed_upper position.")
+    if not d_lower:
+        cmds.warning("Lower side has no delta vertices — check seed_lower position.")
 
     # ── Falloff weights from seam ──────────────────────────────────────────
     # BFS from seam outward on each side, respecting the local adjacency
@@ -1325,8 +1341,8 @@ def edge_loop_split_target(bs_node, logical_index, target_name,
                     q.append(nb)
         return dist
 
-    dist_seam_a = _bfs_dist_from_seam(side_b, falloff_radius)
-    dist_seam_b = _bfs_dist_from_seam(side_a, falloff_radius)
+    dist_seam_upper = _bfs_dist_from_seam(side_lower, falloff_radius)
+    dist_seam_lower = _bfs_dist_from_seam(side_upper, falloff_radius)
 
     # Resolve falloff function — default to linear if not provided
     _falloff = falloff_func if falloff_func is not None else linear
@@ -1337,20 +1353,20 @@ def edge_loop_split_target(bs_node, logical_index, target_name,
         t = min(1.0, dist / falloff_radius)
         return 0.5 + 0.5 * _falloff(t)
 
-    # ── Per-vertex weights (weight_A + weight_B == 1.0 always) ───────────
-    weight_a = {}
-    weight_b = {}
+    # ── Per-vertex weights (weight_upper + weight_lower == 1.0 always) ───────────
+    weight_upper = {}
+    weight_lower = {}
     for vi in delta_vis:
         if vi in seam_vis:
-            weight_a[vi] = 0.5;  weight_b[vi] = 0.5
-        elif vi in side_a:
-            wa = _w(dist_seam_a.get(vi, falloff_radius))
-            weight_a[vi] = wa;   weight_b[vi] = 1.0 - wa
-        elif vi in side_b:
-            wb = _w(dist_seam_b.get(vi, falloff_radius))
-            weight_b[vi] = wb;   weight_a[vi] = 1.0 - wb
+            weight_upper[vi] = 0.5;  weight_lower[vi] = 0.5
+        elif vi in side_upper:
+            wu = _w(dist_seam_upper.get(vi, falloff_radius))
+            weight_upper[vi] = wu;   weight_lower[vi] = 1.0 - wu
+        elif vi in side_lower:
+            wl = _w(dist_seam_lower.get(vi, falloff_radius))
+            weight_lower[vi] = wl;   weight_upper[vi] = 1.0 - wl
         else:
-            weight_a[vi] = 1.0;  weight_b[vi] = 0.0
+            weight_upper[vi] = 1.0;  weight_lower[vi] = 0.0
 
     # ── Duplicate + write weighted deltas ──────────────────────────────────
     def _write_weighted_target(new_name, weight_map):
@@ -1370,8 +1386,8 @@ def edge_loop_split_target(bs_node, logical_index, target_name,
         print(f"  ✓ Created : {new_name}")
         return idx
 
-    upper_idx = _write_weighted_target(f"{target_name}_upper", weight_a)
-    lower_idx = _write_weighted_target(f"{target_name}_lower", weight_b)
+    upper_idx = _write_weighted_target(_els_name(target_name, "upper"), weight_upper)
+    lower_idx = _write_weighted_target(_els_name(target_name, "lower"), weight_lower)
     return upper_idx, lower_idx
 
 
