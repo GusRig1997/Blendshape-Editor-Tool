@@ -1,0 +1,64 @@
+{
+    "lips_splits": [
+        "C_upper_lip_up", "C_upper_lip_dn", "C_upper_lip_in", "C_upper_lip_out",
+        "C_lower_lip_up", "C_lower_lip_dn", "C_lower_lip_in", "C_lower_lip_out",
+        "L_upper_lip_up_a", "L_upper_lip_dn_a", "L_upper_lip_in_a", "L_upper_lip_out_a",
+        "L_upper_lip_up_b", "L_upper_lip_dn_b", "L_upper_lip_in_b", "L_upper_lip_out_b",
+        "R_upper_lip_up_a", "R_upper_lip_dn_a", "R_upper_lip_in_a", "R_upper_lip_out_a",
+        "R_upper_lip_up_b", "R_upper_lip_dn_b", "R_upper_lip_in_b", "R_upper_lip_out_b",
+        "L_lower_lip_up_a", "L_lower_lip_dn_a", "L_lower_lip_in_a", "L_lower_lip_out_a",
+        "L_lower_lip_up_b", "L_lower_lip_dn_b", "L_lower_lip_in_b", "L_lower_lip_out_b",
+        "R_lower_lip_up_a", "R_lower_lip_dn_a", "R_lower_lip_in_a", "R_lower_lip_out_a",
+        "R_lower_lip_up_b", "R_lower_lip_dn_b", "R_lower_lip_in_b", "R_lower_lip_out_b"
+    ],
+    "lips_puffs": [
+        "L_upper_lip_puff_in", "L_upper_lip_puff_out",
+        "R_upper_lip_puff_in", "R_upper_lip_puff_out",
+        "L_lower_lip_puff_in", "L_lower_lip_puff_out",
+        "R_lower_lip_puff_in", "R_lower_lip_puff_out"
+    ],
+    "lips_curls": [
+        "L_upper_lip_curl_in", "R_upper_lip_curl_in",
+        "L_upper_lip_curl_out", "R_upper_lip_curl_out",
+        "L_lower_lip_curl_in", "R_lower_lip_curl_in",
+        "L_lower_lip_curl_out", "R_lower_lip_curl_out"
+    ],
+    "jaw": [
+        "C_jaw_in", "C_jaw_out", "C_jaw_up", "C_jaw_dn", "C_jaw_lft", "C_jaw_rgt"
+    ],
+    "mouth": [
+        "C_mouth_up", "C_mouth_dn", "C_mouth_lft", "C_mouth_rgt",
+        "C_mouth_rot_pos", "C_mouth_rot_neg"
+    ],
+    "mouth_corners": [
+        "L_mouth_corner_in", "L_mouth_corner_out",
+        "L_mouth_corner_up", "L_mouth_corner_dn",
+        "R_mouth_corner_in", "R_mouth_corner_out",
+        "R_mouth_corner_up", "R_mouth_corner_dn"
+    ],
+    "cheekbones": [
+        "L_cheekbone_up", "R_cheekbone_up",
+        "L_cheekbone_up_a", "L_cheekbone_up_b", "L_cheekbone_up_c",
+        "R_cheekbone_up_a", "R_cheekbone_up_b", "R_cheekbone_up_c",
+        "L_cheekbone_dn", "R_cheekbone_dn",
+        "L_cheekbone_dn_a", "L_cheekbone_dn_b", "L_cheekbone_dn_c",
+        "R_cheekbone_dn_a", "R_cheekbone_dn_b", "R_cheekbone_dn_c",
+        "L_cheekbone_out", "R_cheekbone_out"
+    ],
+    "cheeks": [
+        "L_cheek_in", "L_cheek_out", "R_cheek_in", "R_cheek_out"
+    ],
+    "brows": [
+        "L_brow_up", "L_brow_dn", "L_brow_in",
+        "R_brow_up", "R_brow_dn", "R_brow_in"
+    ],
+    "brows_splits": [
+        "L_brow_up_a", "L_brow_up_b", "L_brow_up_c", "L_brow_up_d", "L_brow_up_e",
+        "R_brow_up_a", "R_brow_up_b", "R_brow_up_c", "R_brow_up_d", "R_brow_up_e",
+        "L_brow_dn_a", "L_brow_dn_b", "L_brow_dn_c", "L_brow_dn_d", "L_brow_dn_e",
+        "R_brow_dn_a", "R_brow_dn_b", "R_brow_dn_c", "R_brow_dn_d", "R_brow_dn_e"
+    ],
+    "neck": [
+        "L_neck_a", "R_neck_a", "L_neck_b", "R_neck_b"
+    ]
+}
