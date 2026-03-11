@@ -4,7 +4,7 @@ import sys
 project   = "Blendshape Editor Tool"
 copyright = "2026"
 author    = ""
-release   = "v.03.003"
+release   = "v.04.00"
 
 extensions = [
     "sphinx.ext.autosectionlabel",

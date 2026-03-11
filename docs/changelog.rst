@@ -1,8 +1,8 @@
 Changelog
 =========
 
-v.03.006 *(in progress)*
-------------------------
+v.04.00
+-------
 
 **Edge Loop Split — persistent setup fields**
 

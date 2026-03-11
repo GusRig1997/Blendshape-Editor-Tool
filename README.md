@@ -40,12 +40,20 @@ curve-based lip/mouth wire rig.
 
 See [versions.md](versions.md) for the full changelog.
 
-**v.03.003** *(in progress)*
+**v.04.00**
+- Edge Loop Split with persistent setup fields (Upper Vtx / Lower Vtx / Edgeloop)
+- Center side token renamed M_ → C_ throughout
+- Check Shapes: external JSON + File menu + Match Existing to List
+- Naming Convention: configurable Left / Center / Right side tokens
+- Actions section open by default; topology Edge field moved to top
+- Maya Tools Shelf row 2: Relax / Pinch / Amplify + Reset All Targets to 0
+- Bake Deformers button (Actions section)
+- Fixed scroll jump on section toggle; UI position preserved across sessions
+
+**v.03.003**
 - Naming Convention dialog + Rename Targets tools
 - Wire Setup (Create + Bake, configurable Spans / Flat Curve / Dropoff)
 - Add Target right-click menu (Empty / From Selection / Corrective)
-- Two-state collapsible sections (open ↔ closed, no intermediate compact state)
-- Documentation button in Edit menu
 
 **v.03.002**
 - Dockable UI via MayaQWidgetDockableMixin
