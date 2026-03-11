@@ -1064,7 +1064,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
 class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     TOOL_NAME = "BlendshapeEditorUI"
-    VERSION   = "v.03.003"
+    VERSION   = "v.04.00"
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -2645,7 +2645,6 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         final_h    = max(content_h, self._loc_grid_h)
         self.table.setMinimumHeight(final_h)
         self.table.setMaximumHeight(final_h)
-        QtCore.QTimer.singleShot(0, self.adjustSize)
 
     def _on_radius_enabled(self, state):
         """Enable/disable radius slider+spin when checkbox is toggled."""
@@ -3579,7 +3578,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
                 # Zero all blendShape weights once before the split loop
                 for idx in (cmds.getAttr(f"{bs_node}.w", multiIndices=True) or []):
-                    cmds.setAttr(f"{bs_node}.w[{idx}]", 0.0)
+                    try_set_weight(bs_node, idx, 0.0)
 
                 # Build the list of (loc_idx, final_name) pairs to create
                 if symmetric:

@@ -476,52 +476,129 @@ def prune_small_deltas(bs_node, logical_index, tolerance):
     return len(to_zero)
 
 
+def _read_tweak_node(tweak_node):
+    """
+    Returns {vertex_index: (x, y, z)} for all non-zero entries in a Maya tweak node.
+    Uses OpenMaya to iterate the vlist[0].vertex multi-compound reliably,
+    since cmds.getAttr with multiIndices=True does not work on nested compounds.
+    """
+    from maya.api import OpenMaya as om
+    tweaks = {}
+    sel = om.MSelectionList()
+    sel.add(tweak_node)
+    dep = sel.getDependNode(0)
+    fn = om.MFnDependencyNode(dep)
+    vlist_plug = fn.findPlug("vlist", False)
+    if vlist_plug.numElements() == 0:
+        return tweaks
+    vlist0 = vlist_plug.elementByLogicalIndex(0)
+    # child(0) of vlist element is the 'vertex' compound array
+    vertex_plug = vlist0.child(0)
+    for i in range(vertex_plug.numElements()):
+        elem = vertex_plug.elementByPhysicalIndex(i)
+        logical_idx = elem.logicalIndex()
+        x = elem.child(0).asFloat()  # xVertex
+        y = elem.child(1).asFloat()  # yVertex
+        z = elem.child(2).asFloat()  # zVertex
+        if abs(x) > 1e-6 or abs(y) > 1e-6 or abs(z) > 1e-6:
+            tweaks[logical_idx] = (x, y, z)
+    return tweaks
+
+
 def apply_mesh_moves_to_target(bs_node, base_mesh, logical_index):
     """
-    Reads vertex tweaks (pnts[]) from the base mesh's output shape,
-    adds them to the blendShape target at logical_index, then zeros
-    out the tweaks on the mesh.
+    Absorbs vertex moves (tweak node or pnts[]) from the base mesh into the
+    blendShape target at logical_index, then removes those moves.
 
-    Intended for the case where the user sculpted the mesh directly
-    (without entering blendShape edit mode) and wants to recover
-    those edits into the target without losing work.
+    Replicates the Maya Shape Editor "Rebuild" workflow:
+      1. sculptTarget(regenerate=True) → regen mesh live with stored target deltas.
+      2. Sample current output positions (tweaks included) - rest positions,
+         write the result into the regen mesh pnts[].
+      3. Delete the tweak node (or zero pnts[]) to clean the base mesh.
+      4. Delete the regen mesh → Maya commits the pnts[] back to the target.
 
     Returns the number of vertices affected.
     """
-    # 1. Get the output shape of the base mesh
-    shapes = cmds.listRelatives(base_mesh, shapes=True, noIntermediate=True) or []
-    if not shapes:
-        raise RuntimeError(f"No output shape found on '{base_mesh}'")
-    mesh_shape = shapes[0]
+    from maya.api import OpenMaya as om
 
-    # 2. Collect non-zero tweaks from the mesh's pnts[]
-    pnt_indices = cmds.getAttr(f"{mesh_shape}.pnts", multiIndices=True) or []
-    tweaks = {}
-    for i in pnt_indices:
-        val = cmds.getAttr(f"{mesh_shape}.pnts[{i}]")[0]
-        if any(abs(v) > 1e-6 for v in val):
-            tweaks[i] = val
+    # 1. Identify output shape (with tweaks) and intermediate shape (rest pose)
+    all_shapes   = cmds.listRelatives(base_mesh, shapes=True) or []
+    output_shape = next((s for s in all_shapes
+                         if not cmds.getAttr(f"{s}.intermediateObject")), None)
+    rest_shape   = next((s for s in all_shapes
+                         if cmds.getAttr(f"{s}.intermediateObject")), None)
+    if not output_shape or not rest_shape:
+        raise RuntimeError(f"Could not find output/rest shapes on '{base_mesh}'.")
 
-    if not tweaks:
-        raise RuntimeError("No vertex moves found on the mesh (pnts[] are all zero).")
+    # 2. Detect tweak source
+    history     = cmds.listHistory(output_shape, pruneDagObjects=True) or []
+    tweak_nodes = cmds.ls(history, type="tweak") or []
+    pnt_indices = cmds.getAttr(f"{output_shape}.pnts", multiIndices=True) or []
+    tweak_node  = tweak_nodes[0] if tweak_nodes else None
 
-    # 3. Get existing target deltas
-    original_deltas = get_target_deltas(bs_node, logical_index)
+    if not tweak_node and not pnt_indices:
+        raise RuntimeError("No vertex moves found on the mesh.")
 
-    # 4. Compute new deltas = existing + tweaks
-    new_deltas = dict(original_deltas)
-    for vi, (dx, dy, dz) in tweaks.items():
-        ox, oy, oz = original_deltas.get(vi, (0.0, 0.0, 0.0))
-        new_deltas[vi] = (ox + dx, oy + dy, oz + dz)
+    # 3. Sample current positions via OpenMaya (output has tweaks, rest has none)
+    sel = om.MSelectionList()
+    sel.add(output_shape)
+    sel.add(rest_shape)
+    deformed_pts = om.MFnMesh(sel.getDagPath(0)).getPoints(om.MSpace.kObject)
+    rest_pts     = om.MFnMesh(sel.getDagPath(1)).getPoints(om.MSpace.kObject)
 
-    # 5. Write back via _bake_deltas (handles live regen mesh or creates one)
-    _bake_deltas(bs_node, logical_index, new_deltas, original_deltas)
+    new_deltas = {}
+    for vi in range(len(deformed_pts)):
+        dx = deformed_pts[vi].x - rest_pts[vi].x
+        dy = deformed_pts[vi].y - rest_pts[vi].y
+        dz = deformed_pts[vi].z - rest_pts[vi].z
+        if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
+            new_deltas[vi] = (dx, dy, dz)
 
-    # 6. Zero out the tweaks on the source mesh
-    for i in pnt_indices:
-        cmds.setAttr(f"{mesh_shape}.pnts[{i}]", 0, 0, 0, type="float3")
+    if not new_deltas:
+        raise RuntimeError("No vertex differences found between output and rest pose.")
 
-    return len(tweaks)
+    # 4. Create regen mesh, overwrite its pnts[] with new_deltas, then commit
+    saved = _save_shape_editor_selection()
+    try:
+        tgt_transform = cmds.sculptTarget(bs_node, e=True,
+                                          target=logical_index, regenerate=True)
+        if not tgt_transform:
+            raise RuntimeError(f"sculptTarget returned None for {bs_node}[{logical_index}]")
+        if not isinstance(tgt_transform, str):
+            tgt_transform = tgt_transform[0]
+
+        regen_shapes = cmds.listRelatives(tgt_transform, shapes=True) or []
+        if not regen_shapes:
+            cmds.delete(tgt_transform)
+            raise RuntimeError("No shape found on regen mesh.")
+        regen_shape = regen_shapes[0]
+
+        # Zero any existing pnts[] that are no longer needed
+        existing_idx = cmds.getAttr(f"{regen_shape}.pnts", multiIndices=True) or []
+        for vi in existing_idx:
+            if vi not in new_deltas:
+                cmds.setAttr(f"{regen_shape}.pnts[{vi}]", 0, 0, 0, type="float3")
+
+        # Write new deltas
+        for vi, (dx, dy, dz) in new_deltas.items():
+            cmds.setAttr(f"{regen_shape}.pnts[{vi}].pntx", dx)
+            cmds.setAttr(f"{regen_shape}.pnts[{vi}].pnty", dy)
+            cmds.setAttr(f"{regen_shape}.pnts[{vi}].pntz", dz)
+
+        # 5. Remove tweak source
+        if tweak_node:
+            cmds.delete(tweak_node)
+        else:
+            for i in pnt_indices:
+                cmds.setAttr(f"{output_shape}.pnts[{i}]", 0, 0, 0, type="float3")
+
+        # 6. Commit: deleting the regen mesh writes pnts[] back to the blendShape
+        cmds.delete(tgt_transform)
+
+    finally:
+        _restore_shape_editor_selection(saved)
+
+    return len(new_deltas)
 
 
 def bake_deformers_to_targets(bs_node, base_mesh, logical_indices):
@@ -559,7 +636,7 @@ def bake_deformers_to_targets(bs_node, base_mesh, logical_indices):
     try:
         # All targets off → neutral pose (deformers still active)
         for i in all_indices:
-            cmds.setAttr(f"{bs_node}.w[{i}]", 0.0)
+            try_set_weight(bs_node, i, 0.0)
         cmds.dgeval(f"{mesh_shape}.worldMesh[0]")
         neutral_pts = _sample_positions()
 
@@ -567,10 +644,10 @@ def bake_deformers_to_targets(bs_node, base_mesh, logical_indices):
         count = 0
 
         for idx in logical_indices:
-            cmds.setAttr(f"{bs_node}.w[{idx}]", 1.0)
+            try_set_weight(bs_node, idx, 1.0)
             cmds.dgeval(f"{mesh_shape}.worldMesh[0]")
             baked_pts = _sample_positions()
-            cmds.setAttr(f"{bs_node}.w[{idx}]", 0.0)
+            try_set_weight(bs_node, idx, 0.0)
 
             new_deltas = {}
             for vi in range(len(neutral_pts)):
@@ -593,7 +670,7 @@ def bake_deformers_to_targets(bs_node, base_mesh, logical_indices):
 
     finally:
         for i, w in saved_weights.items():
-            cmds.setAttr(f"{bs_node}.w[{i}]", w)
+            try_set_weight(bs_node, i, w)
 
 
 def _insert_indices_after(bs_node, source_index, new_indices, source_is_directory=False):
@@ -627,12 +704,26 @@ def _insert_indices_after(bs_node, source_index, new_indices, source_is_director
 
     return False
 
+def try_set_weight(bs_node, idx, value):
+    """
+    Sets bs_node.w[idx] to value.
+    Silently skips if the attribute is locked or has an incoming connection
+    (e.g. combination targets driven by a SDK or expression).
+    Returns True if the value was set, False if skipped.
+    """
+    attr = f"{bs_node}.w[{idx}]"
+    if cmds.getAttr(attr, lock=True):
+        return False
+    if cmds.listConnections(attr, source=True, destination=False, plugs=False):
+        return False
+    cmds.setAttr(attr, value)
+    return True
+
+
 def reset_all_target_weights(bs_node):
-    """Sets every target weight on bs_node to 0.0. Returns the number of weights reset."""
+    """Sets every target weight on bs_node to 0.0. Skips connected/locked attrs. Returns the number of weights reset."""
     indices = cmds.getAttr(f"{bs_node}.weight", multiIndices=True) or []
-    for i in indices:
-        cmds.setAttr(f"{bs_node}.w[{i}]", 0.0)
-    return len(indices)
+    return sum(1 for i in indices if try_set_weight(bs_node, i, 0.0))
 
 
 def purge_empty_bs_slots(bs_node):
