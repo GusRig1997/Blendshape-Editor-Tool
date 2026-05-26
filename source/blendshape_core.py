@@ -391,8 +391,9 @@ def _get_regen_mesh(bs_node, logical_index):
                        In that case do NOT delete the mesh — it belongs to the user's
                        sculpt session.  Changes written to pnts[] propagate immediately.
 
-    This avoids the crash where sculptTarget(regenerate=True) returns None because the
-    target is already live.
+    Raises RuntimeError with a specific message for the two known failure modes:
+      - The regen mesh is already live (connected) for this target.
+      - A scene node with the same name as the target already exists (name collision).
     """
     geom_plug  = (f"{bs_node}.inputTarget[0]"
                   f".inputTargetGroup[{logical_index}]"
@@ -403,18 +404,33 @@ def _get_regen_mesh(bs_node, logical_index):
         # Regen mesh is already live — use it directly, do not delete it.
         return geom_conns[0], None, True
 
+    # Detect name collision before attempting regenerate.
+    # sculptTarget names the regen mesh after the target alias.
+    target_alias = cmds.aliasAttr(f"{bs_node}.w[{logical_index}]", q=True) or f"target_{logical_index}"
+    if cmds.objExists(target_alias):
+        raise RuntimeError(
+            f"Cannot regenerate target '{target_alias}': a node named '{target_alias}' "
+            f"already exists in the scene. Rename or delete it before using this tool.")
+
     tgt_transform = cmds.sculptTarget(bs_node, e=True, target=logical_index, regenerate=True)
     if not tgt_transform:
-        cmds.error(
-            f"sculptTarget returned None for {bs_node}[{logical_index}] "
-            f"and the geomTarget plug has no connection — cannot proceed.")
+        # Re-check in case it became connected during the call
+        geom_conns = cmds.listConnections(geom_plug, source=True, destination=False)
+        if geom_conns:
+            raise RuntimeError(
+                f"Target '{target_alias}' regen mesh is already connected to the blendShape. "
+                f"Exit sculpt mode or delete the existing regen mesh before using this tool.")
+        raise RuntimeError(
+            f"Could not regenerate target '{target_alias}' ({bs_node}[{logical_index}]). "
+            f"Make sure no other node named '{target_alias}' exists in the scene.")
     if not isinstance(tgt_transform, str):
         tgt_transform = tgt_transform[0]
 
     geom_conns = cmds.listConnections(geom_plug, source=True, destination=False)
     if not geom_conns:
-        cmds.error(f"_get_regen_mesh: no geomTarget connection after regenerate "
-                   f"for {bs_node}[{logical_index}]")
+        raise RuntimeError(
+            f"Regenerate succeeded for '{target_alias}' but no geometry connection was "
+            f"established on {geom_plug}. The blendShape node may be in an unexpected state.")
     return geom_conns[0], tgt_transform, False
 
 
@@ -458,22 +474,33 @@ def select_delta_vertices(bs_node, logical_index):
 def prune_small_deltas(bs_node, logical_index, tolerance):
     """
     Zeros out any delta whose Euclidean magnitude is strictly below `tolerance`.
+    Uses a single regen mesh for both read and write (one undo step).
     Returns the number of vertices pruned.
     """
-    import math
-    deltas = get_target_deltas(bs_node, logical_index)
-    if not deltas:
-        return 0
+    saved = _save_shape_editor_selection()
+    count = 0
+    try:
+        mesh_shape, tgt_transform, was_live = _get_regen_mesh(bs_node, logical_index)
 
-    to_zero = {vi: (0.0, 0.0, 0.0)
-               for vi, (dx, dy, dz) in deltas.items()
-               if math.sqrt(dx*dx + dy*dy + dz*dz) < tolerance}
+        n_verts = cmds.polyEvaluate(mesh_shape, vertex=True)
+        for i in range(n_verts):
+            dx = cmds.getAttr(f"{mesh_shape}.pnts[{i}].pntx")
+            dy = cmds.getAttr(f"{mesh_shape}.pnts[{i}].pnty")
+            dz = cmds.getAttr(f"{mesh_shape}.pnts[{i}].pntz")
+            if abs(dx) < 1e-6 and abs(dy) < 1e-6 and abs(dz) < 1e-6:
+                continue
+            if math.sqrt(dx*dx + dy*dy + dz*dz) < tolerance:
+                cmds.setAttr(f"{mesh_shape}.pnts[{i}].pntx", 0.0)
+                cmds.setAttr(f"{mesh_shape}.pnts[{i}].pnty", 0.0)
+                cmds.setAttr(f"{mesh_shape}.pnts[{i}].pntz", 0.0)
+                count += 1
 
-    if not to_zero:
-        return 0
+        if not was_live:
+            cmds.delete(tgt_transform)
+    finally:
+        _restore_shape_editor_selection(saved)
 
-    _bake_deltas(bs_node, logical_index, to_zero, deltas)
-    return len(to_zero)
+    return count
 
 
 def _read_tweak_node(tweak_node):
@@ -1184,44 +1211,201 @@ def relax_target_deltas(bs_node, logical_index, opacity, vtx_indices=None):
     Zero-delta neighbours contribute (0, 0, 0), so the boundary of the displaced
     region is naturally attenuated toward the base shape.
 
+    Uses a single regen mesh for both read and write (one undo step).
+
     opacity     : 0.0–1.0  blend weight between original and one relaxed pass.
     vtx_indices : optional list of ints to restrict the operation.
     """
-    deltas = get_target_deltas(bs_node, logical_index)
-    if not deltas:
-        return
-
     base_mesh = get_base_mesh(bs_node)
     adj       = _build_adjacency(base_mesh)
 
-    vtx_set = set(vtx_indices) if vtx_indices is not None else set(deltas.keys())
+    saved = _save_shape_editor_selection()
+    try:
+        mesh_shape, tgt_transform, was_live = _get_regen_mesh(bs_node, logical_index)
 
-    # One Laplacian pass in delta-vector space
-    snapshot = dict(deltas)
-    relaxed  = dict(deltas)
-    for vi in vtx_set:
-        nbrs = adj.get(vi, [])
-        if not nbrs:
-            continue
-        sx = sy = sz = 0.0
-        for nb in nbrs:
-            d = snapshot.get(nb, (0.0, 0.0, 0.0))
-            sx += d[0]; sy += d[1]; sz += d[2]
-        n = len(nbrs)
-        relaxed[vi] = (sx / n, sy / n, sz / n)
+        # Read all deltas directly from pnts[]
+        n_verts = cmds.polyEvaluate(mesh_shape, vertex=True)
+        deltas  = {}
+        for i in range(n_verts):
+            dx = cmds.getAttr(f"{mesh_shape}.pnts[{i}].pntx")
+            dy = cmds.getAttr(f"{mesh_shape}.pnts[{i}].pnty")
+            dz = cmds.getAttr(f"{mesh_shape}.pnts[{i}].pntz")
+            if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
+                deltas[i] = (dx, dy, dz)
 
-    # Blend: result = lerp(original, relaxed, opacity)
-    blended = {}
-    for vi in vtx_set:
-        ox, oy, oz = deltas.get(vi, (0.0, 0.0, 0.0))
-        rx, ry, rz = relaxed.get(vi, (ox, oy, oz))
-        blended[vi] = (ox + (rx - ox) * opacity,
-                       oy + (ry - oy) * opacity,
-                       oz + (rz - oz) * opacity)
+        if not deltas:
+            if not was_live:
+                cmds.delete(tgt_transform)
+            return
 
-    _bake_deltas(bs_node, logical_index, blended, deltas)
+        vtx_set = set(vtx_indices) if vtx_indices is not None else set(deltas.keys())
+
+        # One Laplacian pass in delta-vector space
+        snapshot = dict(deltas)
+        for vi in vtx_set:
+            nbrs = adj.get(vi, [])
+            if not nbrs:
+                continue
+            sx = sy = sz = 0.0
+            for nb in nbrs:
+                d = snapshot.get(nb, (0.0, 0.0, 0.0))
+                sx += d[0]; sy += d[1]; sz += d[2]
+            n = len(nbrs)
+            ox, oy, oz = deltas.get(vi, (0.0, 0.0, 0.0))
+            nx = ox + (sx / n - ox) * opacity
+            ny = oy + (sy / n - oy) * opacity
+            nz = oz + (sz / n - oz) * opacity
+            if abs(nx - ox) > 1e-8 or abs(ny - oy) > 1e-8 or abs(nz - oz) > 1e-8:
+                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntx", nx)
+                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pnty", ny)
+                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntz", nz)
+
+        if not was_live:
+            cmds.delete(tgt_transform)
+    finally:
+        _restore_shape_editor_selection(saved)
+
     scope = f"{len(vtx_set)} vtx" if vtx_indices is not None else "all verts"
     print(f"  Relax Deltas: opacity={opacity:.2f}  ({scope})")
+
+
+def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10):
+    """
+    Volumetric Laplacian hammer applied to blendShape deltas.
+
+    Dirichlet boundary conditions:
+      - Selected vertices are the unknowns — update each pass.
+      - Non-selected vertices are frozen anchors — never change.
+
+    Connectivity is SPATIAL (Euclidean k-nearest, not topological edges),
+    so influence travels through volume rather than along the mesh surface.
+    Each pass: selected_vert = IDW(1/dist²) average of k nearest neighbors.
+
+    Uses a single regen mesh (read + write) — single Ctrl+Z.
+
+    vtx_indices : list of ints — must be non-empty (selection required).
+    n_passes    : number of Laplacian iterations (default 10).
+    """
+    if not vtx_indices:
+        return
+
+    from maya.api import OpenMaya as om
+
+    vtx_set = set(vtx_indices)
+
+    # Get rest-pose positions from the base mesh (read-only, no undo impact)
+    base_mesh = get_base_mesh(bs_node)
+    shapes    = cmds.listRelatives(base_mesh, shapes=True, type="mesh") or [base_mesh]
+    om_sel    = om.MSelectionList()
+    om_sel.add(shapes[0])
+    fn_mesh   = om.MFnMesh(om_sel.getDagPath(0))
+    all_pts   = fn_mesh.getPoints(om.MSpace.kObject)
+    n_verts   = len(all_pts)
+
+    # Precompute k-nearest spatial neighbors for each selected vertex
+    # k scales with mesh density; capped at 32 for performance
+    k = min(max(8, n_verts // 50), 32)
+    spatial_neighbors = {}
+    for vi in vtx_indices:
+        px, py, pz = all_pts[vi].x, all_pts[vi].y, all_pts[vi].z
+        dists = []
+        for vj in range(n_verts):
+            if vj == vi:
+                continue
+            qx, qy, qz = all_pts[vj].x, all_pts[vj].y, all_pts[vj].z
+            d2 = (px - qx) ** 2 + (py - qy) ** 2 + (pz - qz) ** 2
+            dists.append((d2, vj))
+        dists.sort()
+        spatial_neighbors[vi] = [(vj, d2) for d2, vj in dists[:k]]
+
+    # Single regen mesh — read pnts[], compute, write pnts[], delete (one undo step)
+    saved = _save_shape_editor_selection()
+    try:
+        mesh_shape, tgt_transform, was_live = _get_regen_mesh(bs_node, logical_index)
+
+        n_mesh = cmds.polyEvaluate(mesh_shape, vertex=True)
+        deltas = {}
+        for i in range(n_mesh):
+            dx = cmds.getAttr(f"{mesh_shape}.pnts[{i}].pntx")
+            dy = cmds.getAttr(f"{mesh_shape}.pnts[{i}].pnty")
+            dz = cmds.getAttr(f"{mesh_shape}.pnts[{i}].pntz")
+            if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
+                deltas[i] = (dx, dy, dz)
+
+        current = dict(deltas)
+
+        for _ in range(n_passes):
+            snapshot = dict(current)
+            for vi in vtx_set:
+                nbrs = spatial_neighbors[vi]
+                sx = sy = sz = total_w = 0.0
+                for vj, dist2 in nbrs:
+                    if dist2 < 1e-12:
+                        continue
+                    w = 1.0 / dist2
+                    d = snapshot.get(vj, (0.0, 0.0, 0.0))
+                    sx += w * d[0]; sy += w * d[1]; sz += w * d[2]
+                    total_w += w
+                if total_w > 0:
+                    current[vi] = (sx / total_w, sy / total_w, sz / total_w)
+
+        for vi in vtx_set:
+            nx, ny, nz = current.get(vi, (0.0, 0.0, 0.0))
+            ox, oy, oz = deltas.get(vi, (0.0, 0.0, 0.0))
+            if abs(nx - ox) > 1e-8 or abs(ny - oy) > 1e-8 or abs(nz - oz) > 1e-8:
+                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntx", nx)
+                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pnty", ny)
+                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntz", nz)
+
+        if not was_live:
+            cmds.delete(tgt_transform)
+    finally:
+        _restore_shape_editor_selection(saved)
+
+    print(f"  Hammer Deltas (vol): {n_passes} passes, {len(vtx_indices)} vtx, k={k}")
+
+
+def average_target_deltas(bs_node, logical_index, vtx_indices):
+    """
+    Replaces all selected vertices' deltas with the arithmetic mean of their deltas.
+    Useful to level a cluster of verts to a common midpoint displacement.
+
+    Uses a single regen mesh (read + write) — single Ctrl+Z.
+
+    vtx_indices : list of ints — must be non-empty (selection required).
+    """
+    if not vtx_indices:
+        return
+
+    saved = _save_shape_editor_selection()
+    mx = my = mz = 0.0
+    try:
+        mesh_shape, tgt_transform, was_live = _get_regen_mesh(bs_node, logical_index)
+
+        vals = {}
+        for vi in vtx_indices:
+            dx = cmds.getAttr(f"{mesh_shape}.pnts[{vi}].pntx")
+            dy = cmds.getAttr(f"{mesh_shape}.pnts[{vi}].pnty")
+            dz = cmds.getAttr(f"{mesh_shape}.pnts[{vi}].pntz")
+            vals[vi] = (dx, dy, dz)
+            mx += dx; my += dy; mz += dz
+
+        n   = len(vtx_indices)
+        mx /= n; my /= n; mz /= n
+
+        for vi in vtx_indices:
+            ox, oy, oz = vals[vi]
+            if abs(mx - ox) > 1e-8 or abs(my - oy) > 1e-8 or abs(mz - oz) > 1e-8:
+                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntx", mx)
+                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pnty", my)
+                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntz", mz)
+
+        if not was_live:
+            cmds.delete(tgt_transform)
+    finally:
+        _restore_shape_editor_selection(saved)
+
+    print(f"  Average Deltas: {len(vtx_indices)} vtx → ({mx:.4f}, {my:.4f}, {mz:.4f})")
 
 
 def create_delta_cluster(bs_node, logical_index, target_name):
@@ -2283,3 +2467,230 @@ def bake_wire_to_mesh(base_mesh, shape_names):
         print(f"  ✓ Baked : '{shp}'  →  {bs_node}[{t_idx}]")
 
     return bs_node, baked
+
+
+# ── Rig Connector ─────────────────────────────────────────────────────────────
+
+# Maps transform attr → transformLimits kwarg + enable attribute name
+# tuple: (tl_kwarg, positive_enable_attr, negative_enable_attr)
+_RC_LIMIT_INFO = {
+    "tx": ("tx", "maxTransXLimitEnable", "minTransXLimitEnable"),
+    "ty": ("ty", "maxTransYLimitEnable", "minTransYLimitEnable"),
+    "tz": ("tz", "maxTransZLimitEnable", "minTransZLimitEnable"),
+    "rx": ("rx", "maxRotXLimitEnable",   "minRotXLimitEnable"),
+    "ry": ("ry", "maxRotYLimitEnable",   "minRotYLimitEnable"),
+    "rz": ("rz", "maxRotZLimitEnable",   "minRotZLimitEnable"),
+}
+
+
+@undo_chunk
+def build_and_connect_rig(bs_node, rows):
+    """
+    Par shape, construit le réseau suivant :
+      offset_{shape}_{i}  (addDoubleLinear, si in_min≠0) : soustrait in_min
+      norm_{shape}_{i}    (multiplyDivide)                : normalise → [0..1..∞]
+      sum_{shape}         (plusMinusAverage, si >1 driver): somme additive
+      cond_{shape}        (condition)                     : hasLimits → maxR=1 ou 1e6
+      clamp_{shape}       (clamp)                         : minR=0 toujours, maxR piloté
+
+    Plusieurs rows avec la même shape = proxy / drivers additifs.
+    hasLimits=ON  : weight [0,1]  + controller physiquement bloqué (transform attrs)
+    hasLimits=OFF : weight proportionnel au-delà de 1.0, jamais négatif
+
+    rows : list of dicts avec les clés :
+        shape, controller, attr, custom_attr, direction, in_min, in_max
+    """
+    import re as _re
+    from collections import defaultdict
+
+    # Build alias → logical index map
+    aliases_flat = cmds.aliasAttr(bs_node, query=True) or []
+    target_map = {}
+    for i in range(0, len(aliases_flat) - 1, 2):
+        alias    = aliases_flat[i]
+        attr_str = aliases_flat[i + 1]
+        m = _re.search(r"\[(\d+)\]", attr_str)
+        if m:
+            target_map[alias] = int(m.group(1))
+
+    results        = []
+    pending_limits = {}  # ctrl → [(tl_kwarg, enable_attr, limit_value, negative)]
+    pending_conds  = {}  # ctrl → [cond_name, ...]
+
+    # ── Phase 1 : validation + création des custom attrs ─────────────────────
+    valid_rows = []
+    for row in rows:
+        shape       = row.get("shape", "").strip()
+        ctrl        = row.get("controller", "").strip()
+        attr        = row.get("attr", "ty")
+        custom_attr = row.get("custom_attr", "").strip()
+        direction   = row.get("direction", "+")
+        in_min      = float(row.get("in_min", 0.0))
+        in_max      = float(row.get("in_max", 1.0))
+
+        if not shape or not ctrl:
+            results.append({"shape": shape, "status": "skip"})
+            continue
+
+        resolved_attr = custom_attr if attr == "custom" else attr
+        if not resolved_attr:
+            results.append({"shape": shape, "status": "skip"})
+            continue
+
+        idx = target_map.get(shape)
+        if idx is None:
+            results.append({"shape": shape, "status": "no_target"})
+            continue
+
+        if not cmds.objExists(ctrl):
+            results.append({"shape": shape, "status": "no_ctrl"})
+            continue
+
+        ctrl_attr_full = f"{ctrl}.{resolved_attr}"
+        if not cmds.objExists(ctrl_attr_full):
+            if attr == "custom":
+                cmds.addAttr(ctrl, longName=resolved_attr, attributeType="float",
+                             defaultValue=0.0, keyable=True)
+            else:
+                results.append({"shape": shape, "status": "no_attr"})
+                continue
+
+        valid_rows.append({
+            "shape": shape, "idx": idx, "ctrl": ctrl,
+            "ctrl_attr": ctrl_attr_full, "resolved_attr": resolved_attr,
+            "attr": attr, "negative": (direction == "\u2212"),
+            "in_min": in_min, "in_max": in_max,
+        })
+
+    # ── Phase 2 : grouper par shape ───────────────────────────────────────────
+    shape_groups = defaultdict(list)
+    for vr in valid_rows:
+        shape_groups[vr["shape"]].append(vr)
+
+    # ── Phase 3 : construire le réseau par shape ──────────────────────────────
+    for shape, group in shape_groups.items():
+        bs_weight_attr = f"{bs_node}.w[{group[0]['idx']}]"
+        try:
+            # Nettoyer les anciens nodes (noms déterministes)
+            old = (cmds.ls(f"offset_{shape}_*", f"norm_{shape}_*") or [])
+            old += [n for n in (f"sum_{shape}", f"clamp_{shape}",
+                                f"cond_{shape}", f"rmv_{shape}")
+                    if cmds.objExists(n)]
+            if old:
+                cmds.delete(old)
+            # Pas de disconnectAttr explicite : force=True à la connexion finale suffit
+
+            # ── Norm nodes (un par driver) ────────────────────────────────────
+            norm_outputs = []
+            for i, vr in enumerate(group):
+                negative = vr["negative"]
+                in_min   = vr["in_min"]
+                in_max   = vr["in_max"]
+
+                # in_max=0 → driver désactivé, skip
+                if abs(in_max) < 1e-9 and abs(in_min) < 1e-9:
+                    continue
+
+                span     = max(abs(in_max - in_min), 1e-9)
+
+                # Offset (soustrait in_min) si nécessaire
+                if abs(in_min) > 1e-9:
+                    adl = cmds.createNode("addDoubleLinear", name=f"offset_{shape}_{i}")
+                    cmds.connectAttr(vr["ctrl_attr"], f"{adl}.input1", force=True)
+                    cmds.setAttr(f"{adl}.input2", in_min if negative else -in_min)
+                    norm_src = f"{adl}.output"
+                else:
+                    norm_src = vr["ctrl_attr"]
+
+                norm = cmds.createNode("multiplyDivide", name=f"norm_{shape}_{i}")
+                cmds.setAttr(f"{norm}.operation", 1)
+                cmds.setAttr(f"{norm}.input2X", -1.0 / span if negative else 1.0 / span)
+                cmds.connectAttr(norm_src, f"{norm}.input1X", force=True)
+                norm_outputs.append(f"{norm}.outputX")
+
+            # ── Somme additive si plusieurs drivers ───────────────────────────
+            # Tous les drivers désactivés → ne pas construire le réseau
+            if not norm_outputs:
+                for _ in group:
+                    results.append({"shape": shape, "status": "skip"})
+                continue
+
+            if len(norm_outputs) == 1:
+                sum_out = norm_outputs[0]
+            else:
+                pma = cmds.createNode("plusMinusAverage", name=f"sum_{shape}")
+                cmds.setAttr(f"{pma}.operation", 1)  # sum
+                for i, out in enumerate(norm_outputs):
+                    cmds.connectAttr(out, f"{pma}.input1D[{i}]", force=True)
+                sum_out = f"{pma}.output1D"
+
+            # ── Condition : pilote clamp.maxR ─────────────────────────────────
+            cond = cmds.createNode("condition", name=f"cond_{shape}")
+            cmds.setAttr(f"{cond}.operation",     0)    # equal
+            cmds.setAttr(f"{cond}.secondTerm",    1)
+            cmds.setAttr(f"{cond}.colorIfTrueR",  1.0)  # hasLimits=ON  → max=1
+            cmds.setAttr(f"{cond}.colorIfFalseR", 1e6)  # hasLimits=OFF → libre
+
+            # ── Clamp : minR=0 toujours, maxR piloté ─────────────────────────
+            clp = cmds.createNode("clamp", name=f"clamp_{shape}")
+            cmds.setAttr(f"{clp}.minR", 0.0)
+            cmds.connectAttr(f"{cond}.outColorR", f"{clp}.maxR",   force=True)
+            cmds.connectAttr(sum_out,             f"{clp}.inputR", force=True)
+            cmds.connectAttr(f"{clp}.outputR", bs_weight_attr, force=True)
+
+            # ── Collect post-loop ─────────────────────────────────────────────
+            # Utiliser le nom réel du node (Maya peut auto-renommer si collision)
+            primary_ctrl = group[0]["ctrl"]
+            pending_conds.setdefault(primary_ctrl, []).append(cond)
+
+            for vr in group:
+                ctrl          = vr["ctrl"]
+                resolved_attr = vr["resolved_attr"]
+                negative      = vr["negative"]
+                in_max        = vr["in_max"]
+                in_min        = vr["in_min"]
+                # Skip les drivers désactivés (in_max=0) pour pending_limits
+                if abs(in_max) < 1e-9 and abs(in_min) < 1e-9:
+                    pending_conds.setdefault(ctrl, [])  # hasLimits quand même
+                    continue
+                if resolved_attr in _RC_LIMIT_INFO:
+                    tl_kwarg, pos_en, neg_en = _RC_LIMIT_INFO[resolved_attr]
+                    enable_attr = neg_en if negative else pos_en
+                    limit_value = -in_max if negative else in_max
+                    pending_limits.setdefault(ctrl, []).append(
+                        (tl_kwarg, enable_attr, limit_value, negative))
+                # Chaque ctrl a son propre hasLimits → on l'enregistre
+                if ctrl != primary_ctrl:
+                    pending_conds.setdefault(ctrl, [])  # force création sans cond
+
+            for _ in group:
+                results.append({"shape": shape, "status": "ok"})
+
+        except Exception as e:
+            for _ in group:
+                results.append({"shape": shape, "status": f"error:{e}"})
+
+    # ── Post-loop : hasLimits attr (dernier) + connexions ────────────────────
+    for ctrl in set(pending_limits) | set(pending_conds):
+        for tl_kwarg, _, limit_value, negative in pending_limits.get(ctrl, []):
+            cur = cmds.transformLimits(ctrl, q=True, **{tl_kwarg: True})
+            if negative:
+                cmds.transformLimits(ctrl, **{tl_kwarg: (limit_value, cur[1])})
+            else:
+                cmds.transformLimits(ctrl, **{tl_kwarg: (cur[0], limit_value)})
+
+        if not cmds.attributeQuery("hasLimits", node=ctrl, exists=True):
+            cmds.addAttr(ctrl, longName="hasLimits", attributeType="bool",
+                         defaultValue=True, keyable=True)
+        cmds.setAttr(f"{ctrl}.hasLimits", True)
+
+        for _, enable_attr, _, _ in pending_limits.get(ctrl, []):
+            if not cmds.isConnected(f"{ctrl}.hasLimits", f"{ctrl}.{enable_attr}"):
+                cmds.connectAttr(f"{ctrl}.hasLimits", f"{ctrl}.{enable_attr}", force=True)
+
+        for cond_name in pending_conds.get(ctrl, []):
+            if cmds.objExists(cond_name):
+                if not cmds.isConnected(f"{ctrl}.hasLimits", f"{cond_name}.firstTerm"):
+                    cmds.connectAttr(f"{ctrl}.hasLimits", f"{cond_name}.firstTerm", force=True)
+
+    return results

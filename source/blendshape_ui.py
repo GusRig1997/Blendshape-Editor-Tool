@@ -28,6 +28,11 @@ def _user_naming_prefs_path():
                         "blendshape_editor_naming.json")
 
 
+def _rig_mapping_prefs_path():
+    return os.path.join(cmds.internalVar(userPrefDir=True),
+                        "blendshape_editor_rig_mapping.json")
+
+
 def _check_shapes_default_json_path():
     """Returns the path to the default check_shapes JSON shipped with the tool."""
     src_dir  = os.path.dirname(os.path.abspath(__file__))
@@ -36,6 +41,44 @@ def _check_shapes_default_json_path():
 
 
 _CHECK_SHAPES_OPTIONVAR = "blendshapeEditor_checkShapesLastFile"
+
+# ── Rig Connector constants ────────────────────────────────────────────────────
+_RC_PART_MAP = {
+    "LipUp":     "upper_lip",
+    "LipDn":     "lower_lip",
+    "Mouth":     "mouth",
+    "Jaw":       "jaw",
+    "Cheek":     "cheek",
+    "Cheekbone": "cheekbone",
+    "Eyebrow":   "brow",
+    "LipCorner": "mouth_corner",
+    "Nostril":   "nostril",
+}
+_RC_SIDE_MAP = {"L": "L", "R": "R", "M": "C"}
+_RC_DIR_ATTR = {
+    "up":      ("ty", "+"),
+    "dn":      ("ty", "−"),
+    "lft":     ("tx", "−"),
+    "rgt":     ("tx", "+"),
+    "in":      ("tx", "−"),
+    "out":     ("tx", "+"),
+    "rot_pos": ("rz", "+"),
+    "rot_neg": ("rz", "−"),
+}
+_RC_CUSTOM_DIRS = {"puff_in", "puff_out", "puff", "curl_in", "curl_out", "curl"}
+_FK_CONTROLLERS = [
+    'FKLipUpB_L', 'FKLipUpA_L', 'FKLipUp_M', 'FKLipUpA_R', 'FKLipUpB_R',
+    'FKLipDnB_R', 'FKLipDnA_R', 'FKLipDn_M', 'FKLipDnA_L', 'FKLipDnB_L',
+    'FKMouth_M', 'FKLipCorner_R', 'FKLipCorner_L', 'FKJaw_M',
+    'FKCheek_L', 'FKCheek_R',
+    'FKCheekbone_L', 'FKCheekboneA_L', 'FKCheekboneB_L', 'FKCheekboneC_L',
+    'FKCheekbone_R', 'FKCheekboneA_R', 'FKCheekboneB_R', 'FKCheekboneC_R',
+    'FKNostril_L', 'FKNostril_R',
+    'FKEyebrow_L', 'FKEyebrowE_L', 'FKEyebrowD_L', 'FKEyebrowC_L',
+    'FKEyebrowB_L', 'FKEyebrowA_L',
+    'FKEyebrow_R', 'FKEyebrowA_R', 'FKEyebrowB_R', 'FKEyebrowC_R',
+    'FKEyebrowD_R', 'FKEyebrowE_R',
+]
 
 
 def _load_user_duos():
@@ -699,6 +742,800 @@ class CheckShapesDialog(QtWidgets.QDialog):
         dlg.exec_()
 
 
+class RigConnectorDialog(QtWidgets.QDialog):
+    """
+    Maps FK rig controllers to blendShape targets.
+    Phase 1: table UI, auto-fill, save/load mapping.
+    Phase 2 (future): Build & Connect nodes.
+    """
+
+    _COL_NUM   = 0
+    _COL_SHAPE = 1
+    _COL_CTRL  = 2
+    _COL_ATTR  = 3
+    _COL_CATTR = 4
+    _COL_DIR   = 5
+    _COL_INMIN = 6
+    _COL_INMAX = 7
+    _COL_STAT  = 8
+
+    _ATTR_ITEMS = ["tx", "ty", "tz", "rx", "ry", "rz", "custom"]
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Rig Connector")
+        self.setMinimumSize(900, 600)
+        self.setWindowFlags(self.windowFlags() | QtCore.Qt.Window)
+        self._shapes = []   # list of shape name strings currently in table
+        self._build_ui()
+        self._populate_from_default_json()
+
+    # ── UI build ──────────────────────────────────────────────────────────────
+
+    def _build_ui(self):
+        outer = QtWidgets.QVBoxLayout(self)
+        outer.setContentsMargins(8, 8, 8, 8)
+        outer.setSpacing(6)
+
+        # ── Toolbar ───────────────────────────────────────────────────────────
+        toolbar = QtWidgets.QHBoxLayout()
+        toolbar.setSpacing(4)
+
+        toolbar.addWidget(QtWidgets.QLabel("BS Node:"))
+        self._le_bs_node = QtWidgets.QLineEdit()
+        self._le_bs_node.setReadOnly(True)
+        self._le_bs_node.setFixedWidth(160)
+        self._le_bs_node.setPlaceholderText("blendShape node")
+        toolbar.addWidget(self._le_bs_node)
+        btn_get_bs = QtWidgets.QPushButton("Get")
+        btn_get_bs.setFixedWidth(40)
+        btn_get_bs.clicked.connect(self._get_bs_node)
+        toolbar.addWidget(btn_get_bs)
+
+        toolbar.addSpacing(16)
+
+        toolbar.addWidget(QtWidgets.QLabel("JSON:"))
+        self._le_json = QtWidgets.QLineEdit()
+        self._le_json.setReadOnly(True)
+        self._le_json.setPlaceholderText("shapes JSON path")
+        toolbar.addWidget(self._le_json)
+        btn_load_json = QtWidgets.QPushButton("Load")
+        btn_load_json.setFixedWidth(40)
+        btn_load_json.clicked.connect(self._load_json_file)
+        toolbar.addWidget(btn_load_json)
+
+        outer.addLayout(toolbar)
+
+        # ── Table ─────────────────────────────────────────────────────────────
+        self._table = QtWidgets.QTableWidget(0, 9)
+        self._table.setHorizontalHeaderLabels(
+            ["#", "Shape", "Controller", "Attr", "Custom Attr", "Dir", "In Min", "In Max", "Status"])
+        self._table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self._table.customContextMenuRequested.connect(self._show_row_context_menu)
+        self._table.verticalHeader().setVisible(False)
+        self._table.setAlternatingRowColors(True)
+        self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._table.verticalHeader().setDefaultSectionSize(24)
+
+        hh = self._table.horizontalHeader()
+        hh.setSectionResizeMode(self._COL_NUM,   QtWidgets.QHeaderView.Fixed)
+        hh.setSectionResizeMode(self._COL_SHAPE, QtWidgets.QHeaderView.Stretch)
+        hh.setSectionResizeMode(self._COL_CTRL,  QtWidgets.QHeaderView.Fixed)
+        hh.setSectionResizeMode(self._COL_ATTR,  QtWidgets.QHeaderView.Fixed)
+        hh.setSectionResizeMode(self._COL_CATTR, QtWidgets.QHeaderView.Fixed)
+        hh.setSectionResizeMode(self._COL_DIR,   QtWidgets.QHeaderView.Fixed)
+        hh.setSectionResizeMode(self._COL_INMIN, QtWidgets.QHeaderView.Fixed)
+        hh.setSectionResizeMode(self._COL_INMAX, QtWidgets.QHeaderView.Fixed)
+        hh.setSectionResizeMode(self._COL_STAT,  QtWidgets.QHeaderView.Fixed)
+
+        self._table.setColumnWidth(self._COL_NUM,   28)
+        self._table.setColumnWidth(self._COL_CTRL,  140)
+        self._table.setColumnWidth(self._COL_ATTR,  70)
+        self._table.setColumnWidth(self._COL_CATTR, 90)
+        self._table.setColumnWidth(self._COL_DIR,   45)
+        self._table.setColumnWidth(self._COL_INMIN, 60)
+        self._table.setColumnWidth(self._COL_INMAX, 65)
+        self._table.setColumnWidth(self._COL_STAT,  50)
+
+        outer.addWidget(self._table)
+
+        # ── Auto-stagger ──────────────────────────────────────────────────────
+        stagger_bar = QtWidgets.QHBoxLayout()
+        stagger_bar.setSpacing(4)
+        stagger_bar.addWidget(QtWidgets.QLabel("Auto-stagger:"))
+
+        self._le_stagger_ctrl = QtWidgets.QLineEdit()
+        self._le_stagger_ctrl.setPlaceholderText("Master controller")
+        self._le_stagger_ctrl.setFixedWidth(140)
+        stagger_bar.addWidget(self._le_stagger_ctrl)
+
+        self._combo_stagger_axis = QtWidgets.QComboBox()
+        self._combo_stagger_axis.addItems(["rx", "ry", "rz", "tx", "ty", "tz"])
+        self._combo_stagger_axis.setFixedWidth(55)
+        stagger_bar.addWidget(self._combo_stagger_axis)
+
+        stagger_bar.addWidget(QtWidgets.QLabel("In Max:"))
+        self._sb_stagger_inmax = QtWidgets.QDoubleSpinBox()
+        self._sb_stagger_inmax.setRange(0.001, 9999.0)
+        self._sb_stagger_inmax.setValue(45.0)
+        self._sb_stagger_inmax.setDecimals(2)
+        self._sb_stagger_inmax.setFixedWidth(70)
+        self._sb_stagger_inmax.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        stagger_bar.addWidget(self._sb_stagger_inmax)
+
+        btn_stagger = QtWidgets.QPushButton("Apply Stagger")
+        btn_stagger.clicked.connect(self._apply_stagger)
+        stagger_bar.addWidget(btn_stagger)
+        stagger_bar.addStretch()
+        outer.addLayout(stagger_bar)
+
+        # ── Button bar ────────────────────────────────────────────────────────
+        btn_bar = QtWidgets.QHBoxLayout()
+        btn_bar.setSpacing(4)
+
+        btn_autofill = QtWidgets.QPushButton("Auto-fill")
+        btn_autofill.clicked.connect(self._auto_fill)
+        btn_bar.addWidget(btn_autofill)
+
+        btn_add = QtWidgets.QPushButton("Add Row")
+        btn_add.clicked.connect(self._add_row)
+        btn_bar.addWidget(btn_add)
+
+        btn_remove = QtWidgets.QPushButton("Remove Row")
+        btn_remove.clicked.connect(self._remove_rows)
+        btn_bar.addWidget(btn_remove)
+
+        btn_bar.addStretch()
+
+        btn_save = QtWidgets.QPushButton("Save Mapping")
+        btn_save.clicked.connect(self._save_mapping)
+        btn_bar.addWidget(btn_save)
+
+        btn_load = QtWidgets.QPushButton("Load Mapping")
+        btn_load.clicked.connect(self._load_mapping)
+        btn_bar.addWidget(btn_load)
+
+        btn_bar.addSpacing(16)
+
+        self._btn_build = QtWidgets.QPushButton("Build && Connect ▸")
+        self._btn_build.setEnabled(False)
+        self._btn_build.clicked.connect(self._on_build_connect)
+        btn_bar.addWidget(self._btn_build)
+
+        outer.addLayout(btn_bar)
+
+    # ── Populate ──────────────────────────────────────────────────────────────
+
+    def _populate_from_default_json(self):
+        path = _check_shapes_default_json_path()
+        if os.path.exists(path):
+            self._le_json.setText(path)
+            self._load_shapes_from_json(path)
+
+    def _load_shapes_from_json(self, path):
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Load Error", str(e))
+            return
+        if isinstance(data, list):
+            shapes = data
+        elif isinstance(data, dict):
+            shapes = []
+            for v in data.values():
+                if isinstance(v, list):
+                    shapes.extend(v)
+        else:
+            shapes = []
+        self._shapes = [s for s in shapes if isinstance(s, str)]
+        self._rebuild_table()
+
+    def _rebuild_table(self):
+        """Re-create all rows from self._shapes, preserving controller scene list."""
+        controllers = self._scene_controllers()
+        self._table.setRowCount(0)
+        for i, shape in enumerate(self._shapes):
+            self._append_table_row(i + 1, shape, controllers)
+
+    def _append_table_row(self, row_num, shape_name, controllers,
+                          ctrl="", attr="ty", custom_attr="", direction="+",
+                          in_min=0.0, in_max=1.0):
+        row = self._table.rowCount()
+        self._table.insertRow(row)
+
+        # Col 0 — #
+        num_item = QtWidgets.QTableWidgetItem(str(row_num))
+        num_item.setFlags(QtCore.Qt.ItemIsEnabled)
+        self._table.setItem(row, self._COL_NUM, num_item)
+
+        # Col 1 — Shape
+        shape_item = QtWidgets.QTableWidgetItem(shape_name)
+        shape_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
+        self._table.setItem(row, self._COL_SHAPE, shape_item)
+
+        # Col 2 — Controller (editable QComboBox)
+        cb_ctrl = QtWidgets.QComboBox()
+        cb_ctrl.setEditable(True)
+        cb_ctrl.addItem("")
+        cb_ctrl.addItems(controllers)
+        if ctrl:
+            idx = cb_ctrl.findText(ctrl)
+            if idx >= 0:
+                cb_ctrl.setCurrentIndex(idx)
+            else:
+                cb_ctrl.setEditText(ctrl)
+        self._table.setCellWidget(row, self._COL_CTRL, cb_ctrl)
+
+        # Col 3 — Attr
+        cb_attr = QtWidgets.QComboBox()
+        cb_attr.addItems(self._ATTR_ITEMS)
+        attr_idx = cb_attr.findText(attr)
+        if attr_idx >= 0:
+            cb_attr.setCurrentIndex(attr_idx)
+
+        # Col 4 — Custom Attr
+        le_custom = QtWidgets.QLineEdit()
+        le_custom.setPlaceholderText("attr name")
+        le_custom.setText(custom_attr)
+        le_custom.setEnabled(attr == "custom")
+
+        cb_attr.currentTextChanged.connect(
+            lambda text, le=le_custom: le.setEnabled(text == "custom"))
+        self._table.setCellWidget(row, self._COL_ATTR,  cb_attr)
+        self._table.setCellWidget(row, self._COL_CATTR, le_custom)
+
+        # Col 5 — Dir
+        cb_dir = QtWidgets.QComboBox()
+        cb_dir.addItems(["+", "−"])
+        dir_idx = cb_dir.findText(direction)
+        if dir_idx >= 0:
+            cb_dir.setCurrentIndex(dir_idx)
+        self._table.setCellWidget(row, self._COL_DIR, cb_dir)
+
+        # Col 6 — In Min
+        sb_inmin = QtWidgets.QDoubleSpinBox()
+        sb_inmin.setRange(-9999.0, 9999.0)
+        sb_inmin.setSingleStep(0.1)
+        sb_inmin.setDecimals(3)
+        sb_inmin.setValue(in_min)
+        sb_inmin.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self._table.setCellWidget(row, self._COL_INMIN, sb_inmin)
+
+        # Col 7 — In Max
+        sb_inmax = QtWidgets.QDoubleSpinBox()
+        sb_inmax.setRange(0.0, 9999.0)
+        sb_inmax.setSingleStep(0.1)
+        sb_inmax.setDecimals(3)
+        sb_inmax.setValue(in_max)
+        sb_inmax.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self._table.setCellWidget(row, self._COL_INMAX, sb_inmax)
+
+        # Col 8 — Status
+        lbl_status = QtWidgets.QLabel("●")
+        lbl_status.setAlignment(QtCore.Qt.AlignCenter)
+        lbl_status.setStyleSheet("color: grey;")
+        self._table.setCellWidget(row, self._COL_STAT, lbl_status)
+
+    # ── Toolbar handlers ──────────────────────────────────────────────────────
+
+    def _get_bs_node(self):
+        sel = cmds.ls(sl=True, type="blendShape") or []
+        if not sel:
+            # try from selected mesh
+            meshes = cmds.ls(sl=True, dag=True, type="mesh") or []
+            for m in meshes:
+                hist = cmds.listHistory(m, pdo=True) or []
+                bs_nodes = [n for n in hist if cmds.nodeType(n) == "blendShape"]
+                if bs_nodes:
+                    sel = bs_nodes[:1]
+                    break
+        if sel:
+            self._le_bs_node.setText(sel[0])
+            self._btn_build.setEnabled(True)
+        else:
+            QtWidgets.QMessageBox.information(
+                self, "Get BS Node", "No blendShape node found in selection.")
+
+    def _load_json_file(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load Shapes JSON", "", "JSON files (*.json)")
+        if path:
+            self._le_json.setText(path)
+            self._load_shapes_from_json(path)
+
+    # ── Auto-fill ─────────────────────────────────────────────────────────────
+
+    def _scene_controllers(self):
+        import re
+        try:
+            all_xforms = cmds.ls(type="transform") or []
+            pattern = re.compile(r"^FK\w+_[LRM]$")
+            scene_ctrls = [x for x in all_xforms if pattern.match(x)]
+        except Exception:
+            scene_ctrls = []
+        return scene_ctrls if scene_ctrls else list(_FK_CONTROLLERS)
+
+    @staticmethod
+    def _parse_shape(shape_name):
+        """
+        Returns (side, part_tokens_joined, direction, split) or None on failure.
+        shape: {Side}_{part_tokens}_{dir}[_{split}]
+        """
+        tokens = shape_name.split("_")
+        if len(tokens) < 3:
+            return None
+        side = tokens[0]
+        # Last token: optional single letter a-e = split
+        split = ""
+        if tokens[-1].lower() in ("a", "b", "c", "d", "e"):
+            split = tokens[-1].lower()
+            tokens = tokens[:-1]
+        # Second-to-last is direction, middle tokens are part
+        direction = tokens[-1]
+        part_tokens = tokens[1:-1]
+        part = "_".join(part_tokens)
+        return side, part, direction, split
+
+    @staticmethod
+    def _parse_controller(ctrl_name):
+        """
+        Returns (part, split, side) or None.
+        pattern: FK{Part}{Split}_{Side}   e.g. FKLipUpA_L
+        """
+        import re
+        m = re.match(r"^FK([A-Za-z]+?)([A-E]?)_([LRM])$", ctrl_name)
+        if not m:
+            return None
+        return m.group(1), m.group(2).upper(), m.group(3)
+
+    def _auto_fill(self):
+        import re
+        controllers = self._scene_controllers()
+        # Pre-parse all controllers
+        parsed_ctrls = {}  # ctrl_name -> (part, split, side)
+        for c in controllers:
+            p = self._parse_controller(c)
+            if p:
+                parsed_ctrls[c] = p
+
+        for row in range(self._table.rowCount()):
+            shape_item = self._table.item(row, self._COL_SHAPE)
+            if not shape_item:
+                continue
+            shape_name = shape_item.text()
+            parsed = self._parse_shape(shape_name)
+            if not parsed:
+                continue
+            shape_side, shape_part, direction, split = parsed
+
+            # Map direction → attr, dir_sign
+            dir_lower = direction.lower()
+            if dir_lower in _RC_CUSTOM_DIRS:
+                attr = "custom"
+                dir_sign = "+"
+            else:
+                mapping = _RC_DIR_ATTR.get(dir_lower)
+                if not mapping:
+                    continue
+                attr, dir_sign = mapping
+
+            # Find matching controller
+            matched_ctrl = ""
+            for ctrl_name, (ctrl_part, ctrl_split, ctrl_side_raw) in parsed_ctrls.items():
+                mapped_side = _RC_SIDE_MAP.get(ctrl_side_raw, "")
+                mapped_part = _RC_PART_MAP.get(ctrl_part, "")
+                ctrl_split_lower = ctrl_split.lower()
+                if (mapped_side == shape_side and
+                        mapped_part == shape_part and
+                        ctrl_split_lower == split):
+                    matched_ctrl = ctrl_name
+                    break
+
+            # Fill cells
+            cb_ctrl = self._table.cellWidget(row, self._COL_CTRL)
+            cb_attr = self._table.cellWidget(row, self._COL_ATTR)
+            cb_dir  = self._table.cellWidget(row, self._COL_DIR)
+            if not (cb_ctrl and cb_attr and cb_dir):
+                continue
+
+            if matched_ctrl:
+                idx = cb_ctrl.findText(matched_ctrl)
+                if idx >= 0:
+                    cb_ctrl.setCurrentIndex(idx)
+                else:
+                    cb_ctrl.setEditText(matched_ctrl)
+
+            attr_idx = cb_attr.findText(attr)
+            if attr_idx >= 0:
+                cb_attr.setCurrentIndex(attr_idx)
+
+            dir_idx = cb_dir.findText(dir_sign)
+            if dir_idx >= 0:
+                cb_dir.setCurrentIndex(dir_idx)
+
+    # ── Row management ────────────────────────────────────────────────────────
+
+    def _add_row(self):
+        controllers = self._scene_controllers()
+        row_num = self._table.rowCount() + 1
+        self._append_table_row(row_num, "", controllers)
+
+    def _remove_rows(self):
+        selected = sorted(
+            set(idx.row() for idx in self._table.selectedIndexes()), reverse=True)
+        for r in selected:
+            self._table.removeRow(r)
+        # Re-number (skip proxy rows)
+        n = 0
+        for r in range(self._table.rowCount()):
+            item = self._table.item(r, self._COL_NUM)
+            if not item:
+                continue
+            if item.text() == "\u21b3":
+                continue
+            n += 1
+            item.setText(str(n))
+
+    # ── Save / Load mapping ───────────────────────────────────────────────────
+
+    def _collect_rows(self):
+        rows = []
+        for r in range(self._table.rowCount()):
+            num_item   = self._table.item(r, self._COL_NUM)
+            shape_item = self._table.item(r, self._COL_SHAPE)
+            shape    = shape_item.text() if shape_item else ""
+            is_proxy = bool(num_item and num_item.text() == "\u21b3")
+            cb_ctrl  = self._table.cellWidget(r, self._COL_CTRL)
+            cb_attr  = self._table.cellWidget(r, self._COL_ATTR)
+            le_cattr = self._table.cellWidget(r, self._COL_CATTR)
+            cb_dir   = self._table.cellWidget(r, self._COL_DIR)
+            sb_inmin = self._table.cellWidget(r, self._COL_INMIN)
+            sb_inmax = self._table.cellWidget(r, self._COL_INMAX)
+            rows.append({
+                "shape":       shape,
+                "proxy":       is_proxy,
+                "controller":  cb_ctrl.currentText()  if cb_ctrl  else "",
+                "attr":        cb_attr.currentText()  if cb_attr  else "ty",
+                "custom_attr": le_cattr.text()        if le_cattr else "",
+                "direction":   cb_dir.currentText()   if cb_dir   else "+",
+                "in_min":      sb_inmin.value()       if sb_inmin else 0.0,
+                "in_max":      sb_inmax.value()       if sb_inmax else 1.0,
+            })
+        return rows
+
+    def _save_mapping(self):
+        default = _rig_mapping_prefs_path()
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Mapping", default, "JSON files (*.json)")
+        if not path:
+            return
+        rows = self._collect_rows()
+        try:
+            with open(path, "w") as f:
+                json.dump(rows, f, indent=2)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Save Error", str(e))
+
+    def _load_mapping(self):
+        default = _rig_mapping_prefs_path()
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load Mapping", default, "JSON files (*.json)")
+        if not path or not os.path.exists(path):
+            return
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Load Error", str(e))
+            return
+
+        # Séparer rows primaires et proxy
+        primary_data = [rd for rd in data if isinstance(rd, dict) and not rd.get("proxy", False)]
+        proxy_data   = [rd for rd in data if isinstance(rd, dict) and rd.get("proxy", False)]
+
+        # by_shape uniquement pour les primaires (pas de doublon de clé)
+        by_shape    = {rd["shape"]: rd for rd in primary_data}
+        controllers = self._scene_controllers()
+
+        def _apply_row_data(r, rd):
+            cb_ctrl  = self._table.cellWidget(r, self._COL_CTRL)
+            cb_attr  = self._table.cellWidget(r, self._COL_ATTR)
+            le_cattr = self._table.cellWidget(r, self._COL_CATTR)
+            cb_dir   = self._table.cellWidget(r, self._COL_DIR)
+            sb_inmin = self._table.cellWidget(r, self._COL_INMIN)
+            sb_inmax = self._table.cellWidget(r, self._COL_INMAX)
+            if cb_ctrl:
+                idx = cb_ctrl.findText(rd.get("controller", ""))
+                if idx >= 0:
+                    cb_ctrl.setCurrentIndex(idx)
+                else:
+                    cb_ctrl.setEditText(rd.get("controller", ""))
+            if cb_attr:
+                aidx = cb_attr.findText(rd.get("attr", "ty"))
+                if aidx >= 0:
+                    cb_attr.setCurrentIndex(aidx)
+            if le_cattr:
+                le_cattr.setText(rd.get("custom_attr", ""))
+            if cb_dir:
+                didx = cb_dir.findText(rd.get("direction", "+"))
+                if didx >= 0:
+                    cb_dir.setCurrentIndex(didx)
+            if sb_inmin:
+                sb_inmin.setValue(rd.get("in_min", 0.0))
+            if sb_inmax:
+                sb_inmax.setValue(rd.get("in_max", 1.0))
+
+        # ── Passe 1 : rows primaires ──────────────────────────────────────────
+        existing_shapes = set()
+        for r in range(self._table.rowCount()):
+            num_item   = self._table.item(r, self._COL_NUM)
+            shape_item = self._table.item(r, self._COL_SHAPE)
+            if not shape_item:
+                continue
+            if num_item and num_item.text() == "\u21b3":
+                continue  # proxy row existante, traitée plus bas
+            sname = shape_item.text()
+            existing_shapes.add(sname)
+            if sname in by_shape:
+                _apply_row_data(r, by_shape[sname])
+
+        # Ajouter les shapes primaires absentes du tableau
+        row_num = self._table.rowCount()
+        for rd in primary_data:
+            sname = rd.get("shape", "")
+            if sname and sname not in existing_shapes:
+                row_num += 1
+                self._append_table_row(
+                    row_num, sname, controllers,
+                    ctrl=rd.get("controller", ""),
+                    attr=rd.get("attr", "ty"),
+                    custom_attr=rd.get("custom_attr", ""),
+                    direction=rd.get("direction", "+"),
+                    in_min=rd.get("in_min", 0.0),
+                    in_max=rd.get("in_max", 1.0),
+                )
+
+        # ── Passe 2 : proxy rows ──────────────────────────────────────────────
+        for rd in proxy_data:
+            shape        = rd.get("shape", "")
+            proxy_ctrl   = rd.get("controller", "")
+            if not shape:
+                continue
+
+            # Vérifier si cette proxy row existe déjà (même shape + même ctrl)
+            already_exists = False
+            for check_r in range(self._table.rowCount()):
+                n_item = self._table.item(check_r, self._COL_NUM)
+                s_item = self._table.item(check_r, self._COL_SHAPE)
+                cb_chk = self._table.cellWidget(check_r, self._COL_CTRL)
+                if (n_item and n_item.text() == "\u21b3"
+                        and s_item and s_item.text() == shape
+                        and cb_chk and cb_chk.currentText() == proxy_ctrl):
+                    already_exists = True
+                    break
+            if already_exists:
+                continue
+
+            # Trouver la dernière row de cette shape (primaire ou proxy) pour insérer après
+            last_row = -1
+            for check_r in range(self._table.rowCount()):
+                s_item = self._table.item(check_r, self._COL_SHAPE)
+                if s_item and s_item.text() == shape:
+                    last_row = check_r
+            if last_row < 0:
+                continue
+
+            self._add_proxy_row(last_row, ctrl=proxy_ctrl)
+            new_row = last_row + 1
+            _apply_row_data(new_row, rd)
+
+
+    # ── Context menu ──────────────────────────────────────────────────────────
+
+    def _show_row_context_menu(self, pos):
+        row = self._table.rowAt(pos.y())
+        if row < 0:
+            return
+        menu = QtWidgets.QMenu(self)
+        act_proxy = menu.addAction("Add Proxy Row")
+        act = menu.exec_(self._table.viewport().mapToGlobal(pos))
+        if act == act_proxy:
+            self._add_proxy_row(row)
+
+    def _add_proxy_row(self, source_row, ctrl="", in_max_override=None):
+        """Insère une ligne après source_row avec la même shape, controller vide (ou pré-renseigné)."""
+        shape_item = self._table.item(source_row, self._COL_SHAPE)
+        if not shape_item:
+            return
+        shape_name = shape_item.text()
+
+        # Lire les paramètres de la ligne source (attr, dir, in_max)
+        cb_attr  = self._table.cellWidget(source_row, self._COL_ATTR)
+        cb_dir   = self._table.cellWidget(source_row, self._COL_DIR)
+        sb_inmax = self._table.cellWidget(source_row, self._COL_INMAX)
+        attr      = cb_attr.currentText()  if cb_attr  else "ty"
+        direction = cb_dir.currentText()   if cb_dir   else "+"
+        in_max    = in_max_override if in_max_override is not None else (sb_inmax.value() if sb_inmax else 1.0)
+
+        controllers = self._scene_controllers()
+        insert_row  = source_row + 1
+        self._table.insertRow(insert_row)
+
+        row_num_item = QtWidgets.QTableWidgetItem(f"↳")
+        row_num_item.setFlags(QtCore.Qt.ItemIsEnabled)
+        row_num_item.setForeground(QtGui.QColor("#888888"))
+        self._table.setItem(insert_row, self._COL_NUM, row_num_item)
+
+        shape_proxy = QtWidgets.QTableWidgetItem(shape_name)
+        shape_proxy.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
+        shape_proxy.setForeground(QtGui.QColor("#888888"))
+        self._table.setItem(insert_row, self._COL_SHAPE, shape_proxy)
+
+        cb_ctrl_new = QtWidgets.QComboBox()
+        cb_ctrl_new.setEditable(True)
+        cb_ctrl_new.addItem("")
+        cb_ctrl_new.addItems(controllers)
+        if ctrl:
+            cb_ctrl_new.setCurrentText(ctrl)
+        self._table.setCellWidget(insert_row, self._COL_CTRL, cb_ctrl_new)
+
+        cb_attr_new = QtWidgets.QComboBox()
+        cb_attr_new.addItems(self._ATTR_ITEMS)
+        cb_attr_new.setCurrentText(attr)
+        le_custom = QtWidgets.QLineEdit()
+        le_custom.setPlaceholderText("attr name")
+        le_custom.setEnabled(attr == "custom")
+        cb_attr_new.currentTextChanged.connect(
+            lambda text, le=le_custom: le.setEnabled(text == "custom"))
+        self._table.setCellWidget(insert_row, self._COL_ATTR,  cb_attr_new)
+        self._table.setCellWidget(insert_row, self._COL_CATTR, le_custom)
+
+        cb_dir_new = QtWidgets.QComboBox()
+        cb_dir_new.addItems(["+", "\u2212"])
+        cb_dir_new.setCurrentText(direction)
+        self._table.setCellWidget(insert_row, self._COL_DIR, cb_dir_new)
+
+        sb_inmin_new = QtWidgets.QDoubleSpinBox()
+        sb_inmin_new.setRange(-9999.0, 9999.0)
+        sb_inmin_new.setSingleStep(0.1)
+        sb_inmin_new.setDecimals(3)
+        sb_inmin_new.setValue(0.0)
+        sb_inmin_new.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self._table.setCellWidget(insert_row, self._COL_INMIN, sb_inmin_new)
+
+        sb_inmax_new = QtWidgets.QDoubleSpinBox()
+        sb_inmax_new.setRange(0.0, 9999.0)
+        sb_inmax_new.setSingleStep(0.1)
+        sb_inmax_new.setDecimals(3)
+        sb_inmax_new.setValue(in_max)
+        sb_inmax_new.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self._table.setCellWidget(insert_row, self._COL_INMAX, sb_inmax_new)
+
+        lbl_status = QtWidgets.QLabel("●")
+        lbl_status.setAlignment(QtCore.Qt.AlignCenter)
+        lbl_status.setStyleSheet("color: grey;")
+        self._table.setCellWidget(insert_row, self._COL_STAT, lbl_status)
+
+    # ── Auto-stagger ──────────────────────────────────────────────────────────
+
+    def _apply_stagger(self):
+        """Crée des proxy rows (master controller) sur les rows sélectionnées.
+        Le stagger symétrique calcule In Max selon la position dans la sélection :
+        extrêmes → in_max_ref, centre → désactivé (9999). in_min=0 pour toutes."""
+        master_ctrl = self._le_stagger_ctrl.text().strip()
+        axis        = self._combo_stagger_axis.currentText()
+        in_max_ref  = self._sb_stagger_inmax.value()
+
+        if not master_ctrl:
+            QtWidgets.QMessageBox.warning(self, "Auto-stagger", "Renseigne le master controller.")
+            return
+
+        # Rows sélectionnées (primaires uniquement, ordre de tableau maintenu)
+        selected = sorted(set(idx.row() for idx in self._table.selectedIndexes()))
+        primary_selected = [r for r in selected
+                            if not (self._table.item(r, self._COL_NUM) and
+                                    self._table.item(r, self._COL_NUM).text() == "\u21b3")]
+        if not primary_selected:
+            QtWidgets.QMessageBox.information(
+                self, "Auto-stagger", "Sélectionne des rows dans le tableau.")
+            return
+
+        n   = len(primary_selected)
+        mid = (n - 1) / 2.0
+
+        # Traiter de bas en haut pour éviter les décalages d'indices à l'insertion
+        for k, r in reversed(list(enumerate(primary_selected))):
+            shape_item = self._table.item(r, self._COL_SHAPE)
+            if not shape_item:
+                continue
+            shape = shape_item.text()
+
+            coeff      = abs(k - mid) / mid if mid > 1e-9 else 1.0
+            in_max_val = in_max_ref / coeff if coeff > 1e-9 else 0.0
+
+            # Chercher une proxy row existante pour ce shape + master ctrl
+            existing_proxy = -1
+            for check_r in range(self._table.rowCount()):
+                n_item = self._table.item(check_r, self._COL_NUM)
+                s_item = self._table.item(check_r, self._COL_SHAPE)
+                cb_chk = self._table.cellWidget(check_r, self._COL_CTRL)
+                if (n_item and n_item.text() == "\u21b3"
+                        and s_item and s_item.text() == shape
+                        and cb_chk and cb_chk.currentText() == master_ctrl):
+                    existing_proxy = check_r
+                    break
+
+            if existing_proxy >= 0:
+                # Mettre à jour la proxy existante
+                target_row = existing_proxy
+            else:
+                # Créer une nouvelle proxy row
+                self._add_proxy_row(r, ctrl=master_ctrl, in_max_override=in_max_val)
+                target_row = r + 1
+
+            # Appliquer axis / in_min / in_max sur la proxy row
+            cb_attr_p  = self._table.cellWidget(target_row, self._COL_ATTR)
+            sb_inmin_p = self._table.cellWidget(target_row, self._COL_INMIN)
+            sb_inmax_p = self._table.cellWidget(target_row, self._COL_INMAX)
+            if cb_attr_p:
+                aidx = cb_attr_p.findText(axis)
+                if aidx >= 0:
+                    cb_attr_p.setCurrentIndex(aidx)
+            if sb_inmin_p:
+                sb_inmin_p.setValue(0.0)
+            if sb_inmax_p:
+                sb_inmax_p.setValue(in_max_val)
+
+    # ── Build & Connect ───────────────────────────────────────────────────────
+
+    @undo_chunk
+    def _on_build_connect(self):
+        bs_node = self._le_bs_node.text().strip()
+        if not bs_node or not cmds.objExists(bs_node):
+            QtWidgets.QMessageBox.warning(
+                self, "Build & Connect", "No valid blendShape node set.\nUse 'Get' to pick one.")
+            return
+
+        rows = self._collect_rows()
+        results = build_and_connect_rig(bs_node, rows)
+
+        # Build shape → table row lookup
+        row_by_shape = {}
+        for r in range(self._table.rowCount()):
+            item = self._table.item(r, self._COL_SHAPE)
+            if item:
+                row_by_shape[item.text()] = r
+
+        ok_count = err_count = skip_count = 0
+        for res in results:
+            shape  = res["shape"]
+            status = res["status"]
+            r = row_by_shape.get(shape)
+            if r is not None:
+                lbl = self._table.cellWidget(r, self._COL_STAT)
+                if lbl:
+                    if status in ("ok", "ok:direct"):
+                        color = "#00cc00"
+                        ok_count += 1
+                    elif status == "skip":
+                        color = "grey"
+                        skip_count += 1
+                    else:
+                        color = "#ff4444"
+                        err_count += 1
+                    lbl.setStyleSheet(f"color: {color};")
+                    lbl.setToolTip(status)
+
+        QtWidgets.QMessageBox.information(
+            self, "Build & Connect",
+            f"Done.\n"
+            f"  \u2713 Connected : {ok_count}\n"
+            f"  \u2715 Errors    : {err_count}\n"
+            f"  \u2014 Skipped   : {skip_count}"
+        )
+
+
 class NamingConventionDialog(QtWidgets.QDialog):
     """
     Full naming convention editor:
@@ -1064,7 +1901,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
 class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     TOOL_NAME = "BlendshapeEditorUI"
-    VERSION   = "v.04.00"
+    VERSION   = "v.04.01"
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -1329,6 +2166,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         act_check = menu_edit.addAction("Check Shapes…")
         act_check.setToolTip("Open the Check Shapes dialog to verify expected targets on a blendShape node")
         act_check.triggered.connect(self._open_check_shapes)
+        act_rig = menu_edit.addAction("Rig Connector…")
+        act_rig.setToolTip("Open the Rig Connector to map FK controllers to blendShape targets")
+        act_rig.triggered.connect(self._open_rig_connector)
         menu_edit.addSeparator()
         act_doc = menu_edit.addAction("Documentation")
         act_doc.setToolTip("Open the online documentation in your web browser")
@@ -2292,6 +3132,24 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_sr.addWidget(_w_smt)
         row_sr.addWidget(_w_rlx)
         lay_mod.addLayout(row_sr)
+
+        row_ha = QtWidgets.QHBoxLayout()
+        row_ha.setSpacing(2)
+        _w_hammer, self.btn_hammer = self._icon_btn(
+            f"{_icons_dir}/hammer_delta.png", "Hammer Deltas",
+            "Replaces each selected vertex's delta with the IDW-weighted average\n"
+            "of its topological neighbors' deltas (1-ring, Euclidean distance).\n"
+            "Like Maya's Hammer Weights — selection required.")
+        self.btn_hammer.clicked.connect(self._run_hammer_deltas)
+        _w_average, self.btn_average = self._icon_btn(
+            f"{_icons_dir}/average_delta.png", "Average Deltas",
+            "Replaces all selected vertices' deltas with their arithmetic mean.\n"
+            "Levels a cluster to a common displacement value.\n"
+            "Selection required.")
+        self.btn_average.clicked.connect(self._run_average_deltas)
+        row_ha.addWidget(_w_hammer)
+        row_ha.addWidget(_w_average)
+        lay_mod.addLayout(row_ha)
         lay_mod.addSpacing(4)
         lay_mod.addWidget(_hsep())
         lay_mod.addSpacing(4)
@@ -2378,6 +3236,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             f"{_icons_dir}/smooth_delta.png",  "Smooth Deltas",         self._run_smooth_deltas)
         grp_mod.add_compact_action(
             f"{_icons_dir}/smooth_delta.png",  "Relax Deltas",          self._run_relax_deltas)
+        grp_mod.add_compact_action(
+            f"{_icons_dir}/hammer_delta.png",   "Hammer Deltas",         self._run_hammer_deltas)
+        grp_mod.add_compact_action(
+            f"{_icons_dir}/average_delta.png", "Average Deltas",        self._run_average_deltas)
         grp_mod.add_compact_action(
             f"{_icons_dir}/copy_delta.png",    "Copy Delta",            self._run_copy_delta)
         grp_mod.add_compact_action(
@@ -3429,6 +4291,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         dlg = CheckShapesDialog(parent=self)
         dlg.show()
 
+    def _open_rig_connector(self):
+        dlg = RigConnectorDialog(parent=self)
+        dlg.show()
+
     def _open_naming_convention(self):
         dlg = NamingConventionDialog(parent_ui=self)
         dlg.exec_()
@@ -3758,6 +4624,48 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             self._set_status(
                 f"Relax Deltas {n_t} target{'s' if n_t > 1 else ''}"
                 f"  {n_passes} pass{'es' if n_passes > 1 else ''}  {scope}")
+        except Exception as e:
+            traceback.print_exc()
+            self._set_status(f"✗ {e}", error=True)
+
+    @undo_chunk
+    def _run_hammer_deltas(self):
+        raw_sel = cmds.ls(sl=True, flatten=True) or []
+        vtx_sel = [s for s in raw_sel if ".vtx[" in s]
+        if not vtx_sel:
+            self._set_status("✗ Hammer: select vertices first", error=True)
+            return
+
+        targets = self._get_targets_or_warn()
+        if not targets:
+            return
+
+        vtx_indices = [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
+        try:
+            bs_node, logical_index, target_name = targets[0]
+            hammer_target_deltas(bs_node, logical_index, vtx_indices)
+            self._set_status(f"✓ Hammer Deltas  {len(vtx_indices)} vtx")
+        except Exception as e:
+            traceback.print_exc()
+            self._set_status(f"✗ {e}", error=True)
+
+    @undo_chunk
+    def _run_average_deltas(self):
+        raw_sel = cmds.ls(sl=True, flatten=True) or []
+        vtx_sel = [s for s in raw_sel if ".vtx[" in s]
+        if not vtx_sel:
+            self._set_status("✗ Average: select vertices first", error=True)
+            return
+
+        targets = self._get_targets_or_warn()
+        if not targets:
+            return
+
+        vtx_indices = [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
+        try:
+            bs_node, logical_index, target_name = targets[0]
+            average_target_deltas(bs_node, logical_index, vtx_indices)
+            self._set_status(f"✓ Average Deltas  {len(vtx_indices)} vtx")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)

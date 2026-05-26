@@ -1,5 +1,35 @@
 # Changelog — Blendshape Editor Tool
 
+## v.04.01
+
+**Rig Connector — Save/Load Mapping : support des proxy rows**
+
+- `_collect_rows` enregistre maintenant un flag `"proxy": true/false` dans le JSON.
+- `_load_mapping` recrée correctement les proxy rows (passe 1 : rows primaires, passe 2 : proxy rows via `_add_proxy_row`).
+- La renumérotation dans `_remove_rows` ne remplace plus le marqueur `↳` par un numéro.
+
+**Rig Connector — Auto-stagger repensé**
+
+- L'Auto-stagger opère désormais sur les **rows sélectionnées** dans le tableau, pas sur un pattern de nom.
+- Crée automatiquement des proxy rows avec le master controller et un stagger symétrique :
+  extrêmes (premier/dernier) → `in_max = in_max_ref`, centre → `in_max = 0` (désactivé).
+- Si une proxy row pour ce controller existe déjà, elle est mise à jour sans doublon.
+- La création automatique de proxy rows dans Apply Stagger a été supprimée (créait des doublons).
+
+**Rig Connector — Spinboxes InMin / InMax**
+
+- Locale forcée en anglais : le point est utilisé comme séparateur décimal.
+- InMax accepte désormais `0` (driver désactivé) ; la valeur minimale passe de `0.001` à `0.0`.
+
+**Build & Connect — Robustesse au rebuild**
+
+- Suppression du loop `disconnectAttr` qui pouvait faire échouer le build sur des connexions locked (combination targets, attrs verrouillés).
+- Si tous les drivers d'une shape sont désactivés (`in_max=0`), le réseau n'est pas créé (status `skip`).
+- Les drivers désactivés ne contribuent plus à `pending_limits` (évitait de bloquer le controller à 0).
+- `pending_conds` utilise le nom réel du nœud retourné par `cmds.createNode` (évite les erreurs de renommage automatique Maya).
+
+---
+
 ## v.04.00
 
 **Edge Loop Split — persistent setup fields**

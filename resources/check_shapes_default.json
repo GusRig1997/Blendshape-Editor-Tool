@@ -46,7 +46,7 @@
         "L_cheekbone_out", "R_cheekbone_out"
     ],
     "cheeks": [
-        "L_cheek_in", "L_cheek_out", "R_cheek_in", "R_cheek_out"
+        "L_cheek_in", "L_cheek_out", "R_cheek_in", "R_cheek_out","L_cheek_up","L_cheek_dn","L_cheek_frt","L_cheek_bck","R_cheek_up","R_cheek_dn","R_cheek_frt","R_cheek_bck"
     ],
     "brows": [
         "L_brow_up", "L_brow_dn", "L_brow_in",
