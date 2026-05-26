@@ -951,7 +951,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         # Col 1 — Shape
         shape_item = QtWidgets.QTableWidgetItem(shape_name)
-        shape_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable)
+        shape_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsSelectable | QtCore.Qt.ItemIsEditable)
         self._table.setItem(row, self._COL_SHAPE, shape_item)
 
         # Col 2 — Controller (editable QComboBox)
