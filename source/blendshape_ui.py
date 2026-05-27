@@ -944,7 +944,8 @@ class RigConnectorDialog(QtWidgets.QDialog):
         btn_bar.addWidget(btn_autofill)
 
         btn_add = QtWidgets.QPushButton("Add Row")
-        btn_add.setToolTip("Insert a new empty row at the bottom of the table")
+        btn_add.setToolTip("Add one row per target selected in the Shape Editor.\n"
+                           "Falls back to one empty row if nothing is selected.")
         btn_add.clicked.connect(self._add_row)
         btn_bar.addWidget(btn_add)
 
@@ -1254,10 +1255,73 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
     # ── Row management ────────────────────────────────────────────────────────
 
+    def _shape_editor_selection(self):
+        """Return target names currently selected in Maya's Shape Editor."""
+        import re as _re
+        bs = getattr(self, '_bs_node', None)
+        if not bs or not cmds.objExists(bs):
+            return []
+
+        alias_pairs = cmds.aliasAttr(bs, q=True) or []
+        idx_to_name = {}
+        for j in range(0, len(alias_pairs), 2):
+            name = alias_pairs[j]
+            attr = alias_pairs[j + 1]
+            m = _re.search(r'\[(\d+)\]', attr)
+            if m:
+                idx_to_name[int(m.group(1))] = name
+
+        try:
+            import maya.mel as mel
+            panels = cmds.getPanel(type='blendShapePanel') or []
+            for panel in panels:
+                editor = cmds.blendShapePanel(panel, q=True, blendShapeEditor=True)
+
+                # Approach 1 — MEL proc (Maya 2022+)
+                try:
+                    items = mel.eval(f'blendShapeEditorGetSelectedItems("{editor}")')
+                    names = []
+                    for item in (items or []):
+                        m = _re.search(r'weight\[(\d+)\]', str(item))
+                        if m:
+                            n = idx_to_name.get(int(m.group(1)))
+                            if n:
+                                names.append(n)
+                    if names:
+                        return names
+                except Exception:
+                    pass
+
+                # Approach 2 — selectionConnection
+                try:
+                    slc = cmds.blendShapeEditor(editor, q=True, selectionConnection=True)
+                    items = cmds.selectionConnection(slc, q=True, object=True) or []
+                    names = []
+                    for item in items:
+                        m = _re.search(r'weight\[(\d+)\]', str(item))
+                        if m:
+                            n = idx_to_name.get(int(m.group(1)))
+                            if n:
+                                names.append(n)
+                    if names:
+                        return names
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+        return []
+
     def _add_row(self):
         controllers = self._scene_controllers()
-        row_num = self._table.rowCount() + 1
-        self._append_table_row(row_num, "", controllers)
+        sel = self._shape_editor_selection()
+        if sel:
+            for name in sel:
+                row_num = self._table.rowCount() + 1
+                self._append_table_row(row_num, name, controllers)
+        else:
+            row_num = self._table.rowCount() + 1
+            self._append_table_row(row_num, "", controllers)
 
     def _remove_rows(self):
         selected = sorted(
