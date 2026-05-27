@@ -1257,60 +1257,14 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
     def _shape_editor_selection(self):
         """Return target names currently selected in Maya's Shape Editor."""
-        import re as _re
         bs = getattr(self, '_bs_node', None)
         if not bs or not cmds.objExists(bs):
             return []
-
-        alias_pairs = cmds.aliasAttr(bs, q=True) or []
-        idx_to_name = {}
-        for j in range(0, len(alias_pairs), 2):
-            name = alias_pairs[j]
-            attr = alias_pairs[j + 1]
-            m = _re.search(r'\[(\d+)\]', attr)
-            if m:
-                idx_to_name[int(m.group(1))] = name
-
         try:
-            import maya.mel as mel
-            panels = cmds.getPanel(type='blendShapePanel') or []
-            for panel in panels:
-                editor = cmds.blendShapePanel(panel, q=True, blendShapeEditor=True)
-
-                # Approach 1 — MEL proc (Maya 2022+)
-                try:
-                    items = mel.eval(f'blendShapeEditorGetSelectedItems("{editor}")')
-                    names = []
-                    for item in (items or []):
-                        m = _re.search(r'weight\[(\d+)\]', str(item))
-                        if m:
-                            n = idx_to_name.get(int(m.group(1)))
-                            if n:
-                                names.append(n)
-                    if names:
-                        return names
-                except Exception:
-                    pass
-
-                # Approach 2 — selectionConnection
-                try:
-                    slc = cmds.blendShapeEditor(editor, q=True, selectionConnection=True)
-                    items = cmds.selectionConnection(slc, q=True, object=True) or []
-                    names = []
-                    for item in items:
-                        m = _re.search(r'weight\[(\d+)\]', str(item))
-                        if m:
-                            n = idx_to_name.get(int(m.group(1)))
-                            if n:
-                                names.append(n)
-                    if names:
-                        return names
-                except Exception:
-                    pass
+            targets = get_selected_targets()   # (bs_node, idx, name) — from blendshape_core
+            return [name for node, _idx, name in targets if node == bs]
         except Exception:
-            pass
-
-        return []
+            return []
 
     def _add_row(self):
         controllers = self._scene_controllers()
