@@ -1,5 +1,22 @@
 # Changelog — Blendshape Editor Tool
 
+## v.04.03
+
+**Rig Connector — Combo Driver : syntaxes étendues**
+
+- Support de la forme `node.attr` : un attribut Maya quelconque peut servir de combo driver (ex : `FKJaw_ctrl.zip`)
+- Préfixe `rev:` : insère un nœud `reverse` (1 − input) avant le gate — la shape est bloquée quand l'attribut est actif (ex : `rev:FKJaw_ctrl.retain`)
+- Nœuds `rev_{shape}_{i}` inclus dans le cleanup rebuild et `disconnect_rig_shapes`
+- Tooltip de la colonne Combo Driver mis à jour pour documenter les trois syntaxes
+
+**Rig Connector — Add Row depuis le Shape Editor**
+
+- Le bouton `Add Row` lit la sélection courante du Shape Editor (`getShapeEditorTreeviewSelection`)
+- Ajoute un row par target sélectionnée, avec le nom pré-rempli
+- Fallback : un row vide si rien n'est sélectionné dans le Shape Editor
+
+---
+
 ## v.04.02
 
 **Rig Connector — Simplification UI majeure**
