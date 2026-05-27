@@ -1489,11 +1489,11 @@ class RigConnectorDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.warning(self, "Load Error", str(e))
             return
 
-        # Séparer rows primaires et proxy
+        # Split primary and proxy rows
         primary_data = [rd for rd in data if isinstance(rd, dict) and not rd.get("proxy", False)]
         proxy_data   = [rd for rd in data if isinstance(rd, dict) and rd.get("proxy", False)]
 
-        # by_shape uniquement pour les primaires (pas de doublon de clé)
+        # by_shape for primary rows only (no duplicate keys)
         by_shape    = {rd["shape"]: rd for rd in primary_data}
         controllers = self._scene_controllers()
 
@@ -1535,7 +1535,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
             if le_gate:
                 le_gate.setText(rd.get("gate", ""))
 
-        # ── Passe 1 : rows primaires ──────────────────────────────────────────
+        # ── Pass 1: primary rows ──────────────────────────────────────────────
         existing_shapes = set()
         for r in range(self._table.rowCount()):
             num_item   = self._table.item(r, self._COL_NUM)
@@ -1543,13 +1543,13 @@ class RigConnectorDialog(QtWidgets.QDialog):
             if not shape_item:
                 continue
             if num_item and num_item.text() == "\u21b3":
-                continue  # proxy row existante, traitée plus bas
+                continue  # existing proxy row, handled below
             sname = shape_item.text()
             existing_shapes.add(sname)
             if sname in by_shape:
                 _apply_row_data(r, by_shape[sname])
 
-        # Ajouter les shapes primaires absentes du tableau
+        # Add primary shapes not yet in the table
         row_num = self._table.rowCount()
         for rd in primary_data:
             sname = rd.get("shape", "")
@@ -1565,14 +1565,14 @@ class RigConnectorDialog(QtWidgets.QDialog):
                     gate=rd.get("gate", ""),
                 )
 
-        # ── Passe 2 : proxy rows ──────────────────────────────────────────────
+        # ── Pass 2: proxy rows ────────────────────────────────────────────────
         for rd in proxy_data:
             shape        = rd.get("shape", "")
             proxy_ctrl   = rd.get("controller", "")
             if not shape:
                 continue
 
-            # Vérifier si cette proxy row existe déjà (même shape + même ctrl)
+            # Check if this proxy row already exists (same shape + same ctrl)
             already_exists = False
             for check_r in range(self._table.rowCount()):
                 n_item = self._table.item(check_r, self._COL_NUM)
@@ -1586,7 +1586,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
             if already_exists:
                 continue
 
-            # Trouver la dernière row de cette shape (primaire ou proxy) pour insérer après
+            # Find the last row for this shape (primary or proxy) to insert after
             last_row = -1
             for check_r in range(self._table.rowCount()):
                 s_item = self._table.item(check_r, self._COL_SHAPE)
@@ -1613,13 +1613,13 @@ class RigConnectorDialog(QtWidgets.QDialog):
             self._add_proxy_row(row)
 
     def _add_proxy_row(self, source_row, ctrl="", in_max_override=None):
-        """Insère une ligne après source_row avec la même shape, controller vide (ou pré-renseigné)."""
+        """Insert a row after source_row with the same shape and an empty (or pre-filled) controller."""
         shape_item = self._table.item(source_row, self._COL_SHAPE)
         if not shape_item:
             return
         shape_name = shape_item.text()
 
-        # Lire les paramètres de la ligne source (attr, in_max)
+        # Read source row parameters (attr, in_max)
         cb_attr  = self._table.cellWidget(source_row, self._COL_ATTR)
         sb_inmax = self._table.cellWidget(source_row, self._COL_INMAX)
         attr   = cb_attr.currentText()  if cb_attr  else "ty"
@@ -2801,7 +2801,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         root.addWidget(grp_nom)
 
-        # ── Split (inclut les contrôles Locators) ─────────────────────────
+        # ── Split (includes Locator controls) ─────────────────────────────
         grp_split, _body_split, lay_split = self._collapsible_section("Split", two_state=True)
         lay_split.setSpacing(6)
 
@@ -4193,11 +4193,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 return (1.0, 1.0, 1.0)
             stops_hue = [
                 (0.001, 0.667),   # blue
-                (0.080, 0.500),   # leaving cyan  — pic étroit autour de hue=0.5
+                (0.080, 0.500),   # leaving cyan  — narrow peak around hue=0.5
                 (0.100, 0.333),   # green
                 (0.500, 0.167),   # yellow
                 (0.625, 0.100),   # yellow-orange
-                (0.9500, 0.050),   # orange — plage élargie
+                (0.9500, 0.050),   # orange — wider range
                 (0.999, 0.000),   # red
             ]
             for i in range(len(stops_hue) - 1):

@@ -191,12 +191,12 @@ def compute_weights(vtx_positions, loc_positions, delta_indices, falloff_func, a
     1 locator  -> 2 weights : [w_in, w_out]
     N locators -> N weights : [w0, w1, ..., wN-1]
 
-    Principe de projection :
-      L'axe coché (X/Y/Z) désigne quelle colonne de la matrice du locator
-      sert de direction de projection. Résultat identique quel que soit l'axe
-      coché si le locator est orienté pareil dans la scène.
-      Toutes les projections sont en coordonnées monde absolues (origine world),
-      ce qui garantit des comparaisons cohérentes pour le clamping.
+    Projection principle:
+      The checked axis (X/Y/Z) defines which column of the locator matrix
+      is used as the projection direction. Result is identical regardless of
+      the checked axis if the locator has the same orientation in the scene.
+      All projections use absolute world coordinates (world origin),
+      which guarantees consistent comparisons for clamping.
     """
     n_locs  = len(loc_positions)
     use_x, use_z, use_y = axes
@@ -231,7 +231,7 @@ def compute_weights(vtx_positions, loc_positions, delta_indices, falloff_func, a
         return -raw if invert_axis else raw
 
     def dist_in_frame(p, ref, ax_x, ax_y, ax_z):
-        """Distance euclidienne entre p et ref dans les axes cochés."""
+        """Euclidean distance between p and ref along the checked axes."""
         dx = p[0]-ref[0]; dy = p[1]-ref[1]; dz = p[2]-ref[2]
         v  = (dx, dy, dz)
         d2 = 0.0
@@ -274,10 +274,10 @@ def compute_weights(vtx_positions, loc_positions, delta_indices, falloff_func, a
             weights[vi] = normalize_w(w)
         return weights
 
-    # ── 1 locator — projection 1D ─────────────────────────────────────────────
-    # proj1d retourne des coordonnées monde absolues.
-    # loc_1d = position du locator projetée → sert de centre de la zone.
-    # in_end / out_start = bornes de la zone de transition autour du locator.
+    # ── 1 locator — 1D projection ─────────────────────────────────────────────
+    # proj1d returns absolute world coordinates.
+    # loc_1d = projected locator position → serves as the center of the zone.
+    # in_end / out_start = boundaries of the transition zone around the locator.
     if n_locs == 1:
         ax_x, ax_y, ax_z = get_axes(0)
         loc_1d    = proj1d(loc_positions[0], ax_x, ax_y, ax_z)
@@ -297,13 +297,13 @@ def compute_weights(vtx_positions, loc_positions, delta_indices, falloff_func, a
         return weights
 
     # ── N locators — hat functions ────────────────────────────────────────────
-    # Toutes les projections utilisent proj1d (coordonnées monde absolues).
-    # Cela garantit que peak(locator i) est sa vraie position projetée,
-    # et que le clamping compare les vertices à cette position réelle —
-    # quel que soit l'axe coché (X/Y/Z local ou world).
+    # All projections use proj1d (absolute world coordinates).
+    # This guarantees that peak(locator i) is its true projected position,
+    # and that clamping compares vertices to that real position —
+    # regardless of the checked axis (local X/Y/Z or world).
     #
-    # sorted_asc : détermine le sens de la chaîne en projetant tous les locators
-    # avec les axes du locator 0 comme référence commune.
+    # sorted_asc: determines the chain direction by projecting all locators
+    # using locator 0's axes as a common reference.
 
     ax_x0, ax_y0, ax_z0 = get_axes(0)
     loc_1d_ref = [proj1d(lp, ax_x0, ax_y0, ax_z0) for lp in loc_positions]
@@ -311,10 +311,10 @@ def compute_weights(vtx_positions, loc_positions, delta_indices, falloff_func, a
 
     def hat_score(vi, i):
         """
-        Score hat du vertex vi pour le locator i.
-        peak   = position projetée du locator i (coords monde absolues).
-        v_1d   = position projetée du vertex    (coords monde absolues).
-        Les axes du locator i sont utilisés pour sa propre projection.
+        Hat score of vertex vi for locator i.
+        peak   = projected position of locator i (absolute world coords).
+        v_1d   = projected position of the vertex (absolute world coords).
+        Locator i's own axes are used for its projection.
         """
         p                = vtx_positions[vi]
         ax_x, ax_y, ax_z = get_axes(i)
@@ -323,7 +323,7 @@ def compute_weights(vtx_positions, loc_positions, delta_indices, falloff_func, a
         peak = proj1d(loc_positions[i], ax_x, ax_y, ax_z)
 
         if i == 0:
-            # Bord gauche : clampe tout ce qui est avant le locator 0
+            # Left edge: clamp everything before locator 0
             if (sorted_asc and v_1d <= peak) or (not sorted_asc and v_1d >= peak):
                 return 1.0
             neighbor_1d = proj1d(loc_positions[1], ax_x, ax_y, ax_z)
@@ -337,7 +337,7 @@ def compute_weights(vtx_positions, loc_positions, delta_indices, falloff_func, a
             return falloff_func(max(0.0, min(1.0, 1.0 - t)))
 
         elif i == n_locs - 1:
-            # Bord droit : clampe tout ce qui est après le dernier locator
+            # Right edge: clamp everything after the last locator
             if (sorted_asc and v_1d >= peak) or (not sorted_asc and v_1d <= peak):
                 return 1.0
             neighbor_1d = proj1d(loc_positions[-2], ax_x, ax_y, ax_z)
@@ -351,7 +351,7 @@ def compute_weights(vtx_positions, loc_positions, delta_indices, falloff_func, a
             return falloff_func(max(0.0, min(1.0, t)))
 
         else:
-            # Locator intérieur : hat symétrique
+            # Interior locator: symmetric hat
             prev_1d = proj1d(loc_positions[i-1], ax_x, ax_y, ax_z)
             next_1d = proj1d(loc_positions[i+1], ax_x, ax_y, ax_z)
             left  = prev_1d - radius if sorted_asc else prev_1d + radius
@@ -2481,28 +2481,28 @@ _RC_LIMIT_INFO = {
     "ry": ("ry", "maxRotYLimitEnable",   "minRotYLimitEnable"),
     "rz": ("rz", "maxRotZLimitEnable",   "minRotZLimitEnable"),
 }
-# Scale attrs traités séparément : lock/hide si non utilisés, pas de transformLimits
+# Scale attrs handled separately: lock/hide if unused, no transformLimits
 _SCALE_ATTRS = {"sx", "sy", "sz"}
 
 
 @undo_chunk
 def build_and_connect_rig(bs_node, rows):
     """
-    Par shape, construit le réseau suivant :
-      offset_{shape}_{i}  (addDoubleLinear, si in_min≠0) : soustrait in_min
-      norm_{shape}_{i}    (multiplyDivide)                : normalise → [0..1..∞]
-      sum_{shape}         (plusMinusAverage, si >1 driver): somme additive
-      cond_{shape}        (condition)                     : hasLimits → maxR=1 ou 1e6
-      clamp_{shape}       (clamp)                         : minR=0 toujours, maxR piloté
-      gate_{shape}        (multDoubleLinear, si gate≠"")  : multiplie par le weight de la gate target
+    Per shape, builds the following network:
+      offset_{shape}_{i}  (addDoubleLinear, if in_min≠0) : subtracts in_min
+      norm_{shape}_{i}    (multiplyDivide)                : normalizes → [0..1..∞]
+      sum_{shape}         (plusMinusAverage, if >1 driver): additive sum
+      cond_{shape}        (condition)                     : hasLimits → maxR=1 or 1e6
+      clamp_{shape}       (clamp)                         : minR=0 always, maxR driven
+      gate_{shape}        (multDoubleLinear, if gate≠"")  : multiplies by the gate target weight
 
-    Plusieurs rows avec la même shape = proxy / drivers additifs.
-    hasLimits=ON  : weight [0,1]  + controller physiquement bloqué (transform attrs)
-    hasLimits=OFF : weight proportionnel au-delà de 1.0, jamais négatif
+    Multiple rows with the same shape = proxy / additive drivers.
+    hasLimits=ON  : weight [0,1]  + controller physically clamped (transform attrs)
+    hasLimits=OFF : weight proportional beyond 1.0, never negative
 
-    rows : list of dicts avec les clés :
+    rows : list of dicts with keys:
         shape, controller, attr, in_min, in_max
-        (in_max peut être négatif : signe = direction)
+        (in_max can be negative: sign encodes direction)
     """
     import re as _re
     from collections import defaultdict
@@ -2522,7 +2522,7 @@ def build_and_connect_rig(bs_node, rows):
     pending_conds         = {}  # ctrl → [cond_name, ...]
     pending_custom_clamps = {}  # ctrl_attr_full → (c_min, c_max)
 
-    # ── Phase 1 : validation + création des custom attrs ─────────────────────
+    # ── Phase 1: validation + custom attr creation ───────────────────────────
     valid_rows = []
     for row in rows:
         shape         = row.get("shape", "").strip()
@@ -2562,16 +2562,16 @@ def build_and_connect_rig(bs_node, rows):
             "gate": gate,
         })
 
-    # ── Phase 2 : grouper par shape ───────────────────────────────────────────
+    # ── Phase 2: group by shape ───────────────────────────────────────────────
     shape_groups = defaultdict(list)
     for vr in valid_rows:
         shape_groups[vr["shape"]].append(vr)
 
-    # ── Phase 3 : construire le réseau par shape ──────────────────────────────
+    # ── Phase 3: build network per shape ─────────────────────────────────────
     for shape, group in shape_groups.items():
         bs_weight_attr = f"{bs_node}.w[{group[0]['idx']}]"
         try:
-            # Nettoyer les anciens nodes (noms déterministes)
+            # Remove old nodes (deterministic names)
             old = (cmds.ls(f"offset_{shape}_*", f"norm_{shape}_*",
                            f"gate_{shape}_*", f"rev_{shape}_*") or [])
             old += [n for n in (f"sum_{shape}", f"clamp_{shape}",
@@ -2579,24 +2579,24 @@ def build_and_connect_rig(bs_node, rows):
                     if cmds.objExists(n)]
             if old:
                 cmds.delete(old)
-            # Pas de disconnectAttr explicite : force=True à la connexion finale suffit
+            # No explicit disconnectAttr: force=True on the final connection is sufficient
 
-            # ── Norm nodes (un par driver) ────────────────────────────────────
+            # ── Norm nodes (one per driver) ───────────────────────────────────
             norm_outputs = []
             for i, vr in enumerate(group):
                 in_min = vr["in_min"]
                 in_max = vr["in_max"]
 
-                # in_max=0 et in_min=0 → driver désactivé, skip
+                # in_max=0 and in_min=0 → driver disabled, skip
                 if abs(in_max) < 1e-9 and abs(in_min) < 1e-9:
                     continue
 
-                # span peut être négatif (in_max négatif = direction négative)
+                # span can be negative (negative in_max = negative direction)
                 span = in_max - in_min
                 if abs(span) < 1e-9:
                     continue
 
-                # Offset : soustrait in_min du signal (toujours -in_min)
+                # Offset: subtracts in_min from the signal (always -in_min)
                 if abs(in_min) > 1e-9:
                     adl = cmds.createNode("addDoubleLinear", name=f"offset_{shape}_{i}")
                     cmds.connectAttr(vr["ctrl_attr"], f"{adl}.input1", force=True)
@@ -2605,15 +2605,15 @@ def build_and_connect_rig(bs_node, rows):
                 else:
                     norm_src = vr["ctrl_attr"]
 
-                # Facteur = 1/span : négatif si in_max < in_min (direction négative)
+                # Factor = 1/span: negative if in_max < in_min (negative direction)
                 norm = cmds.createNode("multiplyDivide", name=f"norm_{shape}_{i}")
                 cmds.setAttr(f"{norm}.operation", 1)
                 cmds.setAttr(f"{norm}.input2X", 1.0 / span)
                 cmds.connectAttr(norm_src, f"{norm}.input1X", force=True)
                 norm_outputs.append(f"{norm}.outputX")
 
-            # ── Somme additive si plusieurs drivers ───────────────────────────
-            # Tous les drivers désactivés → ne pas construire le réseau
+            # ── Additive sum if multiple drivers ──────────────────────────────
+            # All drivers disabled → skip network creation
             if not norm_outputs:
                 for _ in group:
                     results.append({"shape": shape, "status": "skip"})
@@ -2628,31 +2628,31 @@ def build_and_connect_rig(bs_node, rows):
                     cmds.connectAttr(out, f"{pma}.input1D[{i}]", force=True)
                 sum_out = f"{pma}.output1D"
 
-            # ── Condition : pilote clamp.maxR ─────────────────────────────────
+            # ── Condition: drives clamp.maxR ──────────────────────────────────
             cond = cmds.createNode("condition", name=f"cond_{shape}")
             cmds.setAttr(f"{cond}.operation",     0)    # equal
             cmds.setAttr(f"{cond}.secondTerm",    1)
             cmds.setAttr(f"{cond}.colorIfTrueR",  1.0)  # hasLimits=ON  → max=1
             cmds.setAttr(f"{cond}.colorIfFalseR", 1e6)  # hasLimits=OFF → libre
 
-            # ── Clamp : minR=0 toujours, maxR piloté ─────────────────────────
+            # ── Clamp: minR=0 always, maxR driven ────────────────────────────
             clp = cmds.createNode("clamp", name=f"clamp_{shape}")
             cmds.setAttr(f"{clp}.minR", 0.0)
             cmds.connectAttr(f"{cond}.outColorR", f"{clp}.maxR",   force=True)
             cmds.connectAttr(sum_out,             f"{clp}.inputR", force=True)
             cmds.connectAttr(f"{clp}.outputR", bs_weight_attr, force=True)
 
-            # ── Combo drivers : chaîne de multDoubleLinear (virgule-séparés) ────
+            # ── Combo drivers: chain of multDoubleLinear nodes (comma-separated) ─
             gate_field = group[0].get("gate", "").strip()
             gate_names = [g.strip() for g in gate_field.split(",") if g.strip()] if gate_field else []
             current_src = f"{clp}.outputR"
             for gi, gname in enumerate(gate_names):
-                # Préfixe "rev:" → inversion via reverse node
+                # "rev:" prefix → inversion via reverse node
                 use_reverse = gname.startswith("rev:")
                 if use_reverse:
                     gname = gname[4:].strip()
 
-                # "node.attr" → attribut Maya direct ; sinon → target du bs_node
+                # "node.attr" → direct Maya plug; otherwise → bs_node target lookup
                 if "." in gname:
                     if not cmds.objExists(gname):
                         continue
@@ -2678,7 +2678,7 @@ def build_and_connect_rig(bs_node, rows):
                 current_src = f"{gate_node}.output"
 
             # ── Collect post-loop ─────────────────────────────────────────────
-            # Utiliser le nom réel du node (Maya peut auto-renommer si collision)
+            # Use the real node name (Maya may auto-rename on collision)
             primary_ctrl = group[0]["ctrl"]
             pending_conds.setdefault(primary_ctrl, []).append(cond)
 
@@ -2687,27 +2687,27 @@ def build_and_connect_rig(bs_node, rows):
                 resolved_attr = vr["resolved_attr"]
                 in_max        = vr["in_max"]
                 in_min        = vr["in_min"]
-                # Skip les drivers désactivés (in_max=0 et in_min=0) pour pending_limits
+                # Skip disabled drivers (in_max=0 and in_min=0) for pending_limits
                 if abs(in_max) < 1e-9 and abs(in_min) < 1e-9:
-                    pending_conds.setdefault(ctrl, [])  # hasLimits quand même
+                    pending_conds.setdefault(ctrl, [])  # still register hasLimits
                     continue
                 if resolved_attr in _RC_LIMIT_INFO:
-                    # Limite physique couvrant le range complet d'activation (inclut 0)
+                    # Physical limit covering the full activation range (includes 0)
                     lim_min = min(0.0, in_min, in_max)
                     lim_max = max(0.0, in_min, in_max)
                     prev = pending_limits.setdefault(ctrl, {}).get(resolved_attr, (0.0, 0.0))
                     pending_limits[ctrl][resolved_attr] = (min(prev[0], lim_min),
                                                            max(prev[1], lim_max))
                 elif resolved_attr not in _SCALE_ATTRS:
-                    # Attr custom : accumuler le range min/max
+                    # Custom attr: accumulate min/max range
                     c_min = min(0.0, in_min, in_max)
                     c_max = max(0.0, in_min, in_max)
                     prev = pending_custom_clamps.get(vr["ctrl_attr"], (0.0, 0.0))
                     pending_custom_clamps[vr["ctrl_attr"]] = (min(prev[0], c_min),
                                                               max(prev[1], c_max))
-                # Chaque ctrl a son propre hasLimits → on l'enregistre
+                # Each ctrl has its own hasLimits → register it
                 if ctrl != primary_ctrl:
-                    pending_conds.setdefault(ctrl, [])  # force création sans cond
+                    pending_conds.setdefault(ctrl, [])  # force creation without cond
 
             for _ in group:
                 results.append({"shape": shape, "status": "ok"})
@@ -2716,23 +2716,23 @@ def build_and_connect_rig(bs_node, rows):
             for _ in group:
                 results.append({"shape": shape, "status": f"error:{e}"})
 
-    # ── Post-loop : hasLimits attr (dernier) + connexions ────────────────────
+    # ── Post-loop: hasLimits attr (added last) + connections ─────────────────
     for ctrl in set(pending_limits) | set(pending_conds):
         used_native = set(pending_limits.get(ctrl, {}).keys())
 
-        # Unlock/unhide les attrs natifs utilisés (au cas où un build précédent les avait lockés)
+        # Unlock/unhide native attrs in use (a previous build may have locked them)
         for attr_name in used_native:
             attr_full = f"{ctrl}.{attr_name}"
             if cmds.getAttr(attr_full, lock=True):
                 cmds.setAttr(attr_full, lock=False)
             cmds.setAttr(attr_full, keyable=True)
 
-        # Attrs natifs utilisés → range complet [lim_min, lim_max]
+        # Native attrs in use → full range [lim_min, lim_max]
         for attr_name, (lim_min, lim_max) in pending_limits.get(ctrl, {}).items():
             tl_kwarg = _RC_LIMIT_INFO[attr_name][0]
             cmds.transformLimits(ctrl, **{tl_kwarg: (lim_min, lim_max)})
 
-        # Attrs tx/ty/tz/rx/ry/rz NON utilisés → limit (0,0) + lock and hide
+        # Unused tx/ty/tz/rx/ry/rz attrs → limit (0,0) + lock and hide
         for attr_name in set(_RC_LIMIT_INFO) - used_native:
             tl_kwarg = _RC_LIMIT_INFO[attr_name][0]
             cmds.transformLimits(ctrl, **{tl_kwarg: (0.0, 0.0)})
@@ -2741,20 +2741,20 @@ def build_and_connect_rig(bs_node, rows):
             cmds.setAttr(attr_full, channelBox=False)
             cmds.setAttr(attr_full, lock=True)
 
-        # Scale attrs (sx/sy/sz) NON utilisés → lock and hide (pas de transformLimits)
+        # Unused scale attrs (sx/sy/sz) → lock and hide (no transformLimits)
         for attr_name in _SCALE_ATTRS - used_native:
             attr_full = f"{ctrl}.{attr_name}"
             cmds.setAttr(attr_full, keyable=False)
             cmds.setAttr(attr_full, channelBox=False)
             cmds.setAttr(attr_full, lock=True)
 
-        # hasLimits attr (ajouté en dernier sur le ctrl)
+        # hasLimits attr (added last on the ctrl)
         if not cmds.attributeQuery("hasLimits", node=ctrl, exists=True):
             cmds.addAttr(ctrl, longName="hasLimits", attributeType="bool",
                          defaultValue=True, keyable=True)
         cmds.setAttr(f"{ctrl}.hasLimits", True)
 
-        # Connecter hasLimits → TOUS les enables natifs (6 axes × min + max)
+        # Connect hasLimits → ALL native enable attrs (6 axes × min + max)
         for _, pos_en, neg_en in _RC_LIMIT_INFO.values():
             for en_attr in (pos_en, neg_en):
                 if not cmds.isConnected(f"{ctrl}.hasLimits", f"{ctrl}.{en_attr}"):
@@ -2765,7 +2765,7 @@ def build_and_connect_rig(bs_node, rows):
                 if not cmds.isConnected(f"{ctrl}.hasLimits", f"{cond_name}.firstTerm"):
                     cmds.connectAttr(f"{ctrl}.hasLimits", f"{cond_name}.firstTerm", force=True)
 
-    # Clamp des custom attrs (min/max sur l'attribut lui-même)
+    # Clamp custom attrs (set min/max on the attribute itself)
     for ctrl_attr_full, (c_min, c_max) in pending_custom_clamps.items():
         try:
             cmds.addAttr(ctrl_attr_full, edit=True, minValue=c_min, maxValue=c_max)
@@ -2778,10 +2778,10 @@ def build_and_connect_rig(bs_node, rows):
 @undo_chunk
 def disconnect_rig_shapes(bs_node, shape_names):
     """
-    Déconnecte le réseau rig pour les shapes spécifiées.
-    Supprime les utility nodes (offset_, norm_, sum_, cond_, clamp_)
-    et déconnecte bs_node.w[idx].
-    Retourne le nombre de shapes déconnectées.
+    Disconnects the rig network for the specified shapes.
+    Deletes utility nodes (offset_, norm_, sum_, cond_, clamp_)
+    and disconnects bs_node.w[idx].
+    Returns the number of shapes disconnected.
     """
     import re as _re
 

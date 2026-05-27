@@ -2,77 +2,77 @@
 
 ## v.04.03
 
-**Rig Connector — Combo Driver : syntaxes étendues**
+**Rig Connector — Combo Driver: extended syntaxes**
 
-- Support de la forme `node.attr` : un attribut Maya quelconque peut servir de combo driver (ex : `FKJaw_ctrl.zip`)
-- Préfixe `rev:` : insère un nœud `reverse` (1 − input) avant le gate — la shape est bloquée quand l'attribut est actif (ex : `rev:FKJaw_ctrl.retain`)
-- Nœuds `rev_{shape}_{i}` inclus dans le cleanup rebuild et `disconnect_rig_shapes`
-- Tooltip de la colonne Combo Driver mis à jour pour documenter les trois syntaxes
+- Support for `node.attr` form: any Maya attribute can be used as a combo driver (e.g. `FKJaw_ctrl.zip`)
+- `rev:` prefix: inserts a `reverse` node (1 − input) before the gate — the shape is blocked when the attribute is active (e.g. `rev:FKJaw_ctrl.retain`)
+- `rev_{shape}_{i}` nodes included in rebuild cleanup and `disconnect_rig_shapes`
+- Combo Driver column tooltip updated to document all three syntaxes
 
-**Rig Connector — Add Row depuis le Shape Editor**
+**Rig Connector — Add Row from Shape Editor**
 
-- Le bouton `Add Row` lit la sélection courante du Shape Editor (`getShapeEditorTreeviewSelection`)
-- Ajoute un row par target sélectionnée, avec le nom pré-rempli
-- Fallback : un row vide si rien n'est sélectionné dans le Shape Editor
+- `Add Row` button reads the current Shape Editor selection (`getShapeEditorTreeviewSelection`)
+- Adds one row per selected target, with the name pre-filled
+- Falls back to one empty row if nothing is selected in the Shape Editor
 
 ---
 
 ## v.04.02
 
-**Rig Connector — Simplification UI majeure**
+**Rig Connector — Major UI simplification**
 
-- Table passe de 10 à 8 colonnes : suppression des colonnes `Dir` et `Custom Attr`
-- Direction encodée dans le signe de `In Max` (valeur négative = activation côté négatif du controller)
-- Colonne `Attr` devient une QComboBox éditable : attributs standards en suggestion, frappe libre pour les attrs custom
-- `In Max` accepte des valeurs négatives (range -9999..9999)
-- Load mapping : compat ascendante — anciens JSONs avec `"direction"/"custom_attr"` convertis automatiquement
+- Table reduced from 10 to 8 columns: removed `Dir` and `Custom Attr` columns
+- Direction encoded in the sign of `In Max` (negative value = activation on the negative side of the controller)
+- `Attr` column becomes an editable QComboBox: standard attributes as suggestions, free typing for custom attrs
+- `In Max` accepts negative values (range -9999..9999)
+- Load mapping: backward compatibility — old JSONs with `"direction"/"custom_attr"` keys converted automatically
 
-**Rig Connector — Auto-stagger repensé**
+**Rig Connector — Auto-stagger redesigned**
 
-- Remplacement des deux checkboxes `Mirror` / `Symmetric` (mutuellement exclusives) par un combo `Mode` : `Linear / Mirror / Symmetric`
-- `Symmetric` : les shapes extérieures activent en dernier, le centre reste proche de 0 (brows, cheekbones)
-- `Mirror` : le centre active en dernier, les extérieures en premier (zip lips)
-- Checkbox `+/−` activée seulement en mode Symmetric
-- Falloff renommé `Smooth`
-- In Max/Min du stagger Symmetric produit des valeurs signées directement
+- Replaced the two mutually-exclusive `Mirror` / `Symmetric` checkboxes with a `Mode` combo: `Linear / Mirror / Symmetric`
+- `Symmetric`: outer shapes activate last, center stays near 0 (brows, cheekbones)
+- `Mirror`: center activates last, outer shapes first (zip lips)
+- `+/−` checkbox enabled only in Symmetric mode
+- Falloff renamed `Smooth`
+- Symmetric stagger In Max/Min produces signed values directly
 
-**Rig Connector — Combo Driver (ex-Gate)**
+**Rig Connector — Combo Driver (formerly Gate)**
 
-- Nouvelle colonne `Combo Driver` : un ou plusieurs targets bs_node séparés par des virgules
-- Insère des nœuds `multDoubleLinear` (gate_{shape}_{i}) en série entre `clamp.outputR` et `bs_node.w[idx]`
-- La shape ne s'active que si tous les combo drivers sont également actifs
+- New `Combo Driver` column: one or more bs_node targets separated by commas
+- Inserts `multDoubleLinear` nodes (`gate_{shape}_{i}`) in series between `clamp.outputR` and `bs_node.w[idx]`
+- The shape only activates when all combo drivers are also active
 
-**Modify Deltas — Bouton Nullify**
+**Modify Deltas — Nullify button**
 
-- Bouton `Nullify` à droite de `Multiply Deltas` : met tous les deltas à 0 en un clic
+- `Nullify` button next to `Multiply Deltas`: zeros all deltas in one click
 
 ## v.04.01
 
-**Rig Connector — Save/Load Mapping : support des proxy rows**
+**Rig Connector — Save/Load Mapping: proxy row support**
 
-- `_collect_rows` enregistre maintenant un flag `"proxy": true/false` dans le JSON.
-- `_load_mapping` recrée correctement les proxy rows (passe 1 : rows primaires, passe 2 : proxy rows via `_add_proxy_row`).
-- La renumérotation dans `_remove_rows` ne remplace plus le marqueur `↳` par un numéro.
+- `_collect_rows` now saves a `"proxy": true/false` flag in the JSON.
+- `_load_mapping` correctly recreates proxy rows (pass 1: primary rows, pass 2: proxy rows via `_add_proxy_row`).
+- Renumbering in `_remove_rows` no longer replaces the `↳` marker with a number.
 
-**Rig Connector — Auto-stagger repensé**
+**Rig Connector — Auto-stagger redesigned**
 
-- L'Auto-stagger opère désormais sur les **rows sélectionnées** dans le tableau, pas sur un pattern de nom.
-- Crée automatiquement des proxy rows avec le master controller et un stagger symétrique :
-  extrêmes (premier/dernier) → `in_max = in_max_ref`, centre → `in_max = 0` (désactivé).
-- Si une proxy row pour ce controller existe déjà, elle est mise à jour sans doublon.
-- La création automatique de proxy rows dans Apply Stagger a été supprimée (créait des doublons).
+- Auto-stagger now operates on the **selected rows** in the table, not on a name pattern.
+- Automatically creates proxy rows with the master controller and a symmetric stagger:
+  extremes (first/last) → `in_max = in_max_ref`, center → `in_max = 0` (disabled).
+- If a proxy row for that controller already exists, it is updated without duplication.
+- Automatic proxy row creation in Apply Stagger has been removed (was causing duplicates).
 
-**Rig Connector — Spinboxes InMin / InMax**
+**Rig Connector — InMin / InMax spinboxes**
 
-- Locale forcée en anglais : le point est utilisé comme séparateur décimal.
-- InMax accepte désormais `0` (driver désactivé) ; la valeur minimale passe de `0.001` à `0.0`.
+- Locale forced to English: dot used as decimal separator.
+- InMax now accepts `0` (driver disabled); minimum value changed from `0.001` to `0.0`.
 
-**Build & Connect — Robustesse au rebuild**
+**Build & Connect — Rebuild robustness**
 
-- Suppression du loop `disconnectAttr` qui pouvait faire échouer le build sur des connexions locked (combination targets, attrs verrouillés).
-- Si tous les drivers d'une shape sont désactivés (`in_max=0`), le réseau n'est pas créé (status `skip`).
-- Les drivers désactivés ne contribuent plus à `pending_limits` (évitait de bloquer le controller à 0).
-- `pending_conds` utilise le nom réel du nœud retourné par `cmds.createNode` (évite les erreurs de renommage automatique Maya).
+- Removed the `disconnectAttr` loop that could fail the build on locked connections (combination targets, locked attrs).
+- If all drivers for a shape are disabled (`in_max=0`), the network is not created (status `skip`).
+- Disabled drivers no longer contribute to `pending_limits` (was blocking the controller at 0).
+- `pending_conds` uses the real node name returned by `cmds.createNode` (avoids Maya auto-rename errors).
 
 ---
 
