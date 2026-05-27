@@ -2481,6 +2481,8 @@ _RC_LIMIT_INFO = {
     "ry": ("ry", "maxRotYLimitEnable",   "minRotYLimitEnable"),
     "rz": ("rz", "maxRotZLimitEnable",   "minRotZLimitEnable"),
 }
+# Scale attrs traités séparément : lock/hide si non utilisés, pas de transformLimits
+_SCALE_ATTRS = {"sx", "sy", "sz"}
 
 
 @undo_chunk
@@ -2492,6 +2494,7 @@ def build_and_connect_rig(bs_node, rows):
       sum_{shape}         (plusMinusAverage, si >1 driver): somme additive
       cond_{shape}        (condition)                     : hasLimits → maxR=1 ou 1e6
       clamp_{shape}       (clamp)                         : minR=0 toujours, maxR piloté
+      gate_{shape}        (multDoubleLinear, si gate≠"")  : multiplie par le weight de la gate target
 
     Plusieurs rows avec la même shape = proxy / drivers additifs.
     hasLimits=ON  : weight [0,1]  + controller physiquement bloqué (transform attrs)
@@ -2513,9 +2516,10 @@ def build_and_connect_rig(bs_node, rows):
         if m:
             target_map[alias] = int(m.group(1))
 
-    results        = []
-    pending_limits = {}  # ctrl → [(tl_kwarg, enable_attr, limit_value, negative)]
-    pending_conds  = {}  # ctrl → [cond_name, ...]
+    results               = []
+    pending_limits        = {}  # ctrl → {attr_name: (lim_min, lim_max)}
+    pending_conds         = {}  # ctrl → [cond_name, ...]
+    pending_custom_clamps = {}  # ctrl_attr_full → (c_min, c_max)
 
     # ── Phase 1 : validation + création des custom attrs ─────────────────────
     valid_rows = []
@@ -2527,6 +2531,7 @@ def build_and_connect_rig(bs_node, rows):
         direction   = row.get("direction", "+")
         in_min      = float(row.get("in_min", 0.0))
         in_max      = float(row.get("in_max", 1.0))
+        gate        = row.get("gate", "").strip()
 
         if not shape or not ctrl:
             results.append({"shape": shape, "status": "skip"})
@@ -2549,8 +2554,12 @@ def build_and_connect_rig(bs_node, rows):
         ctrl_attr_full = f"{ctrl}.{resolved_attr}"
         if not cmds.objExists(ctrl_attr_full):
             if attr == "custom":
+                _neg  = (direction == "\u2212")
+                c_min = -in_max if _neg else 0.0
+                c_max = 0.0 if _neg else in_max
                 cmds.addAttr(ctrl, longName=resolved_attr, attributeType="float",
-                             defaultValue=0.0, keyable=True)
+                             defaultValue=0.0, keyable=True,
+                             minValue=c_min, maxValue=c_max)
             else:
                 results.append({"shape": shape, "status": "no_attr"})
                 continue
@@ -2560,6 +2569,7 @@ def build_and_connect_rig(bs_node, rows):
             "ctrl_attr": ctrl_attr_full, "resolved_attr": resolved_attr,
             "attr": attr, "negative": (direction == "\u2212"),
             "in_min": in_min, "in_max": in_max,
+            "gate": gate,
         })
 
     # ── Phase 2 : grouper par shape ───────────────────────────────────────────
@@ -2572,9 +2582,10 @@ def build_and_connect_rig(bs_node, rows):
         bs_weight_attr = f"{bs_node}.w[{group[0]['idx']}]"
         try:
             # Nettoyer les anciens nodes (noms déterministes)
-            old = (cmds.ls(f"offset_{shape}_*", f"norm_{shape}_*") or [])
+            old = (cmds.ls(f"offset_{shape}_*", f"norm_{shape}_*",
+                           f"gate_{shape}_*") or [])
             old += [n for n in (f"sum_{shape}", f"clamp_{shape}",
-                                f"cond_{shape}", f"rmv_{shape}")
+                                f"cond_{shape}", f"rmv_{shape}", f"gate_{shape}")
                     if cmds.objExists(n)]
             if old:
                 cmds.delete(old)
@@ -2638,6 +2649,21 @@ def build_and_connect_rig(bs_node, rows):
             cmds.connectAttr(sum_out,             f"{clp}.inputR", force=True)
             cmds.connectAttr(f"{clp}.outputR", bs_weight_attr, force=True)
 
+            # ── Combo drivers : chaîne de multDoubleLinear (virgule-séparés) ────
+            gate_field = group[0].get("gate", "").strip()
+            gate_names = [g.strip() for g in gate_field.split(",") if g.strip()] if gate_field else []
+            current_src = f"{clp}.outputR"
+            for gi, gname in enumerate(gate_names):
+                gate_idx = target_map.get(gname)
+                if gate_idx is None:
+                    continue
+                gate_node = cmds.createNode("multDoubleLinear", name=f"gate_{shape}_{gi}")
+                cmds.disconnectAttr(current_src, bs_weight_attr)
+                cmds.connectAttr(current_src,                f"{gate_node}.input1", force=True)
+                cmds.connectAttr(f"{bs_node}.w[{gate_idx}]", f"{gate_node}.input2", force=True)
+                cmds.connectAttr(f"{gate_node}.output",       bs_weight_attr,        force=True)
+                current_src = f"{gate_node}.output"
+
             # ── Collect post-loop ─────────────────────────────────────────────
             # Utiliser le nom réel du node (Maya peut auto-renommer si collision)
             primary_ctrl = group[0]["ctrl"]
@@ -2654,11 +2680,25 @@ def build_and_connect_rig(bs_node, rows):
                     pending_conds.setdefault(ctrl, [])  # hasLimits quand même
                     continue
                 if resolved_attr in _RC_LIMIT_INFO:
-                    tl_kwarg, pos_en, neg_en = _RC_LIMIT_INFO[resolved_attr]
-                    enable_attr = neg_en if negative else pos_en
-                    limit_value = -in_max if negative else in_max
-                    pending_limits.setdefault(ctrl, []).append(
-                        (tl_kwarg, enable_attr, limit_value, negative))
+                    # Limite physique : toujours ancrée à 0, étendue vers l'extérieur.
+                    # in_min est un seuil réseau (offset), pas une barrière physique.
+                    if negative:
+                        lim_min = -in_max
+                        lim_max = 0.0
+                    else:
+                        lim_min = 0.0
+                        lim_max = in_max
+                    prev = pending_limits.setdefault(ctrl, {}).get(resolved_attr, (0.0, 0.0))
+                    pending_limits[ctrl][resolved_attr] = (min(prev[0], lim_min),
+                                                           max(prev[1], lim_max))
+                elif vr["attr"] == "custom":
+                    if negative:
+                        c_min, c_max = -in_max, 0.0
+                    else:
+                        c_min, c_max = 0.0, in_max
+                    prev = pending_custom_clamps.get(vr["ctrl_attr"], (0.0, 0.0))
+                    pending_custom_clamps[vr["ctrl_attr"]] = (min(prev[0], c_min),
+                                                              max(prev[1], c_max))
                 # Chaque ctrl a son propre hasLimits → on l'enregistre
                 if ctrl != primary_ctrl:
                     pending_conds.setdefault(ctrl, [])  # force création sans cond
@@ -2672,25 +2712,98 @@ def build_and_connect_rig(bs_node, rows):
 
     # ── Post-loop : hasLimits attr (dernier) + connexions ────────────────────
     for ctrl in set(pending_limits) | set(pending_conds):
-        for tl_kwarg, _, limit_value, negative in pending_limits.get(ctrl, []):
-            cur = cmds.transformLimits(ctrl, q=True, **{tl_kwarg: True})
-            if negative:
-                cmds.transformLimits(ctrl, **{tl_kwarg: (limit_value, cur[1])})
-            else:
-                cmds.transformLimits(ctrl, **{tl_kwarg: (cur[0], limit_value)})
+        used_native = set(pending_limits.get(ctrl, {}).keys())
 
+        # Unlock/unhide les attrs natifs utilisés (au cas où un build précédent les avait lockés)
+        for attr_name in used_native:
+            attr_full = f"{ctrl}.{attr_name}"
+            if cmds.getAttr(attr_full, lock=True):
+                cmds.setAttr(attr_full, lock=False)
+            cmds.setAttr(attr_full, keyable=True)
+
+        # Attrs natifs utilisés → range complet [lim_min, lim_max]
+        for attr_name, (lim_min, lim_max) in pending_limits.get(ctrl, {}).items():
+            tl_kwarg = _RC_LIMIT_INFO[attr_name][0]
+            cmds.transformLimits(ctrl, **{tl_kwarg: (lim_min, lim_max)})
+
+        # Attrs tx/ty/tz/rx/ry/rz NON utilisés → limit (0,0) + lock and hide
+        for attr_name in set(_RC_LIMIT_INFO) - used_native:
+            tl_kwarg = _RC_LIMIT_INFO[attr_name][0]
+            cmds.transformLimits(ctrl, **{tl_kwarg: (0.0, 0.0)})
+            attr_full = f"{ctrl}.{attr_name}"
+            cmds.setAttr(attr_full, keyable=False)
+            cmds.setAttr(attr_full, channelBox=False)
+            cmds.setAttr(attr_full, lock=True)
+
+        # Scale attrs (sx/sy/sz) NON utilisés → lock and hide (pas de transformLimits)
+        for attr_name in _SCALE_ATTRS - used_native:
+            attr_full = f"{ctrl}.{attr_name}"
+            cmds.setAttr(attr_full, keyable=False)
+            cmds.setAttr(attr_full, channelBox=False)
+            cmds.setAttr(attr_full, lock=True)
+
+        # hasLimits attr (ajouté en dernier sur le ctrl)
         if not cmds.attributeQuery("hasLimits", node=ctrl, exists=True):
             cmds.addAttr(ctrl, longName="hasLimits", attributeType="bool",
                          defaultValue=True, keyable=True)
         cmds.setAttr(f"{ctrl}.hasLimits", True)
 
-        for _, enable_attr, _, _ in pending_limits.get(ctrl, []):
-            if not cmds.isConnected(f"{ctrl}.hasLimits", f"{ctrl}.{enable_attr}"):
-                cmds.connectAttr(f"{ctrl}.hasLimits", f"{ctrl}.{enable_attr}", force=True)
+        # Connecter hasLimits → TOUS les enables natifs (6 axes × min + max)
+        for _, pos_en, neg_en in _RC_LIMIT_INFO.values():
+            for en_attr in (pos_en, neg_en):
+                if not cmds.isConnected(f"{ctrl}.hasLimits", f"{ctrl}.{en_attr}"):
+                    cmds.connectAttr(f"{ctrl}.hasLimits", f"{ctrl}.{en_attr}", force=True)
 
         for cond_name in pending_conds.get(ctrl, []):
             if cmds.objExists(cond_name):
                 if not cmds.isConnected(f"{ctrl}.hasLimits", f"{cond_name}.firstTerm"):
                     cmds.connectAttr(f"{ctrl}.hasLimits", f"{cond_name}.firstTerm", force=True)
 
+    # Clamp des custom attrs (min/max sur l'attribut lui-même)
+    for ctrl_attr_full, (c_min, c_max) in pending_custom_clamps.items():
+        try:
+            cmds.addAttr(ctrl_attr_full, edit=True, minValue=c_min, maxValue=c_max)
+        except Exception:
+            pass
+
     return results
+
+
+@undo_chunk
+def disconnect_rig_shapes(bs_node, shape_names):
+    """
+    Déconnecte le réseau rig pour les shapes spécifiées.
+    Supprime les utility nodes (offset_, norm_, sum_, cond_, clamp_)
+    et déconnecte bs_node.w[idx].
+    Retourne le nombre de shapes déconnectées.
+    """
+    import re as _re
+
+    aliases_flat = cmds.aliasAttr(bs_node, query=True) or []
+    target_map   = {}
+    for i in range(0, len(aliases_flat) - 1, 2):
+        m = _re.search(r"\[(\d+)\]", aliases_flat[i + 1])
+        if m:
+            target_map[aliases_flat[i]] = int(m.group(1))
+
+    disconnected = 0
+    for shape in shape_names:
+        # Supprimer les utility nodes
+        old = (cmds.ls(f"offset_{shape}_*", f"norm_{shape}_*",
+                       f"gate_{shape}_*") or [])
+        old += [n for n in (f"sum_{shape}", f"clamp_{shape}", f"cond_{shape}", f"gate_{shape}")
+                if cmds.objExists(n)]
+        if old:
+            cmds.delete(old)
+
+        # Déconnecter bs_node.w[idx]
+        idx = target_map.get(shape)
+        if idx is not None:
+            bs_weight_attr = f"{bs_node}.w[{idx}]"
+            src_list = cmds.listConnections(
+                bs_weight_attr, source=True, destination=False, plugs=True) or []
+            for src in src_list:
+                cmds.disconnectAttr(src, bs_weight_attr)
+            disconnected += 1
+
+    return disconnected
