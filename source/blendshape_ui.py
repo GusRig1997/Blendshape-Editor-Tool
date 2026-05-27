@@ -1257,12 +1257,12 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
     def _shape_editor_selection(self):
         """Return target names currently selected in Maya's Shape Editor."""
-        bs = getattr(self, '_bs_node', None)
-        if not bs or not cmds.objExists(bs):
-            return []
         try:
+            bs = self._le_bs_node.text().strip()
             targets = get_selected_targets()   # (bs_node, idx, name) — from blendshape_core
-            return [name for node, _idx, name in targets if node == bs]
+            if bs:
+                return [name for node, _idx, name in targets if node == bs]
+            return [name for _node, _idx, name in targets]
         except Exception:
             return []
 
