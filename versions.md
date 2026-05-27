@@ -1,5 +1,34 @@
 # Changelog — Blendshape Editor Tool
 
+## v.04.02
+
+**Rig Connector — Simplification UI majeure**
+
+- Table passe de 10 à 8 colonnes : suppression des colonnes `Dir` et `Custom Attr`
+- Direction encodée dans le signe de `In Max` (valeur négative = activation côté négatif du controller)
+- Colonne `Attr` devient une QComboBox éditable : attributs standards en suggestion, frappe libre pour les attrs custom
+- `In Max` accepte des valeurs négatives (range -9999..9999)
+- Load mapping : compat ascendante — anciens JSONs avec `"direction"/"custom_attr"` convertis automatiquement
+
+**Rig Connector — Auto-stagger repensé**
+
+- Remplacement des deux checkboxes `Mirror` / `Symmetric` (mutuellement exclusives) par un combo `Mode` : `Linear / Mirror / Symmetric`
+- `Symmetric` : les shapes extérieures activent en dernier, le centre reste proche de 0 (brows, cheekbones)
+- `Mirror` : le centre active en dernier, les extérieures en premier (zip lips)
+- Checkbox `+/−` activée seulement en mode Symmetric
+- Falloff renommé `Smooth`
+- In Max/Min du stagger Symmetric produit des valeurs signées directement
+
+**Rig Connector — Combo Driver (ex-Gate)**
+
+- Nouvelle colonne `Combo Driver` : un ou plusieurs targets bs_node séparés par des virgules
+- Insère des nœuds `multDoubleLinear` (gate_{shape}_{i}) en série entre `clamp.outputR` et `bs_node.w[idx]`
+- La shape ne s'active que si tous les combo drivers sont également actifs
+
+**Modify Deltas — Bouton Nullify**
+
+- Bouton `Nullify` à droite de `Multiply Deltas` : met tous les deltas à 0 en un clic
+
 ## v.04.01
 
 **Rig Connector — Save/Load Mapping : support des proxy rows**
