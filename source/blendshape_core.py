@@ -2647,14 +2647,21 @@ def build_and_connect_rig(bs_node, rows):
             gate_names = [g.strip() for g in gate_field.split(",") if g.strip()] if gate_field else []
             current_src = f"{clp}.outputR"
             for gi, gname in enumerate(gate_names):
-                gate_idx = target_map.get(gname)
-                if gate_idx is None:
-                    continue
+                # "node.attr" → attribut Maya direct ; sinon → target du bs_node
+                if "." in gname:
+                    if not cmds.objExists(gname):
+                        continue
+                    gate_plug = gname
+                else:
+                    gate_idx = target_map.get(gname)
+                    if gate_idx is None:
+                        continue
+                    gate_plug = f"{bs_node}.w[{gate_idx}]"
                 gate_node = cmds.createNode("multDoubleLinear", name=f"gate_{shape}_{gi}")
                 cmds.disconnectAttr(current_src, bs_weight_attr)
-                cmds.connectAttr(current_src,                f"{gate_node}.input1", force=True)
-                cmds.connectAttr(f"{bs_node}.w[{gate_idx}]", f"{gate_node}.input2", force=True)
-                cmds.connectAttr(f"{gate_node}.output",       bs_weight_attr,        force=True)
+                cmds.connectAttr(current_src,  f"{gate_node}.input1", force=True)
+                cmds.connectAttr(gate_plug,    f"{gate_node}.input2", force=True)
+                cmds.connectAttr(f"{gate_node}.output", bs_weight_attr, force=True)
                 current_src = f"{gate_node}.output"
 
             # ── Collect post-loop ─────────────────────────────────────────────
