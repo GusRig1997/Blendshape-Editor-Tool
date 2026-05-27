@@ -1102,10 +1102,12 @@ class RigConnectorDialog(QtWidgets.QDialog):
         le_gate = QtWidgets.QLineEdit()
         le_gate.setPlaceholderText("shape name")
         le_gate.setText(gate)
-        le_gate.setToolTip("Combo driver(s): one or more blendShape target names, comma-separated.\n"
-                           "The shape weight is multiplied by each combo driver's weight in series,\n"
-                           "so it only activates when all combo drivers are also active.\n"
-                           "Example: jaw_dn, lip_dn")
+        le_gate.setToolTip("Combo driver(s): one or more entries, comma-separated.\n"
+                           "Each entry multiplies the shape weight in series.\n"
+                           "  - blendShape target name   → jaw_dn\n"
+                           "  - node.attr plug           → FKJaw_ctrl.zip\n"
+                           "  - rev: prefix (inverted)   → rev:FKJaw_ctrl.retain\n"
+                           "The shape only activates when all combo drivers are active.")
         self._table.setCellWidget(row, self._COL_GATE, le_gate)
 
         # Col 9 — Status
@@ -1362,10 +1364,12 @@ class RigConnectorDialog(QtWidgets.QDialog):
         le_gate = QtWidgets.QLineEdit()
         le_gate.setPlaceholderText("shape name")
         le_gate.setText(d.get("gate", ""))
-        le_gate.setToolTip("Combo driver(s): one or more blendShape target names, comma-separated.\n"
-                           "The shape weight is multiplied by each combo driver's weight in series,\n"
-                           "so it only activates when all combo drivers are also active.\n"
-                           "Example: jaw_dn, lip_dn")
+        le_gate.setToolTip("Combo driver(s): one or more entries, comma-separated.\n"
+                           "Each entry multiplies the shape weight in series.\n"
+                           "  - blendShape target name   → jaw_dn\n"
+                           "  - node.attr plug           → FKJaw_ctrl.zip\n"
+                           "  - rev: prefix (inverted)   → rev:FKJaw_ctrl.retain\n"
+                           "The shape only activates when all combo drivers are active.")
         self._table.setCellWidget(pos, self._COL_GATE, le_gate)
 
         # Col 9 — Status
@@ -1652,9 +1656,12 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         le_gate_new = QtWidgets.QLineEdit()
         le_gate_new.setPlaceholderText("shape name")
-        le_gate_new.setToolTip("Optional condition: enter a blendShape target name.\n"
-                               "The shape weight is multiplied by the condition target's weight,\n"
-                               "so it only activates when the condition target is also active.")
+        le_gate_new.setToolTip("Combo driver(s): one or more entries, comma-separated.\n"
+                               "Each entry multiplies the shape weight in series.\n"
+                               "  - blendShape target name   → jaw_dn\n"
+                               "  - node.attr plug           → FKJaw_ctrl.zip\n"
+                               "  - rev: prefix (inverted)   → rev:FKJaw_ctrl.retain\n"
+                               "The shape only activates when all combo drivers are active.")
         self._table.setCellWidget(insert_row, self._COL_GATE, le_gate_new)
 
         lbl_status = QtWidgets.QLabel("●")
