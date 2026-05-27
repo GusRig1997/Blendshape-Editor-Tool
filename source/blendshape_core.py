@@ -2573,7 +2573,7 @@ def build_and_connect_rig(bs_node, rows):
         try:
             # Nettoyer les anciens nodes (noms déterministes)
             old = (cmds.ls(f"offset_{shape}_*", f"norm_{shape}_*",
-                           f"gate_{shape}_*") or [])
+                           f"gate_{shape}_*", f"rev_{shape}_*") or [])
             old += [n for n in (f"sum_{shape}", f"clamp_{shape}",
                                 f"cond_{shape}", f"rmv_{shape}", f"gate_{shape}")
                     if cmds.objExists(n)]
@@ -2647,16 +2647,29 @@ def build_and_connect_rig(bs_node, rows):
             gate_names = [g.strip() for g in gate_field.split(",") if g.strip()] if gate_field else []
             current_src = f"{clp}.outputR"
             for gi, gname in enumerate(gate_names):
+                # Préfixe "rev:" → inversion via reverse node
+                use_reverse = gname.startswith("rev:")
+                if use_reverse:
+                    gname = gname[4:].strip()
+
                 # "node.attr" → attribut Maya direct ; sinon → target du bs_node
                 if "." in gname:
                     if not cmds.objExists(gname):
                         continue
-                    gate_plug = gname
+                    raw_plug = gname
                 else:
                     gate_idx = target_map.get(gname)
                     if gate_idx is None:
                         continue
-                    gate_plug = f"{bs_node}.w[{gate_idx}]"
+                    raw_plug = f"{bs_node}.w[{gate_idx}]"
+
+                if use_reverse:
+                    rev_node = cmds.createNode("reverse", name=f"rev_{shape}_{gi}")
+                    cmds.connectAttr(raw_plug, f"{rev_node}.inputX", force=True)
+                    gate_plug = f"{rev_node}.outputX"
+                else:
+                    gate_plug = raw_plug
+
                 gate_node = cmds.createNode("multDoubleLinear", name=f"gate_{shape}_{gi}")
                 cmds.disconnectAttr(current_src, bs_weight_attr)
                 cmds.connectAttr(current_src,  f"{gate_node}.input1", force=True)
@@ -2783,7 +2796,7 @@ def disconnect_rig_shapes(bs_node, shape_names):
     for shape in shape_names:
         # Supprimer les utility nodes
         old = (cmds.ls(f"offset_{shape}_*", f"norm_{shape}_*",
-                       f"gate_{shape}_*") or [])
+                       f"gate_{shape}_*", f"rev_{shape}_*") or [])
         old += [n for n in (f"sum_{shape}", f"clamp_{shape}", f"cond_{shape}", f"gate_{shape}")
                 if cmds.objExists(n)]
         if old:
