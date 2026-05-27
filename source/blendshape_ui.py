@@ -754,14 +754,12 @@ class RigConnectorDialog(QtWidgets.QDialog):
     _COL_SHAPE = 1
     _COL_CTRL  = 2
     _COL_ATTR  = 3
-    _COL_CATTR = 4
-    _COL_DIR   = 5
-    _COL_INMIN = 6
-    _COL_INMAX = 7
-    _COL_GATE  = 8
-    _COL_STAT  = 9
+    _COL_INMIN = 4
+    _COL_INMAX = 5
+    _COL_GATE  = 6
+    _COL_STAT  = 7
 
-    _ATTR_ITEMS = ["tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz", "custom"]
+    _ATTR_ITEMS = ["tx", "ty", "tz", "rx", "ry", "rz", "sx", "sy", "sz"]
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -811,9 +809,9 @@ class RigConnectorDialog(QtWidgets.QDialog):
         outer.addLayout(toolbar)
 
         # ── Table ─────────────────────────────────────────────────────────────
-        self._table = QtWidgets.QTableWidget(0, 10)
+        self._table = QtWidgets.QTableWidget(0, 8)
         self._table.setHorizontalHeaderLabels(
-            ["#", "Shape", "Controller", "Attr", "Custom Attr", "Dir",
+            ["#", "Shape", "Controller", "Attr",
              "In Min", "In Max", "Combo Driver", "Status"])
         self._table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._show_row_context_menu)
@@ -827,8 +825,6 @@ class RigConnectorDialog(QtWidgets.QDialog):
         hh.setSectionResizeMode(self._COL_SHAPE, QtWidgets.QHeaderView.Stretch)
         hh.setSectionResizeMode(self._COL_CTRL,  QtWidgets.QHeaderView.Fixed)
         hh.setSectionResizeMode(self._COL_ATTR,  QtWidgets.QHeaderView.Fixed)
-        hh.setSectionResizeMode(self._COL_CATTR, QtWidgets.QHeaderView.Fixed)
-        hh.setSectionResizeMode(self._COL_DIR,   QtWidgets.QHeaderView.Fixed)
         hh.setSectionResizeMode(self._COL_INMIN, QtWidgets.QHeaderView.Fixed)
         hh.setSectionResizeMode(self._COL_INMAX, QtWidgets.QHeaderView.Fixed)
         hh.setSectionResizeMode(self._COL_GATE,  QtWidgets.QHeaderView.Fixed)
@@ -836,10 +832,8 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         self._table.setColumnWidth(self._COL_NUM,   28)
         self._table.setColumnWidth(self._COL_CTRL,  140)
-        self._table.setColumnWidth(self._COL_ATTR,  70)
-        self._table.setColumnWidth(self._COL_CATTR, 90)
-        self._table.setColumnWidth(self._COL_DIR,   45)
-        self._table.setColumnWidth(self._COL_INMIN, 60)
+        self._table.setColumnWidth(self._COL_ATTR,  90)
+        self._table.setColumnWidth(self._COL_INMIN, 65)
         self._table.setColumnWidth(self._COL_INMAX, 65)
         self._table.setColumnWidth(self._COL_GATE,  100)
         self._table.setColumnWidth(self._COL_STAT,  50)
@@ -860,17 +854,33 @@ class RigConnectorDialog(QtWidgets.QDialog):
         stagger_row1.addWidget(self._le_stagger_ctrl)
 
         self._combo_stagger_axis = QtWidgets.QComboBox()
+        self._combo_stagger_axis.setEditable(True)
         self._combo_stagger_axis.addItems(self._ATTR_ITEMS)
         self._combo_stagger_axis.setCurrentText("tx")
-        self._combo_stagger_axis.setFixedWidth(65)
+        self._combo_stagger_axis.setFixedWidth(75)
         stagger_row1.addWidget(self._combo_stagger_axis)
 
-        self._chk_stagger_symmetric = QtWidgets.QCheckBox("Symmetric")
-        self._chk_stagger_symmetric.setToolTip(
-            "When checked, outer shapes (first and last) activate first and share the same\n"
-            "slot, while the centre shape activates last — producing a symmetrical effect\n"
-            "where the MAX is reached at the middle shape, not at the end.")
-        stagger_row1.addWidget(self._chk_stagger_symmetric)
+        stagger_row1.addWidget(QtWidgets.QLabel("Mode:"))
+        self._combo_stagger_mode = QtWidgets.QComboBox()
+        self._combo_stagger_mode.addItems(["Linear", "Mirror", "Symmetric"])
+        self._combo_stagger_mode.setFixedWidth(90)
+        self._combo_stagger_mode.setToolTip(
+            "Linear   : sequential slots [0→1] for each shape.\n"
+            "Mirror   : centre shape activates last, outer shapes first.\n"
+            "           Same direction for all. Ideal for zip lips.\n"
+            "Symmetric: outer shapes activate last, centre shape first.\n"
+            "           Left half and right half get opposite directions.\n"
+            "           Ideal for brows and cheekbones.")
+        self._combo_stagger_mode.currentTextChanged.connect(self._on_stagger_mode_changed)
+        stagger_row1.addWidget(self._combo_stagger_mode)
+
+        self._chk_stagger_sign = QtWidgets.QCheckBox("+/\u2212")
+        self._chk_stagger_sign.setEnabled(False)
+        self._chk_stagger_sign.setToolTip(
+            "Symmetric only — controls which side is positive.\n"
+            "Unchecked: left half → '\u2212', right half → '+'.\n"
+            "Checked:   left half → '+', right half → '\u2212'.")
+        stagger_row1.addWidget(self._chk_stagger_sign)
 
         self._chk_stagger_proxies = QtWidgets.QCheckBox("Proxies")
         self._chk_stagger_proxies.setChecked(True)
@@ -895,7 +905,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._sb_stagger_inmax.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         stagger_row2.addWidget(self._sb_stagger_inmax)
 
-        stagger_row2.addWidget(QtWidgets.QLabel("Falloff:"))
+        stagger_row2.addWidget(QtWidgets.QLabel("Smooth:"))
         self._sb_stagger_falloff = QtWidgets.QDoubleSpinBox()
         self._sb_stagger_falloff.setRange(0.0, 9999.0)
         self._sb_stagger_falloff.setValue(0.0)
@@ -904,7 +914,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._sb_stagger_falloff.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self._sb_stagger_falloff.setToolTip(
             "Overlap amount added on each side of a shape's activation slot.\n"
-            "Example: slot [0.2, 0.4] with falloff 0.01 → In Min=0.19, In Max=0.41.\n"
+            "Example: slot [0.2, 0.4] with smooth 0.01 → In Min=0.19, In Max=0.41.\n"
             "First shape never goes below 0; last shape never exceeds In Max.")
         stagger_row2.addWidget(self._sb_stagger_falloff)
 
@@ -914,8 +924,8 @@ class RigConnectorDialog(QtWidgets.QDialog):
             "Proxies ON: creates a proxy sub-row per shape driven by the stagger controller.\n"
             "Proxies OFF: writes the values directly onto the selected rows.\n"
             "Each shape gets a sequential activation slot within [0, In Max].\n"
-            "Falloff extends each slot by ±falloff (clamped to bounds).\n"
-            "Symmetric: outer shapes share slot 0, centre shape activates last.")
+            "Smooth extends each slot by ±smooth (clamped to bounds).\n"
+            "Mirror/Symmetric: outer shapes share slot 0, centre shape activates last.")
         btn_stagger.clicked.connect(self._apply_stagger)
         stagger_row2.addWidget(btn_stagger)
         stagger_row2.addStretch()
@@ -1032,7 +1042,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
             self._append_table_row(i + 1, shape, controllers)
 
     def _append_table_row(self, row_num, shape_name, controllers,
-                          ctrl="", attr="ty", custom_attr="", direction="+",
+                          ctrl="", attr="ty",
                           in_min=0.0, in_max=1.0, gate=""):
         row = self._table.rowCount()
         self._table.insertRow(row)
@@ -1060,33 +1070,15 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 cb_ctrl.setEditText(ctrl)
         self._table.setCellWidget(row, self._COL_CTRL, cb_ctrl)
 
-        # Col 3 — Attr
+        # Col 3 — Attr (editable combo: pick standard or type custom)
         cb_attr = QtWidgets.QComboBox()
+        cb_attr.setEditable(True)
         cb_attr.addItems(self._ATTR_ITEMS)
-        attr_idx = cb_attr.findText(attr)
-        if attr_idx >= 0:
-            cb_attr.setCurrentIndex(attr_idx)
+        cb_attr.setCurrentText(attr)
+        cb_attr.setToolTip("Standard attribute or type a custom attribute name directly.")
+        self._table.setCellWidget(row, self._COL_ATTR, cb_attr)
 
-        # Col 4 — Custom Attr
-        le_custom = QtWidgets.QLineEdit()
-        le_custom.setPlaceholderText("attr name")
-        le_custom.setText(custom_attr)
-        le_custom.setEnabled(attr == "custom")
-
-        cb_attr.currentTextChanged.connect(
-            lambda text, le=le_custom: le.setEnabled(text == "custom"))
-        self._table.setCellWidget(row, self._COL_ATTR,  cb_attr)
-        self._table.setCellWidget(row, self._COL_CATTR, le_custom)
-
-        # Col 5 — Dir
-        cb_dir = QtWidgets.QComboBox()
-        cb_dir.addItems(["+", "−"])
-        dir_idx = cb_dir.findText(direction)
-        if dir_idx >= 0:
-            cb_dir.setCurrentIndex(dir_idx)
-        self._table.setCellWidget(row, self._COL_DIR, cb_dir)
-
-        # Col 6 — In Min
+        # Col 4 — In Min
         sb_inmin = QtWidgets.QDoubleSpinBox()
         sb_inmin.setRange(-9999.0, 9999.0)
         sb_inmin.setSingleStep(0.1)
@@ -1095,13 +1087,15 @@ class RigConnectorDialog(QtWidgets.QDialog):
         sb_inmin.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self._table.setCellWidget(row, self._COL_INMIN, sb_inmin)
 
-        # Col 7 — In Max
+        # Col 5 — In Max (negative = negative direction)
         sb_inmax = QtWidgets.QDoubleSpinBox()
-        sb_inmax.setRange(0.0, 9999.0)
+        sb_inmax.setRange(-9999.0, 9999.0)
         sb_inmax.setSingleStep(0.1)
         sb_inmax.setDecimals(3)
         sb_inmax.setValue(in_max)
         sb_inmax.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        sb_inmax.setToolTip("Positive = shape activates as controller goes positive.\n"
+                            "Negative = shape activates as controller goes negative.")
         self._table.setCellWidget(row, self._COL_INMAX, sb_inmax)
 
         # Col 8 — Cond.
@@ -1212,16 +1206,17 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 continue
             shape_side, shape_part, direction, split = parsed
 
-            # Map direction → attr, dir_sign
+            # Map direction token → attr name + sign
             dir_lower = direction.lower()
             if dir_lower in _RC_CUSTOM_DIRS:
-                attr = "custom"
-                dir_sign = "+"
+                attr     = direction  # keep the raw token as custom attr name
+                negative = False
             else:
                 mapping = _RC_DIR_ATTR.get(dir_lower)
                 if not mapping:
                     continue
                 attr, dir_sign = mapping
+                negative = (dir_sign == "\u2212")
 
             # Find matching controller
             matched_ctrl = ""
@@ -1236,10 +1231,10 @@ class RigConnectorDialog(QtWidgets.QDialog):
                     break
 
             # Fill cells
-            cb_ctrl = self._table.cellWidget(row, self._COL_CTRL)
-            cb_attr = self._table.cellWidget(row, self._COL_ATTR)
-            cb_dir  = self._table.cellWidget(row, self._COL_DIR)
-            if not (cb_ctrl and cb_attr and cb_dir):
+            cb_ctrl  = self._table.cellWidget(row, self._COL_CTRL)
+            cb_attr  = self._table.cellWidget(row, self._COL_ATTR)
+            sb_inmax = self._table.cellWidget(row, self._COL_INMAX)
+            if not (cb_ctrl and cb_attr):
                 continue
 
             if matched_ctrl:
@@ -1249,13 +1244,11 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 else:
                     cb_ctrl.setEditText(matched_ctrl)
 
-            attr_idx = cb_attr.findText(attr)
-            if attr_idx >= 0:
-                cb_attr.setCurrentIndex(attr_idx)
+            cb_attr.setCurrentText(attr)
 
-            dir_idx = cb_dir.findText(dir_sign)
-            if dir_idx >= 0:
-                cb_dir.setCurrentIndex(dir_idx)
+            # Encode direction in sign of in_max
+            if sb_inmax and negative:
+                sb_inmax.setValue(-abs(sb_inmax.value()))
 
     # ── Row management ────────────────────────────────────────────────────────
 
@@ -1288,8 +1281,6 @@ class RigConnectorDialog(QtWidgets.QDialog):
         shape_item = self._table.item(r, self._COL_SHAPE)
         cb_ctrl    = self._table.cellWidget(r, self._COL_CTRL)
         cb_attr    = self._table.cellWidget(r, self._COL_ATTR)
-        le_cattr   = self._table.cellWidget(r, self._COL_CATTR)
-        cb_dir     = self._table.cellWidget(r, self._COL_DIR)
         sb_inmin   = self._table.cellWidget(r, self._COL_INMIN)
         sb_inmax   = self._table.cellWidget(r, self._COL_INMAX)
         le_gate    = self._table.cellWidget(r, self._COL_GATE)
@@ -1297,17 +1288,15 @@ class RigConnectorDialog(QtWidgets.QDialog):
         is_proxy   = bool(num_item and num_item.text() == "\u21b3")
         return {
             "is_proxy":   is_proxy,
-            "shape":      shape_item.text() if shape_item else "",
-            "ctrl":       cb_ctrl.currentText()  if cb_ctrl  else "",
-            "attr":       cb_attr.currentText()  if cb_attr  else "ty",
-            "custom_attr":le_cattr.text()        if le_cattr else "",
-            "direction":  cb_dir.currentText()   if cb_dir   else "+",
-            "in_min":     sb_inmin.value()        if sb_inmin else 0.0,
-            "in_max":     sb_inmax.value()        if sb_inmax else 1.0,
-            "gate":       le_gate.text().strip()  if le_gate  else "",
-            "stat_text":  lbl_stat.text()         if lbl_stat else "\u25cf",
-            "stat_style": lbl_stat.styleSheet()   if lbl_stat else "color: grey;",
-            "stat_tip":   lbl_stat.toolTip()      if lbl_stat else "",
+            "shape":      shape_item.text()      if shape_item else "",
+            "ctrl":       cb_ctrl.currentText()  if cb_ctrl    else "",
+            "attr":       cb_attr.currentText()  if cb_attr    else "ty",
+            "in_min":     sb_inmin.value()       if sb_inmin   else 0.0,
+            "in_max":     sb_inmax.value()       if sb_inmax   else 1.0,
+            "gate":       le_gate.text().strip() if le_gate    else "",
+            "stat_text":  lbl_stat.text()        if lbl_stat   else "\u25cf",
+            "stat_style": lbl_stat.styleSheet()  if lbl_stat   else "color: grey;",
+            "stat_tip":   lbl_stat.toolTip()     if lbl_stat   else "",
         }
 
     def _insert_row_data_at(self, pos, d):
@@ -1343,30 +1332,15 @@ class RigConnectorDialog(QtWidgets.QDialog):
             cb_ctrl.setCurrentIndex(idx) if idx >= 0 else cb_ctrl.setEditText(d["ctrl"])
         self._table.setCellWidget(pos, self._COL_CTRL, cb_ctrl)
 
-        # Col 3 — Attr + Col 4 — Custom Attr
+        # Col 3 — Attr (editable combo)
         cb_attr = QtWidgets.QComboBox()
+        cb_attr.setEditable(True)
         cb_attr.addItems(self._ATTR_ITEMS)
-        aidx = cb_attr.findText(d["attr"])
-        if aidx >= 0:
-            cb_attr.setCurrentIndex(aidx)
-        le_custom = QtWidgets.QLineEdit()
-        le_custom.setPlaceholderText("attr name")
-        le_custom.setText(d["custom_attr"])
-        le_custom.setEnabled(d["attr"] == "custom")
-        cb_attr.currentTextChanged.connect(
-            lambda text, le=le_custom: le.setEnabled(text == "custom"))
-        self._table.setCellWidget(pos, self._COL_ATTR,  cb_attr)
-        self._table.setCellWidget(pos, self._COL_CATTR, le_custom)
+        cb_attr.setCurrentText(d["attr"])
+        cb_attr.setToolTip("Standard attribute or type a custom attribute name directly.")
+        self._table.setCellWidget(pos, self._COL_ATTR, cb_attr)
 
-        # Col 5 — Dir
-        cb_dir = QtWidgets.QComboBox()
-        cb_dir.addItems(["+", "\u2212"])
-        didx = cb_dir.findText(d["direction"])
-        if didx >= 0:
-            cb_dir.setCurrentIndex(didx)
-        self._table.setCellWidget(pos, self._COL_DIR, cb_dir)
-
-        # Col 6 — In Min
+        # Col 4 — In Min
         sb_inmin = QtWidgets.QDoubleSpinBox()
         sb_inmin.setRange(-9999.0, 9999.0)
         sb_inmin.setSingleStep(0.1)
@@ -1375,9 +1349,9 @@ class RigConnectorDialog(QtWidgets.QDialog):
         sb_inmin.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self._table.setCellWidget(pos, self._COL_INMIN, sb_inmin)
 
-        # Col 7 — In Max
+        # Col 5 — In Max (negative = negative direction)
         sb_inmax = QtWidgets.QDoubleSpinBox()
-        sb_inmax.setRange(0.0, 9999.0)
+        sb_inmax.setRange(-9999.0, 9999.0)
         sb_inmax.setSingleStep(0.1)
         sb_inmax.setDecimals(3)
         sb_inmax.setValue(d["in_max"])
@@ -1453,21 +1427,17 @@ class RigConnectorDialog(QtWidgets.QDialog):
             is_proxy = bool(num_item and num_item.text() == "\u21b3")
             cb_ctrl  = self._table.cellWidget(r, self._COL_CTRL)
             cb_attr  = self._table.cellWidget(r, self._COL_ATTR)
-            le_cattr = self._table.cellWidget(r, self._COL_CATTR)
-            cb_dir   = self._table.cellWidget(r, self._COL_DIR)
             sb_inmin = self._table.cellWidget(r, self._COL_INMIN)
             sb_inmax = self._table.cellWidget(r, self._COL_INMAX)
             le_gate  = self._table.cellWidget(r, self._COL_GATE)
             rows.append({
-                "shape":       shape,
-                "proxy":       is_proxy,
-                "controller":  cb_ctrl.currentText()  if cb_ctrl  else "",
-                "attr":        cb_attr.currentText()  if cb_attr  else "ty",
-                "custom_attr": le_cattr.text()        if le_cattr else "",
-                "direction":   cb_dir.currentText()   if cb_dir   else "+",
-                "in_min":      sb_inmin.value()       if sb_inmin else 0.0,
-                "in_max":      sb_inmax.value()       if sb_inmax else 1.0,
-                "gate":        le_gate.text().strip()  if le_gate  else "",
+                "shape":      shape,
+                "proxy":      is_proxy,
+                "controller": cb_ctrl.currentText() if cb_ctrl  else "",
+                "attr":       cb_attr.currentText() if cb_attr  else "ty",
+                "in_min":     sb_inmin.value()      if sb_inmin else 0.0,
+                "in_max":     sb_inmax.value()      if sb_inmax else 1.0,
+                "gate":       le_gate.text().strip() if le_gate  else "",
             })
         return rows
 
@@ -1505,14 +1475,29 @@ class RigConnectorDialog(QtWidgets.QDialog):
         by_shape    = {rd["shape"]: rd for rd in primary_data}
         controllers = self._scene_controllers()
 
+        def _resolve_rd(rd):
+            """Normalise a row dict — handles old JSON format (direction + custom_attr)."""
+            attr    = rd.get("attr", "ty")
+            in_min  = float(rd.get("in_min", 0.0))
+            in_max  = float(rd.get("in_max", 1.0))
+            # Old format: attr=="custom" → use custom_attr value
+            custom_attr = rd.get("custom_attr", "")
+            if attr == "custom" and custom_attr:
+                attr = custom_attr
+            # Old format: direction=="−" → negate in_max (and in_min if nonzero)
+            if rd.get("direction", "+") == "\u2212":
+                in_max = -abs(in_max)
+                if in_min != 0.0:
+                    in_min = -abs(in_min)
+            return attr, in_min, in_max
+
         def _apply_row_data(r, rd):
             cb_ctrl  = self._table.cellWidget(r, self._COL_CTRL)
             cb_attr  = self._table.cellWidget(r, self._COL_ATTR)
-            le_cattr = self._table.cellWidget(r, self._COL_CATTR)
-            cb_dir   = self._table.cellWidget(r, self._COL_DIR)
             sb_inmin = self._table.cellWidget(r, self._COL_INMIN)
             sb_inmax = self._table.cellWidget(r, self._COL_INMAX)
             le_gate  = self._table.cellWidget(r, self._COL_GATE)
+            attr, in_min, in_max = _resolve_rd(rd)
             if cb_ctrl:
                 idx = cb_ctrl.findText(rd.get("controller", ""))
                 if idx >= 0:
@@ -1520,19 +1505,11 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 else:
                     cb_ctrl.setEditText(rd.get("controller", ""))
             if cb_attr:
-                aidx = cb_attr.findText(rd.get("attr", "ty"))
-                if aidx >= 0:
-                    cb_attr.setCurrentIndex(aidx)
-            if le_cattr:
-                le_cattr.setText(rd.get("custom_attr", ""))
-            if cb_dir:
-                didx = cb_dir.findText(rd.get("direction", "+"))
-                if didx >= 0:
-                    cb_dir.setCurrentIndex(didx)
+                cb_attr.setCurrentText(attr)
             if sb_inmin:
-                sb_inmin.setValue(rd.get("in_min", 0.0))
+                sb_inmin.setValue(in_min)
             if sb_inmax:
-                sb_inmax.setValue(rd.get("in_max", 1.0))
+                sb_inmax.setValue(in_max)
             if le_gate:
                 le_gate.setText(rd.get("gate", ""))
 
@@ -1556,14 +1533,14 @@ class RigConnectorDialog(QtWidgets.QDialog):
             sname = rd.get("shape", "")
             if sname and sname not in existing_shapes:
                 row_num += 1
+                attr, in_min, in_max = _resolve_rd(rd)
                 self._append_table_row(
                     row_num, sname, controllers,
                     ctrl=rd.get("controller", ""),
-                    attr=rd.get("attr", "ty"),
-                    custom_attr=rd.get("custom_attr", ""),
-                    direction=rd.get("direction", "+"),
-                    in_min=rd.get("in_min", 0.0),
-                    in_max=rd.get("in_max", 1.0),
+                    attr=attr,
+                    in_min=in_min,
+                    in_max=in_max,
+                    gate=rd.get("gate", ""),
                 )
 
         # ── Passe 2 : proxy rows ──────────────────────────────────────────────
@@ -1620,13 +1597,11 @@ class RigConnectorDialog(QtWidgets.QDialog):
             return
         shape_name = shape_item.text()
 
-        # Lire les paramètres de la ligne source (attr, dir, in_max)
+        # Lire les paramètres de la ligne source (attr, in_max)
         cb_attr  = self._table.cellWidget(source_row, self._COL_ATTR)
-        cb_dir   = self._table.cellWidget(source_row, self._COL_DIR)
         sb_inmax = self._table.cellWidget(source_row, self._COL_INMAX)
-        attr      = cb_attr.currentText()  if cb_attr  else "ty"
-        direction = cb_dir.currentText()   if cb_dir   else "+"
-        in_max    = in_max_override if in_max_override is not None else (sb_inmax.value() if sb_inmax else 1.0)
+        attr   = cb_attr.currentText()  if cb_attr  else "ty"
+        in_max = in_max_override if in_max_override is not None else (sb_inmax.value() if sb_inmax else 1.0)
 
         controllers = self._scene_controllers()
         insert_row  = source_row + 1
@@ -1651,20 +1626,11 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._table.setCellWidget(insert_row, self._COL_CTRL, cb_ctrl_new)
 
         cb_attr_new = QtWidgets.QComboBox()
+        cb_attr_new.setEditable(True)
         cb_attr_new.addItems(self._ATTR_ITEMS)
         cb_attr_new.setCurrentText(attr)
-        le_custom = QtWidgets.QLineEdit()
-        le_custom.setPlaceholderText("attr name")
-        le_custom.setEnabled(attr == "custom")
-        cb_attr_new.currentTextChanged.connect(
-            lambda text, le=le_custom: le.setEnabled(text == "custom"))
-        self._table.setCellWidget(insert_row, self._COL_ATTR,  cb_attr_new)
-        self._table.setCellWidget(insert_row, self._COL_CATTR, le_custom)
-
-        cb_dir_new = QtWidgets.QComboBox()
-        cb_dir_new.addItems(["+", "\u2212"])
-        cb_dir_new.setCurrentText(direction)
-        self._table.setCellWidget(insert_row, self._COL_DIR, cb_dir_new)
+        cb_attr_new.setToolTip("Standard attribute or type a custom attribute name directly.")
+        self._table.setCellWidget(insert_row, self._COL_ATTR, cb_attr_new)
 
         sb_inmin_new = QtWidgets.QDoubleSpinBox()
         sb_inmin_new.setRange(-9999.0, 9999.0)
@@ -1675,11 +1641,13 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._table.setCellWidget(insert_row, self._COL_INMIN, sb_inmin_new)
 
         sb_inmax_new = QtWidgets.QDoubleSpinBox()
-        sb_inmax_new.setRange(0.0, 9999.0)
+        sb_inmax_new.setRange(-9999.0, 9999.0)
         sb_inmax_new.setSingleStep(0.1)
         sb_inmax_new.setDecimals(3)
         sb_inmax_new.setValue(in_max)
         sb_inmax_new.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        sb_inmax_new.setToolTip("Positive = shape activates as controller goes positive.\n"
+                                "Negative = shape activates as controller goes negative.")
         self._table.setCellWidget(insert_row, self._COL_INMAX, sb_inmax_new)
 
         le_gate_new = QtWidgets.QLineEdit()
@@ -1696,22 +1664,31 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
     # ── Auto-stagger ──────────────────────────────────────────────────────────
 
+    def _on_stagger_mode_changed(self, text):
+        self._chk_stagger_sign.setEnabled(text == "Symmetric")
+
     def _apply_stagger(self):
         """Apply stagger In Min / In Max to the selected primary rows.
 
-        Non-symmetric: shape k (0-indexed) gets slot [k/N, (k+1)/N] × in_max_ref.
-        Symmetric: outer shapes share slot 0, centre shape activates last at in_max_ref.
-        Falloff: each slot is extended by ±falloff (clamped to [0, in_max_ref]).
-
-        Proxies ON : creates / updates a proxy sub-row per shape driven by the stagger ctrl.
-        Proxies OFF: writes controller, axis, In Min, In Max directly on the selected rows.
+        Linear    : shape k gets slot [k/N, (k+1)/N] × in_max_ref.
+        Mirror    : centre peak — centre shape activates last, outer shapes first.
+                    All shapes same direction. Ideal for zip lips.
+        Symmetric : outer peak — outer shapes activate last, centre shape first.
+                    Left half gets negative In Max, right half positive (or reversed via +/−).
+                    Ideal for brows and cheekbones.
+        Smooth    : each slot extended by ±smooth (clamped to [0, in_max_ref]).
+        Proxies ON : creates / updates a proxy sub-row per shape.
+        Proxies OFF: writes values directly on the selected rows.
         """
-        master_ctrl  = self._le_stagger_ctrl.text().strip()
-        axis         = self._combo_stagger_axis.currentText()
-        in_max_ref   = self._sb_stagger_inmax.value()
-        falloff      = self._sb_stagger_falloff.value()
-        symmetric    = self._chk_stagger_symmetric.isChecked()
-        use_proxies  = self._chk_stagger_proxies.isChecked()
+        master_ctrl   = self._le_stagger_ctrl.text().strip()
+        axis          = self._combo_stagger_axis.currentText()
+        in_max_ref    = self._sb_stagger_inmax.value()
+        smooth        = self._sb_stagger_falloff.value()
+        mode          = self._combo_stagger_mode.currentText()   # "Linear"/"Mirror"/"Symmetric"
+        use_mirror    = (mode == "Mirror")
+        use_symmetric = (mode == "Symmetric")
+        positive_left = self._chk_stagger_sign.isChecked()
+        use_proxies   = self._chk_stagger_proxies.isChecked()
 
         if use_proxies and not master_ctrl:
             QtWidgets.QMessageBox.warning(
@@ -1730,17 +1707,36 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         n = len(primary_selected)
 
-        if symmetric:
+        # ── Slot formula ──────────────────────────────────────────────────────
+        if use_mirror:
+            # Centre shape gets highest slot; outer shapes share lower slots (zip lips)
             num_slots  = (n + 1) // 2
             slot_width = in_max_ref / num_slots if num_slots > 0 else 0.0
             def _slot(k):
                 dist = abs(k - (n - 1) / 2.0)
                 return int((n - 1) / 2.0 - dist + 1e-9)
+        elif use_symmetric:
+            # Outer shapes get highest slot; centre shape gets lowest slot (brows/cheekbones)
+            num_slots  = (n + 1) // 2
+            slot_width = in_max_ref / num_slots if num_slots > 0 else 0.0
+            def _slot(k):
+                return int(abs(k - (n - 1) / 2.0) + 1e-9)
         else:
             num_slots  = n
             slot_width = in_max_ref / n if n > 0 else 0.0
             def _slot(k):
                 return k
+
+        # ── Direction formula (Symmetric only) ────────────────────────────────
+        def _direction(k):
+            """Return '+' or '−' based on left/right position; None if not Symmetric."""
+            if not use_symmetric:
+                return None
+            is_left = k < (n - 1) / 2.0   # strictly left of centre
+            if positive_left:
+                return "+" if is_left else "\u2212"
+            else:
+                return "\u2212" if is_left else "+"
 
         # Process bottom-up to avoid index shifts on proxy insertion
         for k, r in reversed(list(enumerate(primary_selected))):
@@ -1749,9 +1745,18 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 continue
             shape = shape_item.text()
 
-            slot       = _slot(k)
-            in_min_val = max(0.0, slot * slot_width - falloff)
-            in_max_val = min(in_max_ref, (slot + 1) * slot_width + falloff)
+            slot      = _slot(k)
+            direction = _direction(k)   # "+", "−", or None
+
+            # Compute signed in_min / in_max (Symmetric → negative side gets negated values)
+            base_min = max(0.0, slot * slot_width - smooth)
+            base_max = min(in_max_ref, (slot + 1) * slot_width + smooth)
+            if direction == "\u2212":
+                in_min_val = -base_min
+                in_max_val = -base_max
+            else:
+                in_min_val = base_min
+                in_max_val = base_max
 
             if use_proxies:
                 # Find or create a proxy row for this shape + master ctrl
@@ -1775,14 +1780,12 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 if cb_ctrl_w and master_ctrl:
                     cb_ctrl_w.setCurrentText(master_ctrl)
 
-            # Apply axis / in_min / in_max
+            # Apply axis / in_min / in_max (direction is encoded in sign of in_max)
             cb_attr_w  = self._table.cellWidget(target_row, self._COL_ATTR)
             sb_inmin_w = self._table.cellWidget(target_row, self._COL_INMIN)
             sb_inmax_w = self._table.cellWidget(target_row, self._COL_INMAX)
             if cb_attr_w:
-                aidx = cb_attr_w.findText(axis)
-                if aidx >= 0:
-                    cb_attr_w.setCurrentIndex(aidx)
+                cb_attr_w.setCurrentText(axis)
             if sb_inmin_w:
                 sb_inmin_w.setValue(in_min_val)
             if sb_inmax_w:

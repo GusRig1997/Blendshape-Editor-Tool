@@ -2501,7 +2501,8 @@ def build_and_connect_rig(bs_node, rows):
     hasLimits=OFF : weight proportionnel au-delà de 1.0, jamais négatif
 
     rows : list of dicts avec les clés :
-        shape, controller, attr, custom_attr, direction, in_min, in_max
+        shape, controller, attr, in_min, in_max
+        (in_max peut être négatif : signe = direction)
     """
     import re as _re
     from collections import defaultdict
@@ -2524,21 +2525,14 @@ def build_and_connect_rig(bs_node, rows):
     # ── Phase 1 : validation + création des custom attrs ─────────────────────
     valid_rows = []
     for row in rows:
-        shape       = row.get("shape", "").strip()
-        ctrl        = row.get("controller", "").strip()
-        attr        = row.get("attr", "ty")
-        custom_attr = row.get("custom_attr", "").strip()
-        direction   = row.get("direction", "+")
-        in_min      = float(row.get("in_min", 0.0))
-        in_max      = float(row.get("in_max", 1.0))
-        gate        = row.get("gate", "").strip()
+        shape         = row.get("shape", "").strip()
+        ctrl          = row.get("controller", "").strip()
+        resolved_attr = row.get("attr", "ty").strip()
+        in_min        = float(row.get("in_min", 0.0))
+        in_max        = float(row.get("in_max", 1.0))
+        gate          = row.get("gate", "").strip()
 
-        if not shape or not ctrl:
-            results.append({"shape": shape, "status": "skip"})
-            continue
-
-        resolved_attr = custom_attr if attr == "custom" else attr
-        if not resolved_attr:
+        if not shape or not ctrl or not resolved_attr:
             results.append({"shape": shape, "status": "skip"})
             continue
 
@@ -2553,21 +2547,17 @@ def build_and_connect_rig(bs_node, rows):
 
         ctrl_attr_full = f"{ctrl}.{resolved_attr}"
         if not cmds.objExists(ctrl_attr_full):
-            if attr == "custom":
-                _neg  = (direction == "\u2212")
-                c_min = -in_max if _neg else 0.0
-                c_max = 0.0 if _neg else in_max
+            # Attr doesn't exist → create as custom float attr (no min/max yet, set in post-loop)
+            try:
                 cmds.addAttr(ctrl, longName=resolved_attr, attributeType="float",
-                             defaultValue=0.0, keyable=True,
-                             minValue=c_min, maxValue=c_max)
-            else:
+                             defaultValue=0.0, keyable=True)
+            except Exception:
                 results.append({"shape": shape, "status": "no_attr"})
                 continue
 
         valid_rows.append({
             "shape": shape, "idx": idx, "ctrl": ctrl,
             "ctrl_attr": ctrl_attr_full, "resolved_attr": resolved_attr,
-            "attr": attr, "negative": (direction == "\u2212"),
             "in_min": in_min, "in_max": in_max,
             "gate": gate,
         })
@@ -2594,28 +2584,31 @@ def build_and_connect_rig(bs_node, rows):
             # ── Norm nodes (un par driver) ────────────────────────────────────
             norm_outputs = []
             for i, vr in enumerate(group):
-                negative = vr["negative"]
-                in_min   = vr["in_min"]
-                in_max   = vr["in_max"]
+                in_min = vr["in_min"]
+                in_max = vr["in_max"]
 
-                # in_max=0 → driver désactivé, skip
+                # in_max=0 et in_min=0 → driver désactivé, skip
                 if abs(in_max) < 1e-9 and abs(in_min) < 1e-9:
                     continue
 
-                span     = max(abs(in_max - in_min), 1e-9)
+                # span peut être négatif (in_max négatif = direction négative)
+                span = in_max - in_min
+                if abs(span) < 1e-9:
+                    continue
 
-                # Offset (soustrait in_min) si nécessaire
+                # Offset : soustrait in_min du signal (toujours -in_min)
                 if abs(in_min) > 1e-9:
                     adl = cmds.createNode("addDoubleLinear", name=f"offset_{shape}_{i}")
                     cmds.connectAttr(vr["ctrl_attr"], f"{adl}.input1", force=True)
-                    cmds.setAttr(f"{adl}.input2", in_min if negative else -in_min)
+                    cmds.setAttr(f"{adl}.input2", -in_min)
                     norm_src = f"{adl}.output"
                 else:
                     norm_src = vr["ctrl_attr"]
 
+                # Facteur = 1/span : négatif si in_max < in_min (direction négative)
                 norm = cmds.createNode("multiplyDivide", name=f"norm_{shape}_{i}")
                 cmds.setAttr(f"{norm}.operation", 1)
-                cmds.setAttr(f"{norm}.input2X", -1.0 / span if negative else 1.0 / span)
+                cmds.setAttr(f"{norm}.input2X", 1.0 / span)
                 cmds.connectAttr(norm_src, f"{norm}.input1X", force=True)
                 norm_outputs.append(f"{norm}.outputX")
 
@@ -2672,30 +2665,23 @@ def build_and_connect_rig(bs_node, rows):
             for vr in group:
                 ctrl          = vr["ctrl"]
                 resolved_attr = vr["resolved_attr"]
-                negative      = vr["negative"]
                 in_max        = vr["in_max"]
                 in_min        = vr["in_min"]
-                # Skip les drivers désactivés (in_max=0) pour pending_limits
+                # Skip les drivers désactivés (in_max=0 et in_min=0) pour pending_limits
                 if abs(in_max) < 1e-9 and abs(in_min) < 1e-9:
                     pending_conds.setdefault(ctrl, [])  # hasLimits quand même
                     continue
                 if resolved_attr in _RC_LIMIT_INFO:
-                    # Limite physique : toujours ancrée à 0, étendue vers l'extérieur.
-                    # in_min est un seuil réseau (offset), pas une barrière physique.
-                    if negative:
-                        lim_min = -in_max
-                        lim_max = 0.0
-                    else:
-                        lim_min = 0.0
-                        lim_max = in_max
+                    # Limite physique couvrant le range complet d'activation (inclut 0)
+                    lim_min = min(0.0, in_min, in_max)
+                    lim_max = max(0.0, in_min, in_max)
                     prev = pending_limits.setdefault(ctrl, {}).get(resolved_attr, (0.0, 0.0))
                     pending_limits[ctrl][resolved_attr] = (min(prev[0], lim_min),
                                                            max(prev[1], lim_max))
-                elif vr["attr"] == "custom":
-                    if negative:
-                        c_min, c_max = -in_max, 0.0
-                    else:
-                        c_min, c_max = 0.0, in_max
+                elif resolved_attr not in _SCALE_ATTRS:
+                    # Attr custom : accumuler le range min/max
+                    c_min = min(0.0, in_min, in_max)
+                    c_max = max(0.0, in_min, in_max)
                     prev = pending_custom_clamps.get(vr["ctrl_attr"], (0.0, 0.0))
                     pending_custom_clamps[vr["ctrl_attr"]] = (min(prev[0], c_min),
                                                               max(prev[1], c_max))
