@@ -5258,11 +5258,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         curve_name = self.combo_curve.currentText()
         falloff_fn = CURVE_FUNCTIONS.get(curve_name, linear)
 
+        bs_states = {}
         try:
-            # Zero all weights on each involved bs_node once
+            # Disconnect driven attrs and zero all weights on each involved bs_node
             for bs_node in {t[0] for t in targets}:
-                for attr in (cmds.listAttr(f"{bs_node}.w", multi=True) or []):
-                    cmds.setAttr(f"{bs_node}.{attr.lstrip('.')}", 0.0)
+                bs_states[bs_node] = zero_all_bs_weights(bs_node)
 
             done = []
             for bs_node, logical_index, target_name in targets:
@@ -5280,6 +5280,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             import traceback
             traceback.print_exc()
             self._set_status(f"✗ Edge Loop Split: {e}", error=True)
+        finally:
+            for _bs, _state in bs_states.items():
+                restore_all_bs_weights(_bs, _state)
     def _run_add_target(self):
         targets = get_selected_targets()
         if not targets:
