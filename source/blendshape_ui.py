@@ -4813,6 +4813,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         loc_axes_list = [get_locator_local_axes(loc) for loc in locators]             if self.chk_local_axes.isChecked() else None
 
         total = 0
+        bs_states = {}
         try:
             for bs_node, logical_index, target_name in targets:
                 target_name = target_name.replace("Shape", "")
@@ -4833,9 +4834,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                                                 loc_axes=loc_axes_list,
                                                 invert_axis=self.chk_invert_axis.isChecked())
 
-                # Zero all blendShape weights once before the split loop
-                for idx in (cmds.getAttr(f"{bs_node}.w", multiIndices=True) or []):
-                    try_set_weight(bs_node, idx, 0.0)
+                # Zero all blendShape weights (disconnect driven attrs) — once per bs_node
+                if bs_node not in bs_states:
+                    bs_states[bs_node] = zero_all_bs_weights(bs_node)
 
                 # Build the list of (loc_idx, final_name) pairs to create
                 if symmetric:
@@ -4874,6 +4875,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
+        finally:
+            for _bs, _state in bs_states.items():
+                restore_all_bs_weights(_bs, _state)
+
     def _parse_factor(self, field):
         """Parse a QLineEdit value as float, using dot as decimal separator."""
         try:

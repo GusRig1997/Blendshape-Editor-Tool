@@ -650,8 +650,7 @@ def bake_deformers_to_targets(bs_node, base_mesh, logical_indices):
         raise RuntimeError(f"No output shape found on '{base_mesh}'")
     mesh_shape = shapes[0]
 
-    all_indices = cmds.getAttr(f"{bs_node}.weight", multiIndices=True) or []
-    saved_weights = {i: cmds.getAttr(f"{bs_node}.w[{i}]") for i in all_indices}
+    bs_state = zero_all_bs_weights(bs_node)
 
     def _sample_positions():
         sel = om2.MSelectionList()
@@ -661,9 +660,7 @@ def bake_deformers_to_targets(bs_node, base_mesh, logical_indices):
         return fn.getPoints(om2.MSpace.kObject)
 
     try:
-        # All targets off → neutral pose (deformers still active)
-        for i in all_indices:
-            try_set_weight(bs_node, i, 0.0)
+        # All targets already zeroed — sample neutral pose (deformers still active)
         cmds.dgeval(f"{mesh_shape}.worldMesh[0]")
         neutral_pts = _sample_positions()
 
@@ -696,8 +693,7 @@ def bake_deformers_to_targets(bs_node, base_mesh, logical_indices):
         return count
 
     finally:
-        for i, w in saved_weights.items():
-            try_set_weight(bs_node, i, w)
+        restore_all_bs_weights(bs_node, bs_state)
 
 
 def _insert_indices_after(bs_node, source_index, new_indices, source_is_directory=False):
@@ -751,6 +747,44 @@ def reset_all_target_weights(bs_node):
     """Sets every target weight on bs_node to 0.0. Skips connected/locked attrs. Returns the number of weights reset."""
     indices = cmds.getAttr(f"{bs_node}.weight", multiIndices=True) or []
     return sum(1 for i in indices if try_set_weight(bs_node, i, 0.0))
+
+
+def zero_all_bs_weights(bs_node):
+    """
+    Zeros all blendShape weights on bs_node, temporarily disconnecting any driven
+    (connected) attributes so they can be set freely.
+
+    Returns a state dict: {idx: {'value': float, 'connections': [src_plug, ...]}}
+    Pass the returned state to restore_all_bs_weights() to reconnect and restore.
+    """
+    indices = cmds.getAttr(f"{bs_node}.weight", multiIndices=True) or []
+    state = {}
+    for i in indices:
+        attr = f"{bs_node}.w[{i}]"
+        value = cmds.getAttr(attr)
+        connections = cmds.listConnections(attr, source=True, destination=False, plugs=True) or []
+        for src in connections:
+            cmds.disconnectAttr(src, attr)
+        if not cmds.getAttr(attr, lock=True):
+            cmds.setAttr(attr, 0.0)
+        state[i] = {"value": value, "connections": connections}
+    return state
+
+
+def restore_all_bs_weights(bs_node, state):
+    """
+    Restores blendShape weights and connections saved by zero_all_bs_weights().
+    Connected attributes are reconnected (the controller value then drives the weight again).
+    Free attributes are set back to their saved value.
+    """
+    for i, info in state.items():
+        attr = f"{bs_node}.w[{i}]"
+        if info["connections"]:
+            for src in info["connections"]:
+                if cmds.objExists(src.split(".")[0]):
+                    cmds.connectAttr(src, attr, force=True)
+        elif not cmds.getAttr(attr, lock=True):
+            cmds.setAttr(attr, info["value"])
 
 
 def purge_empty_bs_slots(bs_node):
@@ -1939,15 +1973,6 @@ def _delete_wrap_deformer(wrap_node, base_transform):
     print(f"  Wrap cleaned up.")
 
 
-def _zero_bs_weights(bs_node):
-    """Forces all weights on bs_node to zero. Warns if any were non-zero."""
-    all_weights = cmds.listAttr(f"{bs_node}.w", multi=True) or []
-    non_zero    = [w for w in all_weights if abs(cmds.getAttr(f"{bs_node}.{w}")) > 1e-6]
-    for w in non_zero:
-        cmds.setAttr(f"{bs_node}.{w}", 0.0)
-    if non_zero:
-        print(f"  ⚠ Forced to zero before extraction: {', '.join(non_zero)}")
-
 
 def _capture_target_shapes(bs_node, mesh_target, targets):
     """
@@ -2031,7 +2056,7 @@ def extract_targets_via_wrap(bs_node, base_mesh, mesh_target, targets):
     targets : list of (bs_node, logical_index, target_name)
     Returns : (bs_target, log)  — see _integrate_extracted_shapes
     """
-    _zero_bs_weights(bs_node)
+    bs_state = zero_all_bs_weights(bs_node)
 
     # Duplicate mesh_target to get a clean neutral-pose proxy
     proxy = cmds.duplicate(mesh_target, name=f"{mesh_target}_wrapProxy")[0]
@@ -2046,6 +2071,7 @@ def extract_targets_via_wrap(bs_node, base_mesh, mesh_target, targets):
         _delete_wrap_deformer(wrap_node, base_transform)
         if cmds.objExists(proxy):
             cmds.delete(proxy)
+        restore_all_bs_weights(bs_node, bs_state)
 
     return _integrate_extracted_shapes(mesh_target, extracted)
 
@@ -2081,42 +2107,46 @@ def extract_targets_only(bs_node, mesh_target, targets):
     targets : list of (bs_node, logical_index, target_name)
     Returns : (grp, [transform_names])
     """
-    _zero_bs_weights(bs_node)
+    bs_state = zero_all_bs_weights(bs_node)
 
     mesh_short = mesh_target.split(":")[-1].split("|")[-1]
     extracted  = []
 
-    for _bs, _idx, target_name in targets:
-        cmds.setAttr(f"{bs_node}.{target_name}", 1.0)
-        temp_dup = cmds.duplicate(mesh_target, name=f"{target_name}_TEMP")[0]
-        cmds.delete(temp_dup, constructionHistory=True)
-        cmds.setAttr(f"{bs_node}.{target_name}", 0.0)
+    try:
+        for _bs, _idx, target_name in targets:
+            cmds.setAttr(f"{bs_node}.{target_name}", 1.0)
+            temp_dup = cmds.duplicate(mesh_target, name=f"{target_name}_TEMP")[0]
+            cmds.delete(temp_dup, constructionHistory=True)
+            cmds.setAttr(f"{bs_node}.{target_name}", 0.0)
 
-        # Remove all intermediate shapes (ShapeOrig, ShapeDeformed, etc.)
-        all_shapes = cmds.listRelatives(temp_dup, shapes=True, fullPath=True) or []
-        intermediate = [s for s in all_shapes
-                        if cmds.getAttr(f"{s}.intermediateObject")]
-        if intermediate:
-            cmds.delete(intermediate)
+            # Remove all intermediate shapes (ShapeOrig, ShapeDeformed, etc.)
+            all_shapes = cmds.listRelatives(temp_dup, shapes=True, fullPath=True) or []
+            intermediate = [s for s in all_shapes
+                            if cmds.getAttr(f"{s}.intermediateObject")]
+            if intermediate:
+                cmds.delete(intermediate)
 
-        # If multiple non-intermediate shapes remain, keep only the first
-        remaining = cmds.listRelatives(temp_dup, shapes=True, fullPath=True) or []
-        if len(remaining) > 1:
-            cmds.delete(remaining[1:])
+            # If multiple non-intermediate shapes remain, keep only the first
+            remaining = cmds.listRelatives(temp_dup, shapes=True, fullPath=True) or []
+            if len(remaining) > 1:
+                cmds.delete(remaining[1:])
 
-        # Rename the surviving shape so blendShape > Add picks up the target name
-        surviving = cmds.listRelatives(temp_dup, shapes=True) or []
-        if surviving:
-            cmds.rename(surviving[0], target_name)
-        extracted.append(temp_dup)
-        print(f"  ✓ Extracted: {target_name}_TEMP  (shape: {target_name})")
+            # Rename the surviving shape so blendShape > Add picks up the target name
+            surviving = cmds.listRelatives(temp_dup, shapes=True) or []
+            if surviving:
+                cmds.rename(surviving[0], target_name)
+            extracted.append(temp_dup)
+            print(f"  ✓ Extracted: {target_name}_TEMP  (shape: {target_name})")
 
-    grp = None
-    if extracted:
-        grp = cmds.group(*extracted, name=f"{mesh_short}_extractedShapes_grp", world=True)
-        print(f"  ✓ Grouped at world root: {grp}")
+        grp = None
+        if extracted:
+            grp = cmds.group(*extracted, name=f"{mesh_short}_extractedShapes_grp", world=True)
+            print(f"  ✓ Grouped at world root: {grp}")
 
-    return grp, extracted
+        return grp, extracted
+
+    finally:
+        restore_all_bs_weights(bs_node, bs_state)
 
 
 @undo_chunk
