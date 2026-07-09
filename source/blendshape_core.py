@@ -1017,6 +1017,138 @@ def do_mirror_target(bs_node, logical_index, base_shape, mirror_direction,
     print(f"  ✓ Mirror : {bs_node}.w[{logical_index}] ({symmetry_axis})")
 
 
+# ---------------------------------------------------------------------------
+# Partial (vertex-selection) mirror helpers
+# ---------------------------------------------------------------------------
+
+def _build_sym_map_axis(base_mesh, axis_char, threshold=1e-4):
+    """
+    Returns {vi: sym_vi} by finding each vertex's mirror across the given axis.
+    Uses an O(n) rounded-position dict lookup.
+    axis_char : 'x', 'y', or 'z'
+    """
+    from maya.api import OpenMaya as om
+    base_shapes = cmds.listRelatives(base_mesh, shapes=True, type="mesh") or []
+    shape = base_shapes[0] if base_shapes else base_mesh
+    sel = om.MSelectionList()
+    sel.add(shape)
+    fn  = om.MFnMesh(sel.getDagPath(0))
+    pts = fn.getPoints(om.MSpace.kObject)
+
+    ai   = {'x': 0, 'y': 1, 'z': 2}[axis_char.lower()]
+    PREC = int(1.0 / threshold)
+
+    pos_map = {}
+    for i, p in enumerate(pts):
+        key = (round(p.x * PREC), round(p.y * PREC), round(p.z * PREC))
+        pos_map[key] = i
+
+    sym_map = {}
+    for i, p in enumerate(pts):
+        coords      = [round(p.x * PREC), round(p.y * PREC), round(p.z * PREC)]
+        coords[ai]  = -coords[ai]
+        j = pos_map.get(tuple(coords))
+        if j is not None:
+            sym_map[i] = j
+
+    return sym_map
+
+
+def _build_sym_map_topo(base_mesh, topo_edge):
+    """
+    Returns {vi: sym_vi} using Maya's topology symmetry (polySymmetryQuery).
+    Requires a central edge set via symmetricModelling -topoSymmetry.
+    Returns {} if polySymmetryQuery is unavailable or returns unexpected data.
+    """
+    was_sym = _setup_topo_sym(topo_edge)
+    try:
+        result = cmds.polySymmetryQuery(base_mesh, sidesToComponents=True)
+        # result: [side0_comp_list, side1_comp_list]
+        # Paired by index: result[0][k] <-> result[1][k]
+        if not result or len(result) < 2:
+            return {}
+        sym_map = {}
+        for c0, c1 in zip(result[0], result[1]):
+            vi0 = int(c0.split('[')[1].rstrip(']'))
+            vi1 = int(c1.split('[')[1].rstrip(']'))
+            sym_map[vi0] = vi1
+            sym_map[vi1] = vi0
+        return sym_map
+    except Exception as e:
+        cmds.warning(f"polySymmetryQuery failed ({e}). Partial mirror unavailable for Topology mode.")
+        return {}
+    finally:
+        _restore_sym_state(was_sym)
+
+
+# Delta component to negate for each symmetry axis when copying to the opposite side
+_SYM_NEGATE = {
+    'x': (True,  False, False),
+    'y': (False, True,  False),
+    'z': (False, False, True),
+}
+
+
+def do_mirror_target_vtx(bs_node, logical_index, vtx_indices,
+                          symmetry_axis="Topology", topo_edge=None):
+    """
+    Mirror only the given vertex indices on the blendShape target.
+    Reads each selected vertex's delta and writes the axis-negated version
+    to its symmetric counterpart. Source vertices are left unchanged.
+
+    Returns the number of pairs written, or raises RuntimeError if the
+    symmetry map could not be built.
+    """
+    space, axis_char = FLIP_AXIS_MAP.get(symmetry_axis, (1, 'x'))
+    base_mesh = get_base_mesh(bs_node)
+
+    if space == 0:  # Topology
+        sym_map = _build_sym_map_topo(base_mesh, topo_edge)
+        negate  = _SYM_NEGATE['x']          # topo symmetry assumes X as the mirror axis
+    else:
+        sym_map = _build_sym_map_axis(base_mesh, axis_char)
+        negate  = _SYM_NEGATE.get(axis_char, (False, False, False))
+
+    if not sym_map:
+        raise RuntimeError(
+            f"Could not build symmetry map for '{symmetry_axis}'. "
+            "For Topology mode, ensure a central edge is set and the mesh has valid topology symmetry."
+        )
+
+    nx, ny, nz = negate
+    mesh_shape, tgt_transform, was_live = _get_regen_mesh(bs_node, logical_index)
+
+    try:
+        # Read all source deltas first to avoid reading partially-written data mid-loop
+        src = {
+            vi: (
+                cmds.getAttr(f"{mesh_shape}.pnts[{vi}].pntx"),
+                cmds.getAttr(f"{mesh_shape}.pnts[{vi}].pnty"),
+                cmds.getAttr(f"{mesh_shape}.pnts[{vi}].pntz"),
+            )
+            for vi in vtx_indices
+        }
+
+        # Write mirrored delta to each symmetric counterpart
+        written = 0
+        for vi, (dx, dy, dz) in src.items():
+            sym_vi = sym_map.get(vi)
+            if sym_vi is None or sym_vi == vi:
+                continue   # center vertex or no counterpart found
+            cmds.setAttr(f"{mesh_shape}.pnts[{sym_vi}].pntx", -dx if nx else dx)
+            cmds.setAttr(f"{mesh_shape}.pnts[{sym_vi}].pnty", -dy if ny else dy)
+            cmds.setAttr(f"{mesh_shape}.pnts[{sym_vi}].pntz", -dz if nz else dz)
+            written += 1
+
+    finally:
+        if not was_live:
+            cmds.delete(tgt_transform)
+
+    print(f"  ✓ Mirror vtx : {bs_node}.w[{logical_index}]"
+          f" — {written}/{len(vtx_indices)} pairs ({symmetry_axis})")
+    return written
+
+
 def multiply_target_deltas(bs_node, logical_index, fx, fy, fz, vtx_indices=None):
     """
     Multiplies delta X/Y/Z components directly (object space).

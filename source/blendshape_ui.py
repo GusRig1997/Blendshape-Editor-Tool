@@ -5416,22 +5416,49 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         """Returns the current topology edge string, or None if empty."""
         return self.line_topo_edge.text().strip() or None
 
+    @staticmethod
+    def _selected_vtx_indices(base_mesh):
+        """
+        Returns a list of vertex indices currently selected on base_mesh,
+        or [] if no vertex components are selected on that mesh.
+        Works with both short and long path names.
+        """
+        short = base_mesh.split("|")[-1]
+        result = []
+        for comp in (cmds.ls(selection=True, flatten=True) or []):
+            obj, sep, rest = comp.partition(".vtx[")
+            if sep and obj.split("|")[-1] == short:
+                result.append(int(rest.rstrip("]")))
+        return result
+
     @undo_chunk
     def _run_flip(self):
         targets = self._get_targets_or_warn()
         if not targets:
             return
-        direction  = 0 if self.combo_mirror_dir.currentIndex() == 0 else 1
-        flip_axis  = self.combo_flip_axis.currentText()
-        topo_edge  = self._topo_edge()
+        direction = 0 if self.combo_mirror_dir.currentIndex() == 0 else 1
+        flip_axis = self.combo_flip_axis.currentText()
+        topo_edge = self._topo_edge()
 
         try:
+            vtx_count = 0
             for bs_node, logical_index, _ in targets:
-                base_mesh  = get_base_mesh(bs_node)
-                base_shapes = cmds.listRelatives(base_mesh, shapes=True, type="mesh", fullPath=True)
-                base_shape = base_shapes[0] if base_shapes else base_mesh
-                do_flip_target(bs_node, logical_index, base_shape, direction, flip_axis, topo_edge)
-            self._set_status(f"✓ Flip on {len(targets)} target{'s' if len(targets) > 1 else ''}")
+                base_mesh   = get_base_mesh(bs_node)
+                vtx_indices = self._selected_vtx_indices(base_mesh)
+                if vtx_indices:
+                    vtx_count = len(vtx_indices)
+                    do_mirror_target_vtx(bs_node, logical_index, vtx_indices,
+                                         flip_axis, topo_edge)
+                else:
+                    base_shapes = cmds.listRelatives(base_mesh, shapes=True, type="mesh", fullPath=True)
+                    base_shape  = base_shapes[0] if base_shapes else base_mesh
+                    do_flip_target(bs_node, logical_index, base_shape, direction, flip_axis, topo_edge)
+
+            n, s = len(targets), 's' if len(targets) > 1 else ''
+            if vtx_count:
+                self._set_status(f"✓ Flip on {n} target{s} — {vtx_count} vtx (partial mirror)")
+            else:
+                self._set_status(f"✓ Flip on {n} target{s}")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
@@ -5441,17 +5468,29 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         targets = self._get_targets_or_warn()
         if not targets:
             return
-        direction    = 0 if self.combo_mirror_dir.currentIndex() == 0 else 1
-        mirror_axis  = self.combo_mirror_axis.currentText()
-        topo_edge    = self._topo_edge()
+        direction   = 0 if self.combo_mirror_dir.currentIndex() == 0 else 1
+        mirror_axis = self.combo_mirror_axis.currentText()
+        topo_edge   = self._topo_edge()
 
         try:
+            vtx_count = 0
             for bs_node, logical_index, _ in targets:
                 base_mesh   = get_base_mesh(bs_node)
-                base_shapes = cmds.listRelatives(base_mesh, shapes=True, type="mesh", fullPath=True)
-                base_shape  = base_shapes[0] if base_shapes else base_mesh
-                do_mirror_target(bs_node, logical_index, base_shape, direction, mirror_axis, topo_edge)
-            self._set_status(f"✓ Mirror on {len(targets)} target{'s' if len(targets) > 1 else ''}")
+                vtx_indices = self._selected_vtx_indices(base_mesh)
+                if vtx_indices:
+                    vtx_count = len(vtx_indices)
+                    do_mirror_target_vtx(bs_node, logical_index, vtx_indices,
+                                         mirror_axis, topo_edge)
+                else:
+                    base_shapes = cmds.listRelatives(base_mesh, shapes=True, type="mesh", fullPath=True)
+                    base_shape  = base_shapes[0] if base_shapes else base_mesh
+                    do_mirror_target(bs_node, logical_index, base_shape, direction, mirror_axis, topo_edge)
+
+            n, s = len(targets), 's' if len(targets) > 1 else ''
+            if vtx_count:
+                self._set_status(f"✓ Mirror on {n} target{s} — {vtx_count} vtx (partial)")
+            else:
+                self._set_status(f"✓ Mirror on {n} target{s}")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
