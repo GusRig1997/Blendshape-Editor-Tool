@@ -2417,7 +2417,7 @@ def connect_targets_A_to_B(mesh_A, mesh_B):
 
 @undo_chunk
 def create_wire_setup(mesh_base, edge_line, shape_names,
-                      dropoff=100.0, rotation=0.0, spans=4, flat_curve=True):
+                      dropoff=100.0, rotation=0.15, spans=4, flat_curve=True):
     """
     Creates a wire deformer setup for the given mesh and edge loop selection.
 

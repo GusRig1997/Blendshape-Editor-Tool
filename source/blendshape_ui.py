@@ -2278,7 +2278,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
 class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     TOOL_NAME = "BlendshapeEditorUI"
-    VERSION   = "v.04.04"
+    VERSION   = "v.04.05"
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
