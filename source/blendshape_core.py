@@ -632,56 +632,61 @@ def bake_deformers_to_targets(bs_node, base_mesh, logical_indices):
     """
     For each target in logical_indices:
       - Activates the target at weight 1.0 (all others at 0).
-      - Samples the mesh vertex positions with all deformers still active.
-      - Computes delta = baked_pos - neutral_pos
-        (neutral = all targets at 0, deformers still evaluated at the rest pose).
+      - Samples the output mesh vertex positions with all downstream deformers active.
+      - Computes delta = baked_pos - rest_pos
+        (rest = intermediate/base mesh positions, no deformers applied).
       - Writes the result as the target's new complete delta set.
 
-    Typical use-case: add a Delta Mush (or any deformer) on top of the blendShape
-    to improve the shapes, run this function to bake the result into the targets,
-    then delete the deformer.
+    This formula is correct for any deformer type (blendShape, delta mush, etc.):
+    after baking and deleting the downstream deformer, the shapes look identical
+    to the pre-bake viewport result.
 
     Returns the number of targets processed.
     """
     from maya.api import OpenMaya as om2
 
-    shapes = cmds.listRelatives(base_mesh, shapes=True, noIntermediate=True) or []
-    if not shapes:
+    # Output shape (non-intermediate) — reads through the full deformer stack
+    out_shapes = cmds.listRelatives(base_mesh, shapes=True, noIntermediate=True) or []
+    if not out_shapes:
         raise RuntimeError(f"No output shape found on '{base_mesh}'")
-    mesh_shape = shapes[0]
+    mesh_shape = out_shapes[0]
 
-    bs_state = zero_all_bs_weights(bs_node)
+    # Intermediate shape — pure rest-pose positions, no deformers
+    all_shapes = cmds.listRelatives(base_mesh, shapes=True) or []
+    int_shapes  = [s for s in all_shapes if cmds.getAttr(f"{s}.intermediateObject")]
+    if not int_shapes:
+        raise RuntimeError(f"No intermediate shape found on '{base_mesh}'")
+    int_shape = int_shapes[0]
 
-    def _sample_positions():
+    def _sample(shape_name):
         sel = om2.MSelectionList()
-        sel.add(mesh_shape)
-        dag = sel.getDagPath(0)
-        fn  = om2.MFnMesh(dag)
+        sel.add(shape_name)
+        fn  = om2.MFnMesh(sel.getDagPath(0))
         return fn.getPoints(om2.MSpace.kObject)
 
-    try:
-        # All targets already zeroed — sample neutral pose (deformers still active)
-        cmds.dgeval(f"{mesh_shape}.worldMesh[0]")
-        neutral_pts = _sample_positions()
+    # Rest positions — sampled once from the intermediate shape (no deformers)
+    rest_pts = _sample(int_shape)
 
+    bs_state = zero_all_bs_weights(bs_node)
+    try:
         EPS   = 1e-6
         count = 0
 
         for idx in logical_indices:
             try_set_weight(bs_node, idx, 1.0)
             cmds.dgeval(f"{mesh_shape}.worldMesh[0]")
-            baked_pts = _sample_positions()
+            baked_pts = _sample(mesh_shape)
             try_set_weight(bs_node, idx, 0.0)
 
             new_deltas = {}
-            for vi in range(len(neutral_pts)):
-                dx = baked_pts[vi].x - neutral_pts[vi].x
-                dy = baked_pts[vi].y - neutral_pts[vi].y
-                dz = baked_pts[vi].z - neutral_pts[vi].z
+            for vi in range(len(rest_pts)):
+                dx = baked_pts[vi].x - rest_pts[vi].x
+                dy = baked_pts[vi].y - rest_pts[vi].y
+                dz = baked_pts[vi].z - rest_pts[vi].z
                 if abs(dx) > EPS or abs(dy) > EPS or abs(dz) > EPS:
                     new_deltas[vi] = (dx, dy, dz)
 
-            # Fetch original deltas; zero out any vertex no longer in the baked set
+            # Zero out any vertex present in original but absent from the baked set
             original_deltas = get_target_deltas(bs_node, idx)
             for vi in original_deltas:
                 if vi not in new_deltas:
@@ -1531,7 +1536,7 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10):
     print(f"  Hammer Deltas (vol): {n_passes} passes, {len(vtx_indices)} vtx, k={k}")
 
 
-def average_target_deltas(bs_node, logical_index, vtx_indices):
+def average_target_deltas(bs_node, logical_index, vtx_indices, opacity=1.0):
     """
     Replaces all selected vertices' deltas with the arithmetic mean of their deltas.
     Useful to level a cluster of verts to a common midpoint displacement.
@@ -1539,6 +1544,7 @@ def average_target_deltas(bs_node, logical_index, vtx_indices):
     Uses a single regen mesh (read + write) — single Ctrl+Z.
 
     vtx_indices : list of ints — must be non-empty (selection required).
+    opacity     : 0.0–1.0  blend weight between original and the averaged value.
     """
     if not vtx_indices:
         return
@@ -1561,17 +1567,20 @@ def average_target_deltas(bs_node, logical_index, vtx_indices):
 
         for vi in vtx_indices:
             ox, oy, oz = vals[vi]
-            if abs(mx - ox) > 1e-8 or abs(my - oy) > 1e-8 or abs(mz - oz) > 1e-8:
-                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntx", mx)
-                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pnty", my)
-                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntz", mz)
+            nx = ox + (mx - ox) * opacity
+            ny = oy + (my - oy) * opacity
+            nz = oz + (mz - oz) * opacity
+            if abs(nx - ox) > 1e-8 or abs(ny - oy) > 1e-8 or abs(nz - oz) > 1e-8:
+                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntx", nx)
+                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pnty", ny)
+                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntz", nz)
 
         if not was_live:
             cmds.delete(tgt_transform)
     finally:
         _restore_shape_editor_selection(saved)
 
-    print(f"  Average Deltas: {len(vtx_indices)} vtx → ({mx:.4f}, {my:.4f}, {mz:.4f})")
+    print(f"  Average Deltas: opacity={opacity:.2f}, {len(vtx_indices)} vtx → ({mx:.4f}, {my:.4f}, {mz:.4f})")
 
 
 def create_delta_cluster(bs_node, logical_index, target_name):

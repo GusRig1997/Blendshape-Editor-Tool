@@ -3491,8 +3491,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.slider_smooth_opacity.setRange(1, 100)
         self.slider_smooth_opacity.setValue(50)
         self.slider_smooth_opacity.setToolTip(
-            "Smoothing strength: maps to 1–10 iterative passes.\n"
-            "100 = 10 passes (very powerful)   1 = 1 pass (subtle).")
+            "Strength for Smooth, Relax, Hammer and Average.\n"
+            "Smooth / Relax: maps to 1–10 iterative passes.\n"
+            "Hammer: maps to 1–20 iterative passes (50% = 10, default).\n"
+            "Average: blend weight between original and averaged value.")
         self.lbl_smooth_opacity_val = QtWidgets.QLabel("0.50")
         self.lbl_smooth_opacity_val.setFixedWidth(30)
         self.slider_smooth_opacity.valueChanged.connect(
@@ -3528,13 +3530,15 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             f"{_icons_dir}/hammer_delta.png", "Hammer Deltas",
             "Replaces each selected vertex's delta with the IDW-weighted average\n"
             "of its topological neighbors' deltas (1-ring, Euclidean distance).\n"
-            "Like Maya's Hammer Weights — selection required.")
+            "Like Maya's Hammer Weights — selection required.\n"
+            "Opacity maps to 1–20 iterative passes (50% = 10, default).")
         self.btn_hammer.clicked.connect(self._run_hammer_deltas)
         _w_average, self.btn_average = self._icon_btn(
             f"{_icons_dir}/average_delta.png", "Average Deltas",
             "Replaces all selected vertices' deltas with their arithmetic mean.\n"
             "Levels a cluster to a common displacement value.\n"
-            "Selection required.")
+            "Selection required.\n"
+            "Opacity blends between the original delta and the averaged value.")
         self.btn_average.clicked.connect(self._run_average_deltas)
         row_ha.addWidget(_w_hammer)
         row_ha.addWidget(_w_average)
@@ -5042,11 +5046,13 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         if not targets:
             return
 
+        opacity = self.slider_smooth_opacity.value() / 100.0
+        n_passes = max(1, int(round(opacity * 20)))
         vtx_indices = [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
         try:
             bs_node, logical_index, target_name = targets[0]
-            hammer_target_deltas(bs_node, logical_index, vtx_indices)
-            self._set_status(f"✓ Hammer Deltas  {len(vtx_indices)} vtx")
+            hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=n_passes)
+            self._set_status(f"✓ Hammer Deltas  {len(vtx_indices)} vtx  ({n_passes} passes)")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
@@ -5063,11 +5069,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         if not targets:
             return
 
+        opacity = self.slider_smooth_opacity.value() / 100.0
         vtx_indices = [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
         try:
             bs_node, logical_index, target_name = targets[0]
-            average_target_deltas(bs_node, logical_index, vtx_indices)
-            self._set_status(f"✓ Average Deltas  {len(vtx_indices)} vtx")
+            average_target_deltas(bs_node, logical_index, vtx_indices, opacity=opacity)
+            self._set_status(f"✓ Average Deltas  {len(vtx_indices)} vtx  (opacity {opacity:.2f})")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
