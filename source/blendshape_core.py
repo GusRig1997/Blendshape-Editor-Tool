@@ -848,7 +848,7 @@ def purge_empty_bs_slots(bs_node):
     return purged
 
 
-def duplicate_target(bs_node, base_mesh, original_index, new_name):
+def duplicate_target(bs_node, base_mesh, original_index, new_name, reorder=True):
     """
     Regenerates the original target to get its live mesh,
     duplicates it, uses the duplicate to create a new target slot,
@@ -895,7 +895,8 @@ def duplicate_target(bs_node, base_mesh, original_index, new_name):
         )
 
     # 6. Reorder Shape Editor display: insert just after the source target
-    _insert_indices_after(bs_node, original_index, [next_idx])
+    if reorder:
+        _insert_indices_after(bs_node, original_index, [next_idx])
 
     return next_idx
 
@@ -914,8 +915,8 @@ def create_split_target(bs_node, base_mesh, target_name, source_index, loc_idx, 
 
     Returns the logical index of the newly created target.
     """
-    # 1. Duplicate source target → new blendShape slot named target_name
-    target_idx = duplicate_target(bs_node, base_mesh, source_index, target_name)
+    # 1. Duplicate source target — skip reorder, done after sculptTarget cycle
+    target_idx = duplicate_target(bs_node, base_mesh, source_index, target_name, reorder=False)
 
     # 2. Regenerate the duplicate → live mesh with full deltas in pnts[]
     saved = _save_shape_editor_selection()
@@ -938,6 +939,9 @@ def create_split_target(bs_node, base_mesh, target_name, source_index, loc_idx, 
         cmds.delete(regen_mesh)
     finally:
         _restore_shape_editor_selection(saved)
+
+    # 5. Position in targetDirectory AFTER the sculptTarget cycle to avoid duplicates
+    _insert_indices_after(bs_node, source_index, [target_idx])
 
     print(f"  ✓ Created : {target_name}")
     return target_idx
@@ -1180,6 +1184,112 @@ def multiply_target_deltas(bs_node, logical_index, fx, fy, fz, vtx_indices=None)
         cmds.delete(tgt_transform)
     scope = f"{len(vtx_indices)} vtx" if vtx_indices is not None else "all verts"
     print(f"  Multiplied — X\xd7{fx} Y\xd7{fy} Z\xd7{fz}  ({scope})")
+
+
+@undo_chunk
+def combine_target_deltas(bs_node_a, idx_a, donors, operation='add', vtx_indices=None):
+    """
+    Adds or subtracts donor target deltas onto target A (in-place).
+
+    bs_node_a   : blendShape node of the receiver target
+    idx_a       : logical index of the receiver target
+    donors      : list of (bs_node, idx) tuples — delta sources
+    operation   : 'add' or 'sub'
+    vtx_indices : list of vertex indices to restrict the operation, or None for all
+
+    Reads each donor's raw pnts[] deltas via get_target_deltas, accumulates them,
+    then regens A's mesh, applies the accumulated delta, and bakes.
+    Returns the number of vertices written.
+    """
+    sign = 1.0 if operation == 'add' else -1.0
+    vtx_set = set(vtx_indices) if vtx_indices is not None else None
+
+    # Accumulate donor deltas
+    accumulated = {}
+    for bs_node_b, idx_b in donors:
+        for vi, (dx, dy, dz) in get_target_deltas(bs_node_b, idx_b).items():
+            if vtx_set is not None and vi not in vtx_set:
+                continue
+            if vi in accumulated:
+                ax, ay, az = accumulated[vi]
+                accumulated[vi] = (ax + dx, ay + dy, az + dz)
+            else:
+                accumulated[vi] = (dx, dy, dz)
+
+    if not accumulated:
+        return 0
+
+    # Regen A and apply accumulated delta
+    mesh_a, tgt_a, was_live = _get_regen_mesh(bs_node_a, idx_a)
+    written = 0
+    try:
+        for vi, (ddx, ddy, ddz) in accumulated.items():
+            ax = cmds.getAttr(f"{mesh_a}.pnts[{vi}].pntx")
+            ay = cmds.getAttr(f"{mesh_a}.pnts[{vi}].pnty")
+            az = cmds.getAttr(f"{mesh_a}.pnts[{vi}].pntz")
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pntx", ax + sign * ddx)
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pnty", ay + sign * ddy)
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pntz", az + sign * ddz)
+            written += 1
+    finally:
+        if not was_live:
+            cmds.delete(tgt_a)
+
+    scope = f"{len(vtx_indices)} vtx" if vtx_indices is not None else "all verts"
+    op_sym = "+" if operation == 'add' else "\u2212"
+    print(f"  Delta {op_sym} : {written} verts written on {bs_node_a}.w[{idx_a}]  ({scope})")
+    return written
+
+
+@undo_chunk
+def transfer_target_deltas(bs_node_a, idx_a, bs_node_b, idx_b, vtx_indices=None):
+    """
+    Transfers (moves) deltas from B to A:
+      - vtx_indices provided : transfers B's deltas at those verts only
+      - vtx_indices is None  : transfers all vertices that have non-zero deltas on B
+    Adds the transferred deltas onto A, then zeros them on B.
+    Returns the number of vertices transferred.
+    """
+    deltas_b = get_target_deltas(bs_node_b, idx_b)
+    if not deltas_b:
+        return 0
+
+    if vtx_indices is None:
+        to_transfer = deltas_b  # all delta verts on B
+    else:
+        to_transfer = {vi: deltas_b[vi] for vi in vtx_indices if vi in deltas_b}
+
+    if not to_transfer:
+        return 0
+
+    # Add to A
+    mesh_a, tgt_a, was_live_a = _get_regen_mesh(bs_node_a, idx_a)
+    try:
+        for vi, (dx, dy, dz) in to_transfer.items():
+            ax = cmds.getAttr(f"{mesh_a}.pnts[{vi}].pntx")
+            ay = cmds.getAttr(f"{mesh_a}.pnts[{vi}].pnty")
+            az = cmds.getAttr(f"{mesh_a}.pnts[{vi}].pntz")
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pntx", ax + dx)
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pnty", ay + dy)
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pntz", az + dz)
+    finally:
+        if not was_live_a:
+            cmds.delete(tgt_a)
+
+    # Zero out from B
+    mesh_b, tgt_b, was_live_b = _get_regen_mesh(bs_node_b, idx_b)
+    try:
+        for vi in to_transfer:
+            cmds.setAttr(f"{mesh_b}.pnts[{vi}].pntx", 0.0)
+            cmds.setAttr(f"{mesh_b}.pnts[{vi}].pnty", 0.0)
+            cmds.setAttr(f"{mesh_b}.pnts[{vi}].pntz", 0.0)
+    finally:
+        if not was_live_b:
+            cmds.delete(tgt_b)
+
+    scope = f"{len(vtx_indices)} vtx" if vtx_indices is not None else "all delta verts"
+    print(f"  XFER : {len(to_transfer)} verts  {bs_node_b}.w[{idx_b}] \u2192 {bs_node_a}.w[{idx_a}]  ({scope})")
+    return len(to_transfer)
 
 
 def push_normals_deltas(bs_node, logical_index, factor, vtx_indices=None):
