@@ -2511,6 +2511,12 @@ def create_wire_setup(mesh_base, edge_line, shape_names,
     cmds.setAttr(f"{wire_node}.rotation", rotation)
     cmds.select(cl=True)
 
+    # ── Always draw on top for all wire curves ────────────────────────────────
+    for crv in [shp + "_crv" for shp in shape_names]:
+        shp_node = cmds.listRelatives(crv, shapes=True)
+        if shp_node:
+            cmds.setAttr(f"{shp_node[0]}.alwaysDrawOnTop", 1)
+
     print(f"  ✓ Wire setup created — {len(shape_names)} shape(s) on {dup_name}")
     return wire_grp
 

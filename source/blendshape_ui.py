@@ -2617,7 +2617,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             (f"{_icons_dir}/Flatten.png", "Sculpt Flatten\nDouble-click: Tool Settings", "SetMeshFlattenTool"),
             (f"{_icons_dir}/Bulge.png",   "Sculpt Bulge\nDouble-click: Tool Settings",   "SetMeshBulgeTool"),
         ]:
-            shelf_lay.addWidget(_shelf_btn(_ic, _tt, _cmd, dbl_click=self._open_tool_settings))
+            shelf_lay.addWidget(_shelf_btn(_ic, _tt,
+                callback=lambda _=False, c=_cmd: self._activate_sculpt_tool(c),
+                dbl_click=self._open_tool_settings))
 
         # Separator
         _sep = QtWidgets.QFrame()
@@ -2633,7 +2635,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             (f"{_icons_dir}/SmoothTarget.png", "Smooth Target\nDouble-click: Tool Settings", "SetMeshSmoothTargetTool"),
             (f"{_icons_dir}/Erase.png",        "Erase Target\nDouble-click: Tool Settings",  "SetMeshEraseTool"),
         ]:
-            shelf_lay.addWidget(_shelf_btn(_ic, _tt, _cmd, dbl_click=self._open_tool_settings))
+            shelf_lay.addWidget(_shelf_btn(_ic, _tt,
+                callback=lambda _=False, c=_cmd: self._activate_sculpt_tool(c),
+                dbl_click=self._open_tool_settings))
 
         # Separator — visualization tools
         _sep2 = QtWidgets.QFrame()
@@ -2663,7 +2667,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             (f"{_icons_dir}/Pinch.png",   "Pinch\nDouble-click: Tool Settings",   "SetMeshPinchTool"),
             (f"{_icons_dir}/Amplify.png", "Amplify\nDouble-click: Tool Settings", "SetMeshAmplifyTool"),
         ]:
-            row2_lay.addWidget(_shelf_btn(_ic, _tt, _cmd, dbl_click=self._open_tool_settings))
+            row2_lay.addWidget(_shelf_btn(_ic, _tt,
+                callback=lambda _=False, c=_cmd: self._activate_sculpt_tool(c),
+                dbl_click=self._open_tool_settings))
 
         _sep_r2a = QtWidgets.QFrame()
         _sep_r2a.setFrameShape(QtWidgets.QFrame.VLine)
@@ -2710,11 +2716,70 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         row2_lay.addStretch()
 
+        # ── Tool Settings (above shelf) ───────────────────────────────────────
+        ts_widget = QtWidgets.QWidget()
+        ts_lay = QtWidgets.QVBoxLayout(ts_widget)
+        ts_lay.setContentsMargins(0, 0, 0, 0)
+        ts_lay.setSpacing(12)
+
+        # Surface/Volume + Symmetry combos
+        combos_row = QtWidgets.QHBoxLayout()
+        combos_row.setSpacing(4)
+        combos_row.addWidget(QtWidgets.QLabel("Falloff Type"))
+        self.combo_tool_surf_vol = QtWidgets.QComboBox()
+        for _lbl, _val in [("Surface/Volume", 0), ("Surface", 1), ("Volume", 2)]:
+            self.combo_tool_surf_vol.addItem(_lbl, _val)
+        self.combo_tool_surf_vol.currentIndexChanged.connect(self._on_tool_surf_vol_changed)
+        combos_row.addWidget(self.combo_tool_surf_vol, 1)
+        combos_row.addSpacing(16)
+        combos_row.addWidget(QtWidgets.QLabel("Symmetry"))
+        self.combo_tool_symmetry = QtWidgets.QComboBox()
+        for _lbl, _val in [
+            ("Off",      0), ("Object X", 4), ("Object Y", 5), ("Object Z", 6),
+            ("World X",  1), ("World Y",  2), ("World Z",  3), ("Topology", 7),
+        ]:
+            self.combo_tool_symmetry.addItem(_lbl, _val)
+        self.combo_tool_symmetry.currentIndexChanged.connect(self._on_tool_symmetry_changed)
+        combos_row.addWidget(self.combo_tool_symmetry, 1)
+        ts_lay.addLayout(combos_row)
+
+        # Strength slider + spinbox
+        strength_row = QtWidgets.QHBoxLayout()
+        strength_row.setSpacing(4)
+        strength_row.addSpacing(4)
+        strength_row.addWidget(QtWidgets.QLabel("Strength"))
+        self.spin_tool_strength = QtWidgets.QDoubleSpinBox()
+        self.spin_tool_strength.setRange(0.0, 100.0)
+        self.spin_tool_strength.setDecimals(3)
+        self.spin_tool_strength.setValue(50.0)
+        self.spin_tool_strength.setFixedWidth(68)
+        self.spin_tool_strength.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self.spin_tool_strength.valueChanged.connect(self._on_tool_strength_spin)
+        strength_row.addWidget(self.spin_tool_strength)
+        self.slider_tool_strength = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_tool_strength.setRange(0, 1000)
+        self.slider_tool_strength.setValue(500)
+        self.slider_tool_strength.valueChanged.connect(self._on_tool_strength_slider)
+        strength_row.addWidget(self.slider_tool_strength, 1)
+        ts_lay.addLayout(strength_row)
+
         # Shelf pinned above the scroll — always visible
         shelf_wrapper = QtWidgets.QWidget()
-        shelf_wrapper_lay = QtWidgets.QHBoxLayout(shelf_wrapper)
+        shelf_wrapper_lay = QtWidgets.QVBoxLayout(shelf_wrapper)
         shelf_wrapper_lay.setContentsMargins(8, 4, 8, 2)
-        shelf_wrapper_lay.setSpacing(0)
+        shelf_wrapper_lay.setSpacing(12)
+
+        lbl_shelf_title = QtWidgets.QLabel("Tools Shelf")
+        lbl_shelf_title.setStyleSheet("""
+            QLabel {
+                background-color: rgba(255,255,255,28);
+                border-radius: 2px;
+                font-weight: bold;
+                padding: 2px 4px;
+            }
+        """)
+        shelf_wrapper_lay.addWidget(lbl_shelf_title)
+        shelf_wrapper_lay.addWidget(ts_widget)
         shelf_wrapper_lay.addWidget(shelf_frame)
         outer_layout.addWidget(shelf_wrapper)
         outer_layout.addWidget(scroll, 1)
@@ -3800,6 +3865,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.spin_wire_dropoff.setValue(100.0)
         self.spin_wire_dropoff.setDecimals(1)
         self.spin_wire_dropoff.setFixedWidth(60)
+        self.spin_wire_dropoff.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self.spin_wire_dropoff.setToolTip("Wire deformer dropoff distance")
         row_wparams.addWidget(self.spin_wire_dropoff)
         row_wparams.addSpacing(8)
@@ -3810,6 +3876,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.spin_wire_rotation.setSingleStep(0.05)
         self.spin_wire_rotation.setDecimals(2)
         self.spin_wire_rotation.setFixedWidth(50)
+        self.spin_wire_rotation.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self.spin_wire_rotation.setToolTip("Wire deformer rotation value")
         row_wparams.addWidget(self.spin_wire_rotation)
         row_wparams.addSpacing(8)
@@ -4579,6 +4646,55 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         mel.eval('artAttrInitPaintableAttr')
         mel.eval('toolPropertyShow')
         self._set_status("✓ Paint Wire tool opened")
+
+    def _activate_sculpt_tool(self, mel_cmd):
+        mel.eval(mel_cmd)
+        self._sync_tool_strength()
+
+    def _sync_tool_strength(self):
+        try:
+            val = cmds.sculptMeshCacheCtx("sculptMeshCacheContext", q=True, strength=True)
+            self.spin_tool_strength.blockSignals(True)
+            self.slider_tool_strength.blockSignals(True)
+            self.spin_tool_strength.setValue(val)
+            self.slider_tool_strength.setValue(int(round(val * 10)))
+            self.spin_tool_strength.blockSignals(False)
+            self.slider_tool_strength.blockSignals(False)
+        except Exception:
+            pass
+
+    def _apply_tool_strength(self, value):
+        try:
+            cmds.sculptMeshCacheCtx("sculptMeshCacheContext", edit=True, strength=value)
+        except Exception:
+            pass
+
+    def _on_tool_strength_slider(self, int_val):
+        val = int_val / 10.0
+        self.spin_tool_strength.blockSignals(True)
+        self.spin_tool_strength.setValue(val)
+        self.spin_tool_strength.blockSignals(False)
+        self._apply_tool_strength(val)
+
+    def _on_tool_strength_spin(self, val):
+        self.slider_tool_strength.blockSignals(True)
+        self.slider_tool_strength.setValue(int(round(val * 10)))
+        self.slider_tool_strength.blockSignals(False)
+        self._apply_tool_strength(val)
+
+    def _on_tool_surf_vol_changed(self, index):
+        value = self.combo_tool_surf_vol.itemData(index)
+        try:
+            cmds.sculptMeshCacheCtx("sculptMeshCacheContext", edit=True, falloffType=value)
+        except Exception:
+            pass
+
+    def _on_tool_symmetry_changed(self, index):
+        value = self.combo_tool_symmetry.itemData(index)
+        try:
+            cmds.sculptMeshCacheCtx("sculptMeshCacheContext", edit=True, mirror=value)
+        except Exception:
+            pass
 
     def _open_tool_settings(self):
         """Open Maya's Tool Settings window for the currently active tool."""
