@@ -3966,6 +3966,43 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_wire.addWidget(self.chk_wire_delete_after_bake)
 
         lay_tools.addWidget(grp_wire)
+
+        # ── Joints Setup ──────────────────────────────────────────────────
+        grp_joints = QtWidgets.QGroupBox("Joints Setup")
+        lay_joints = QtWidgets.QVBoxLayout(grp_joints)
+        lay_joints.setContentsMargins(8, 8, 8, 8)
+        lay_joints.setSpacing(6)
+
+        # Middle Edge row
+        row_mid = QtWidgets.QHBoxLayout()
+        lbl_mid = QtWidgets.QLabel("Middle Edge")
+        lbl_mid.setFixedWidth(80)
+        self.line_joints_middle = QtWidgets.QLineEdit()
+        self.line_joints_middle.setReadOnly(True)
+        self.line_joints_middle.setPlaceholderText("— select an edge —")
+        self.line_joints_middle.setToolTip(
+            "Edge on the edge loop that defines bone/controller positions.\n"
+            "The full edge loop is extracted and split into upper/lower arcs.")
+        btn_mid_get = QtWidgets.QPushButton("Get")
+        btn_mid_get.setFixedWidth(40)
+        btn_mid_get.clicked.connect(self._joints_get_middle)
+        row_mid.addWidget(lbl_mid)
+        row_mid.addWidget(self.line_joints_middle)
+        row_mid.addWidget(btn_mid_get)
+        lay_joints.addLayout(row_mid)
+
+
+        btn_build_rig = QtWidgets.QPushButton("Build Rig")
+        btn_build_rig.setToolTip(
+            "Extracts both edge loops, splits them at the lip corners,\n"
+            "builds NURBS curves, duplicates the mesh, and creates\n"
+            "the full joint hierarchy (13 influences + zero_out).")
+        btn_build_rig.clicked.connect(self._run_build_lip_rig)
+        lay_joints.addWidget(btn_build_rig)
+
+
+        lay_tools.addWidget(grp_joints)
+
         root.addWidget(grp_tools)
 
         root.addStretch(1)
@@ -4839,6 +4876,33 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         except Exception as e:
             import traceback; traceback.print_exc()
             self._set_status(f"✗ Bake Wire: {e}", error=True)
+
+    # ── Joints Setup callbacks ─────────────────────────────────────────────────
+
+    def _joints_get_middle(self):
+        sel = cmds.ls(sl=True, fl=True) or []
+        edges = [s for s in sel if ".e[" in s]
+        if len(edges) != 1:
+            self._set_status(
+                f"✗ Select exactly 1 edge for Middle Edge ({len(edges)} selected)",
+                error=True)
+            return
+        self.line_joints_middle.setText(edges[0])
+
+    @undo_chunk
+    def _run_build_lip_rig(self):
+        middle = self.line_joints_middle.text().strip()
+        if not middle:
+            self._set_status("✗ Joints Setup: set Middle Edge first", error=True)
+            return
+        mesh = middle.split(".")[0]
+        try:
+            rig_grp, skin_joints = build_lip_rig(mesh, middle)
+            self._set_status(
+                f"✓ Lip rig built — {len(skin_joints)} influence(s), all weights on zero_out")
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            self._set_status(f"✗ Build Rig: {e}", error=True)
 
     def _open_check_shapes(self):
         dlg = CheckShapesDialog(parent=self)

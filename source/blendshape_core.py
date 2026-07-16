@@ -2756,6 +2756,376 @@ def bake_wire_to_mesh(base_mesh, shape_names):
     return bs_node, baked
 
 
+# ── Joints Setup ──────────────────────────────────────────────────────────────
+
+_UPPER_BONE_PARAMS = [
+    (0.0,    "L_lip_corner"),
+    (0.0625, "L_lip_up_b"),
+    (0.25,   "L_lip_up_a"),
+    (0.5,    "M_lip_up"),
+    (0.75,   "R_lip_up_a"),
+    (0.935,  "R_lip_up_b"),
+    (1.0,    "R_lip_corner"),
+]
+_LOWER_BONE_PARAMS = [
+    (0.0,    "L_lip_corner"),
+    (0.0625, "L_lip_dn_b"),
+    (0.25,   "L_lip_dn_a"),
+    (0.5,    "M_lip_dn"),
+    (0.75,   "R_lip_dn_a"),
+    (0.935,  "R_lip_dn_b"),
+    (1.0,    "R_lip_corner"),
+]
+
+_LIP_RIG_MSH  = "lip_rig_msh"
+_LIP_RIG_GRP  = "lip_rig_setup_grp"
+_UPPER_CRV    = "lip_upper_crv"
+_LOWER_CRV    = "lip_lower_crv"
+_OUTER_UP_CRV = "lip_outer_upper_crv"
+_OUTER_DN_CRV = "lip_outer_lower_crv"
+_ZERO_OUT_JNT = "zero_out_jnt"
+
+
+def _get_ordered_loop_verts(mesh, edge_str):
+    """Return ordered vertex-index list for the edge loop containing edge_str.
+    edge_str: e.g. 'meshName.e[42]'
+    """
+    import re as _re
+    edge_id = int(_re.search(r'\.e\[(\d+)\]', edge_str).group(1))
+
+    old_sel = cmds.ls(sl=True, fl=True) or []
+    try:
+        cmds.polySelect(mesh, edgeLoop=edge_id)
+        loop_edges = cmds.ls(sl=True, fl=True) or []
+    finally:
+        if old_sel:
+            cmds.select(old_sel)
+        else:
+            cmds.select(cl=True)
+
+    if not loop_edges:
+        raise RuntimeError(f"No edge loop found for {edge_str}")
+
+    # Build adjacency (vertex → [connected vertices]) from edge info
+    adj = {}
+    for e in loop_edges:
+        tokens = cmds.polyInfo(e, edgeToVertex=True)[0].split()
+        v0, v1 = int(tokens[2]), int(tokens[3])
+        adj.setdefault(v0, []).append(v1)
+        adj.setdefault(v1, []).append(v0)
+
+    # Walk the loop in order
+    start = next(iter(adj))
+    ordered = [start]
+    prev, cur = None, start
+    while True:
+        nxt = next((n for n in adj[cur] if n != prev), None)
+        if nxt is None or nxt == start:
+            break
+        ordered.append(nxt)
+        prev, cur = cur, nxt
+
+    return ordered
+
+
+def _arc_verts_to_edges(mesh, vert_indices):
+    """Return edge components for each consecutive vertex pair in the arc."""
+    edges = []
+    for i in range(len(vert_indices) - 1):
+        v0, v1 = vert_indices[i], vert_indices[i + 1]
+        e0_toks = cmds.polyInfo(f"{mesh}.vtx[{v0}]", vertexToEdge=True)[0].split()[2:]
+        e1_set  = set(cmds.polyInfo(f"{mesh}.vtx[{v1}]", vertexToEdge=True)[0].split()[2:])
+        shared  = [e for e in e0_toks if e in e1_set]
+        if shared:
+            edges.append(f"{mesh}.e[{shared[0]}]")
+    return edges
+
+
+def _arc_to_curve(mesh, vert_indices, name):
+    """Build a NURBS curve from arc edges via polyToCurve, oriented R→L (param 0 = R corner)."""
+    if cmds.objExists(name):
+        cmds.delete(name)
+    edges = _arc_verts_to_edges(mesh, vert_indices)
+    cmds.select(edges)
+    cmds.polyToCurve(f=0, dg=1, usm=0, n=name)
+    cmds.delete(name, ch=True)
+    cmds.select(cl=True)
+
+    # Ensure param 0 is at R corner (most +X end)
+    min_p   = cmds.getAttr(f"{name}.minValue")
+    max_p   = cmds.getAttr(f"{name}.maxValue")
+    p_start = cmds.pointOnCurve(name, pr=min_p, p=True)
+    p_end   = cmds.pointOnCurve(name, pr=max_p, p=True)
+    if p_start[0] < p_end[0]:  # start is more -X (L side) → reverse to get R→L
+        cmds.reverseCurve(name, ch=False, rpo=True)
+
+    return name
+
+
+def _find_corner_local_indices(mesh, vert_indices):
+    """Return (r_local, l_local): indices into vert_indices of most +X and -X verts."""
+    import maya.OpenMaya as om
+    sel = om.MSelectionList()
+    sel.add(mesh)
+    dag = om.MDagPath()
+    sel.getDagPath(0, dag)
+    fn_mesh = om.MFnMesh(dag)
+    pts = om.MPointArray()
+    fn_mesh.getPoints(pts, om.MSpace.kWorld)
+
+    r_local = l_local = 0
+    max_x, min_x = -1e9, 1e9
+    for i, vi in enumerate(vert_indices):
+        x = pts[vi].x
+        if x > max_x:
+            max_x = x; r_local = i
+        if x < min_x:
+            min_x = x; l_local = i
+    return r_local, l_local
+
+
+def _split_loop_at_corners(mesh, vert_indices, r_local, l_local):
+    """Split ordered loop into (upper_verts, lower_verts), both in R→L order."""
+    # Arc A: r_local → l_local going forward in the list
+    if r_local <= l_local:
+        arc_a = vert_indices[r_local:l_local + 1]
+    else:
+        arc_a = vert_indices[r_local:] + vert_indices[:l_local + 1]
+
+    # Arc B: l_local → r_local going forward, then reversed to get R→L
+    if l_local <= r_local:
+        arc_b = list(reversed(vert_indices[l_local:r_local + 1]))
+    else:
+        arc_b = list(reversed(vert_indices[l_local:] + vert_indices[:r_local + 1]))
+
+    def mean_y(verts):
+        return sum(
+            cmds.xform(f"{mesh}.vtx[{v}]", q=True, ws=True, t=True)[1]
+            for v in verts
+        ) / len(verts)
+
+    return (arc_a, arc_b) if mean_y(arc_a) >= mean_y(arc_b) else (arc_b, arc_a)
+
+
+def _closest_on_curve(crv_name, pt_world):
+    """Return (t_normalized 0-1, world_distance) for closest point on curve."""
+    import maya.OpenMaya as om
+    sel = om.MSelectionList()
+    sel.add(crv_name)
+    dag = om.MDagPath()
+    sel.getDagPath(0, dag)
+    fn_crv = om.MFnNurbsCurve(dag)
+
+    pt = om.MPoint(pt_world[0], pt_world[1], pt_world[2])
+    util = om.MScriptUtil()
+    util.createFromDouble(0.0)
+    p_ptr = util.asDoublePtr()
+    closest = fn_crv.closestPoint(pt, p_ptr, 0.001, om.MSpace.kWorld)
+    param = util.getDouble(p_ptr)
+    dist = float(pt.distanceTo(closest))
+
+    min_p = cmds.getAttr(f"{crv_name}.minValue")
+    max_p = cmds.getAttr(f"{crv_name}.maxValue")
+    span = max_p - min_p
+    t = (param - min_p) / span if span > 1e-9 else 0.0
+    return t, dist
+
+
+def _interp_bone_weights(bone_params, t):
+    """Return [(name, weight), (name, weight)] for the two bones bracketing t."""
+    t = max(0.0, min(1.0, t))
+    for i in range(len(bone_params) - 1):
+        t0, n0 = bone_params[i]
+        t1, n1 = bone_params[i + 1]
+        if t0 <= t <= t1:
+            span = t1 - t0
+            a = (t - t0) / span if span > 1e-9 else 0.0
+            return [(n0, 1.0 - a), (n1, a)]
+    if t <= bone_params[0][0]:
+        return [(bone_params[0][1], 1.0), (bone_params[1][1], 0.0)]
+    return [(bone_params[-2][1], 0.0), (bone_params[-1][1], 1.0)]
+
+
+@undo_chunk
+def build_lip_rig(base_mesh, middle_edge):
+    """Build the full lip rig from a middle edge on base_mesh.
+    Positions and orients joints from a motionPath (baked then deleted).
+    Binds skin with all weights on zero_out — user paints weights manually.
+    Returns (rig_grp, skin_joint_list).
+    """
+    import maya.OpenMaya as om
+    import maya.OpenMayaAnim as oma
+
+    # ── Clean up any existing rig ──────────────────────────────────────────
+    if cmds.objExists(_LIP_RIG_GRP):
+        cmds.delete(_LIP_RIG_GRP)
+    # Cleanup orphan tmp motionPath nodes from a failed previous build
+    _seen = set()
+    for _, _bname in _UPPER_BONE_PARAMS + _LOWER_BONE_PARAMS:
+        if _bname not in _seen:
+            for _suffix in ("_mp", "_mp_tmp"):
+                _mp_node = f"{_bname}{_suffix}"
+                if cmds.objExists(_mp_node):
+                    cmds.delete(_mp_node)
+            _seen.add(_bname)
+
+    # ── Root group ─────────────────────────────────────────────────────────
+    rig_grp = cmds.group(em=True, name=_LIP_RIG_GRP)
+
+    # ── Duplicate head mesh ────────────────────────────────────────────────
+    if cmds.objExists(_LIP_RIG_MSH):
+        cmds.delete(_LIP_RIG_MSH)
+    cmds.duplicate(base_mesh, name=_LIP_RIG_MSH)
+    orig = _LIP_RIG_MSH + "ShapeOrig"
+    if cmds.objExists(orig):
+        cmds.delete(orig)
+    cmds.parent(_LIP_RIG_MSH, rig_grp)
+
+    # ── Middle loop → upper / lower arc curves ─────────────────────────────
+    mid_verts = _get_ordered_loop_verts(base_mesh, middle_edge)
+    r_m, l_m  = _find_corner_local_indices(base_mesh, mid_verts)
+    upper_mid, lower_mid = _split_loop_at_corners(base_mesh, mid_verts, r_m, l_m)
+    upper_crv = _arc_to_curve(base_mesh, upper_mid, _UPPER_CRV)
+    lower_crv = _arc_to_curve(base_mesh, lower_mid, _LOWER_CRV)
+
+    # ── zero_out joint at mesh bounding-box centre ─────────────────────────
+    bb = cmds.exactWorldBoundingBox(base_mesh)
+    center = [(bb[0] + bb[3]) / 2.0, (bb[1] + bb[4]) / 2.0, (bb[2] + bb[5]) / 2.0]
+    cmds.select(cl=True)
+    zero_jnt = cmds.joint(name=_ZERO_OUT_JNT)
+    cmds.xform(zero_jnt, ws=True, t=center)
+    cmds.setAttr(f"{zero_jnt}.jointOrient", 0, 0, 0)
+    cmds.parent(zero_jnt, rig_grp)
+
+    skin_joints = [zero_jnt]
+    created = {}  # bone name → skin_jnt  (corners are shared upper/lower)
+
+    # ── Controller + skin joints — orientation baked from motionPath ──────
+    for arc_params, crv in [(_UPPER_BONE_PARAMS, upper_crv),
+                              (_LOWER_BONE_PARAMS, lower_crv)]:
+        crv_shape = cmds.listRelatives(crv, shapes=True)[0]
+
+        for t, name in arc_params:
+            if name in created:
+                continue
+
+            # Parent group: connect motionPath live, read result, then disconnect
+            grp = cmds.group(em=True, name=f"{name}_grp")
+            cmds.parent(grp, rig_grp)
+
+            mp = cmds.createNode("motionPath", name=f"{name}_mp_tmp")
+            cmds.connectAttr(f"{crv_shape}.worldSpace[0]", f"{mp}.geometryPath")
+            cmds.setAttr(f"{mp}.uValue", t)
+            cmds.setAttr(f"{mp}.fractionMode", True)
+            cmds.setAttr(f"{mp}.follow", True)
+            cmds.setAttr(f"{mp}.frontAxis", 0)    # X along curve tangent
+            cmds.setAttr(f"{mp}.upAxis", 1)        # Y up
+            cmds.setAttr(f"{mp}.worldUpType", 3)   # vector
+            cmds.setAttr(f"{mp}.worldUpVectorY", 1.0)
+            cmds.connectAttr(f"{mp}.xCoordinate", f"{grp}.translateX")
+            cmds.connectAttr(f"{mp}.yCoordinate", f"{grp}.translateY")
+            cmds.connectAttr(f"{mp}.zCoordinate", f"{grp}.translateZ")
+            cmds.connectAttr(f"{mp}.rotate",      f"{grp}.rotate")
+            # Force evaluation and read back from grp
+            cmds.dgeval(grp)
+            tx, ty, tz = cmds.getAttr(f"{grp}.translate")[0]
+            rx, ry, rz = cmds.getAttr(f"{grp}.rotate")[0]
+            # Disconnect and delete motionPath — bake static values
+            cmds.disconnectAttr(f"{mp}.xCoordinate", f"{grp}.translateX")
+            cmds.disconnectAttr(f"{mp}.yCoordinate", f"{grp}.translateY")
+            cmds.disconnectAttr(f"{mp}.zCoordinate", f"{grp}.translateZ")
+            cmds.disconnectAttr(f"{mp}.rotate",      f"{grp}.rotate")
+            cmds.delete(mp)
+            cmds.setAttr(f"{grp}.translate", tx, ty, tz)
+            # Corners and middles: world orientation (no rotation)
+            # a/b: keep Y and Z from motionPath, zero X
+            if "corner" in name or name.startswith("M_"):
+                cmds.setAttr(f"{grp}.rotate", 0, 0, 0)
+            else:
+                cmds.setAttr(f"{grp}.rotate", 0, ry, rz)
+
+            # Controller joint (drawStyle 3 = Joint marker, no bone line)
+            cmds.select(cl=True)
+            ctrl = cmds.joint(name=f"{name}_ctl")
+            cmds.parent(ctrl, grp)
+            cmds.setAttr(f"{ctrl}.t", 0, 0, 0)
+            cmds.setAttr(f"{ctrl}.r", 0, 0, 0)
+            cmds.setAttr(f"{ctrl}.jointOrient", 0, 0, 0)
+            cmds.setAttr(f"{ctrl}.drawStyle", 3)
+
+            # Skin joint directly under controller (drawStyle driven by condition)
+            cmds.select(cl=True)
+            skin = cmds.joint(name=f"{name}_skin_jnt")
+            cmds.parent(skin, ctrl)
+            cmds.setAttr(f"{skin}.t", 0, 0, 0)
+            cmds.setAttr(f"{skin}.r", 0, 0, 0)
+            cmds.setAttr(f"{skin}.jointOrient", 0, 0, 0)
+            cmds.setAttr(f"{skin}.drawStyle", 2)
+
+            skin_joints.append(skin)
+            created[name] = skin
+
+    # ── Debug group (curves hidden by default) ────────────────────────────
+    debug_grp = cmds.group(em=True, name="lip_rig_debug_grp")
+    cmds.parent(debug_grp, rig_grp)
+    cmds.parent(upper_crv, lower_crv, debug_grp)
+    cmds.setAttr(f"{debug_grp}.visibility", 0)
+
+    # ── show_skn_joints — boolean attr driving all skin joint drawStyles ───
+    cmds.addAttr(rig_grp, ln="show_skn_joints", at="bool", dv=0, keyable=True)
+    cond = cmds.createNode("condition", name="lip_rig_show_skn_jnts")
+    cmds.connectAttr(f"{rig_grp}.show_skn_joints", f"{cond}.firstTerm")
+    cmds.setAttr(f"{cond}.secondTerm", 1)
+    cmds.setAttr(f"{cond}.operation", 0)          # Equal
+    cmds.setAttr(f"{cond}.colorIfTrueR",  0)      # drawStyle 0 = Bone (visible)
+    cmds.setAttr(f"{cond}.colorIfFalseR", 2)      # drawStyle 2 = None (hidden)
+    for _skin in skin_joints[1:]:                  # skip zero_out_jnt
+        cmds.connectAttr(f"{cond}.outColorR", f"{_skin}.drawStyle")
+
+    # ── Bind skin — all weights on zero_out ───────────────────────────────
+    sc = cmds.skinCluster(
+        skin_joints, _LIP_RIG_MSH,
+        name="lip_rig_sc",
+        toSelectedBones=True,
+        bindMethod=0,
+        normalizeWeights=1,
+        weightDistribution=0,
+        removeUnusedInfluence=False,
+    )[0]
+
+    n_verts = cmds.polyEvaluate(_LIP_RIG_MSH, v=True)
+
+    mesh_sel = om.MSelectionList()
+    mesh_sel.add(_LIP_RIG_MSH)
+    mesh_dag = om.MDagPath()
+    mesh_sel.getDagPath(0, mesh_dag)
+
+    sc_sel = om.MSelectionList()
+    sc_sel.add(sc)
+    sc_mobj = om.MObject()
+    sc_sel.getDependNode(0, sc_mobj)
+    fn_sc = oma.MFnSkinCluster(sc_mobj)
+    inf_paths = om.MDagPathArray()
+    fn_sc.influenceObjects(inf_paths)
+    n_infs = inf_paths.length()
+    inf_idx = {inf_paths[i].partialPathName(): i for i in range(n_infs)}
+
+    fn_comp = om.MFnSingleIndexedComponent()
+    comp = fn_comp.create(om.MFn.kMeshVertComponent)
+    fn_comp.setCompleteData(n_verts)
+    inf_array = om.MIntArray(n_infs)
+    for i in range(n_infs):
+        inf_array.set(i, i)
+    weights = om.MDoubleArray(n_verts * n_infs, 0.0)
+    zi = inf_idx.get(_ZERO_OUT_JNT)
+    if zi is not None:
+        for vi in range(n_verts):
+            weights.set(1.0, vi * n_infs + zi)
+    fn_sc.setWeights(mesh_dag, comp, inf_array, weights, False)
+
+    return rig_grp, skin_joints
+
+
 # ── Rig Connector ─────────────────────────────────────────────────────────────
 
 # Maps transform attr → transformLimits kwarg + enable attribute name
