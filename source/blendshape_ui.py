@@ -3238,9 +3238,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         _w_wrap, self.btn_wrap_extract = self._icon_btn(
             f"{_icons_dir}/wrap_extract.png",
             "Extract Wrap Targets",
-            "Creates a wrap deformer on the selected mesh driven by the blendShape\n"
-            "base mesh, extracts each selected target as a shape, then integrates\n"
-            "them into the mesh's blendShape node (created if needed).")
+            "Select master mesh (with BS) + one or more receiver meshes.\n"
+            "If targets are selected in the Shape Editor, wraps those targets.\n"
+            "Otherwise wraps all targets and prunes near-zero results.\n"
+            "A BS node is created on each receiver if none exists.")
         self.btn_wrap_extract.clicked.connect(self._run_wrap_extract)
 
         _w_extract, self.btn_extract_only = self._icon_btn(
@@ -5970,159 +5971,131 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     @undo_chunk
     def _run_wrap_extract(self):
-        targets = self._get_targets_or_warn()
-        sel     = cmds.ls(sl=True, type='transform') or []
-        meshes  = [s for s in sel if cmds.listRelatives(s, shapes=True, type='mesh')]
+        sel    = cmds.ls(sl=True, type='transform') or []
+        meshes = [s for s in sel if cmds.listRelatives(s, shapes=True, type='mesh')]
 
-        if not targets:
-            # ── No-targets mode: wrap ALL targets from donor mesh ──────────
-            if len(meshes) != 2:
-                self._set_status(
-                    "✗ Wrap Extract: select exactly 2 meshes in viewport (donor then receiver)",
-                    error=True)
-                return
-
-            donor_mesh    = meshes[0]
-            receiver_mesh = meshes[1]
-
-            donor_bs = _find_blendshape_on_mesh(donor_mesh)
-            if not donor_bs:
-                self._set_status(
-                    f"✗ Wrap Extract: no blendShape found on donor mesh '{donor_mesh}'",
-                    error=True)
-                return
-
-            donor_base = get_base_mesh(donor_bs)
-            if not donor_base:
-                self._set_status(
-                    f"✗ Wrap Extract: cannot find base mesh for '{donor_bs}'", error=True)
-                return
-
-            # Build all-targets list from donor BS
-            indices     = cmds.getAttr(f"{donor_bs}.w", multiIndices=True) or []
-            all_targets = []
-            for idx in indices:
-                alias = cmds.aliasAttr(f"{donor_bs}.w[{idx}]", q=True)
-                if alias:
-                    all_targets.append((donor_bs, idx, alias))
-
-            if not all_targets:
-                self._set_status(
-                    f"✗ Wrap Extract: no targets found on '{donor_bs}'", error=True)
-                return
-
-            # Dialog 1: confirm all-targets wrap
-            msg1 = QtWidgets.QMessageBox(self)
-            msg1.setWindowTitle("Wrap Extract — All Targets")
-            msg1.setText(
-                f"No targets selected in Shape Editor.\n\n"
-                f"Wrap all {len(all_targets)} target(s) from '{donor_bs}'\n"
-                f"onto '{receiver_mesh}'?")
-            msg1.setStandardButtons(
-                QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel)
-            msg1.button(QtWidgets.QMessageBox.Ok).setText("Continue")
-            if msg1.exec() != QtWidgets.QMessageBox.Ok:
-                return
-
-            # Dialog 2: warn if receiver has no BS node
-            receiver_bs = _find_blendshape_on_mesh(receiver_mesh)
-            if receiver_bs is None:
-                mesh_short = receiver_mesh.split(":")[-1].split("|")[-1]
-                bs_name    = f"{mesh_short}_bs"
-                msg2 = QtWidgets.QMessageBox(self)
-                msg2.setWindowTitle("Wrap Extract — No BlendShape")
-                msg2.setText(
-                    f"'{receiver_mesh}' has no blendShape node.\n\n"
-                    f"A new node '{bs_name}' will be created automatically.")
-                btn_create = msg2.addButton("Create BS and Wrap",
-                                            QtWidgets.QMessageBox.AcceptRole)
-                msg2.addButton("Cancel", QtWidgets.QMessageBox.RejectRole)
-                msg2.exec()
-                if msg2.clickedButton() != btn_create:
-                    return
-
-            try:
-                bs_target, log = extract_targets_via_wrap(
-                    donor_bs, donor_base, receiver_mesh, all_targets)
-
-                # Post-wrap prune: remove near-zero targets
-                pruned = 0
-                for target_name, _ in log:
-                    idx = get_bs_weight_attribute_logical_index(bs_target, target_name)
-                    if idx is None:
-                        continue
-                    deltas = get_target_deltas(bs_target, idx)
-                    if not any(
-                        (dx*dx + dy*dy + dz*dz) >= 1e-6
-                        for dx, dy, dz in deltas.values()
-                    ):
-                        mel.eval(f"blendShapeDeleteTargetGroup {bs_target} {idx};")
-                        pruned += 1
-
-                n_kept = len(log) - pruned
-                parts  = [f"✓ Wrap Extract: {n_kept} target(s) → '{bs_target}'"]
-                if pruned:
-                    parts.append(f"{pruned} pruned (near-zero)")
-                if self.chk_connect_targets.isChecked():
-                    names = [name for name, _ in log]
-                    connect_extracted_targets(donor_bs, bs_target, names)
-                    parts.append("connected")
-                self._set_status("  ".join(parts))
-            except Exception as e:
-                traceback.print_exc()
-                self._set_status(f"✗ Wrap Extract: {e}", error=True)
-            return
-
-        # ── Standard mode: selected targets ────────────────────────────────
-        # All targets must be on the same bs_node
-        bs_nodes = list({t[0] for t in targets})
-        if len(bs_nodes) > 1:
+        if len(meshes) < 2:
             self._set_status(
-                "✗ Wrap Extract: all selected targets must be on the same blendShape node",
+                "✗ Wrap Extract: select master mesh + at least 1 receiver mesh in viewport",
                 error=True)
             return
 
-        bs_node   = bs_nodes[0]
-        base_mesh = get_base_mesh(bs_node)
+        master_mesh     = meshes[0]
+        receiver_meshes = meshes[1:]
+
+        # ── Resolve BS node and targets ────────────────────────────────────
+        ui_targets = get_selected_targets()
+        auto_mode  = not ui_targets  # True → wrap all targets, then prune near-zero
+
+        if ui_targets:
+            bs_nodes = list({t[0] for t in ui_targets})
+            if len(bs_nodes) > 1:
+                self._set_status(
+                    "✗ Wrap Extract: all selected targets must be on the same blendShape node",
+                    error=True)
+                return
+            bs_node   = bs_nodes[0]
+            base_mesh = get_base_mesh(bs_node)
+            targets   = ui_targets
+        else:
+            # Auto mode: use the BS on the master mesh
+            bs_node = _find_blendshape_on_mesh(master_mesh)
+            if not bs_node:
+                self._set_status(
+                    f"✗ Wrap Extract: no blendShape found on master mesh '{master_mesh}'",
+                    error=True)
+                return
+            base_mesh = get_base_mesh(bs_node)
+            if not base_mesh:
+                self._set_status(
+                    f"✗ Wrap Extract: cannot find base mesh for '{bs_node}'", error=True)
+                return
+            indices = cmds.getAttr(f"{bs_node}.w", multiIndices=True) or []
+            targets = []
+            for idx in indices:
+                alias = cmds.aliasAttr(f"{bs_node}.w[{idx}]", q=True)
+                if alias:
+                    targets.append((bs_node, idx, alias))
+            if not targets:
+                self._set_status(
+                    f"✗ Wrap Extract: no targets found on '{bs_node}'", error=True)
+                return
+
         if not base_mesh:
-            self._set_status(f"✗ Wrap Extract: cannot find base mesh for '{bs_node}'", error=True)
+            self._set_status(
+                f"✗ Wrap Extract: cannot find base mesh for '{bs_node}'", error=True)
             return
 
-        # Get mesh_target from Maya scene selection
-        if not meshes:
-            self._set_status(
-                "✗ Wrap Extract: select a mesh in the scene to use as wrap target", error=True)
-            return
-        if len(meshes) > 1:
-            self._set_status(
-                "✗ Wrap Extract: select only one mesh as wrap target", error=True)
-            return
+        # ── Confirm receivers that have no BS node ────────────────────────
+        for receiver in receiver_meshes:
+            if _find_blendshape_on_mesh(receiver) is None:
+                mesh_short = receiver.split(":")[-1].split("|")[-1]
+                bs_name    = f"{mesh_short}_bs"
+                msg = QtWidgets.QMessageBox(self)
+                msg.setWindowTitle("Wrap Extract — No BlendShape")
+                msg.setText(
+                    f"'{receiver}' has no blendShape node.\n\n"
+                    f"A new node '{bs_name}' will be created automatically.")
+                btn_ok = msg.addButton("Create BS and Wrap", QtWidgets.QMessageBox.AcceptRole)
+                msg.addButton("Cancel", QtWidgets.QMessageBox.RejectRole)
+                msg.exec()
+                if msg.clickedButton() != btn_ok:
+                    return
 
-        mesh_target = meshes[0]
-        if mesh_target == base_mesh:
-            self._set_status(
-                "✗ Wrap Extract: the selected mesh cannot be the base mesh itself", error=True)
-            return
+        # ── Extract onto each receiver ────────────────────────────────────
+        total_kept   = 0
+        total_pruned = 0
+        receiver_reports = []
 
-        try:
-            bs_target, log = extract_targets_via_wrap(
-                bs_node, base_mesh, mesh_target, targets)
-            n_total    = len(log)
-            n_replaced = sum(1 for _, r in log if r)
-            n_added    = n_total - n_replaced
-            parts = [f"✓ Wrap Extract: {n_total} target{'s' if n_total > 1 else ''} → '{bs_target}'"]
-            if n_added:
-                parts.append(f"{n_added} added")
-            if n_replaced:
-                parts.append(f"{n_replaced} replaced")
-            if self.chk_connect_targets.isChecked():
-                names = [name for name, _ in log]
-                connect_extracted_targets(bs_node, bs_target, names)
-                parts.append("connected")
-            self._set_status("  ".join(parts))
-        except Exception as e:
-            traceback.print_exc()
-            self._set_status(f"✗ Wrap Extract: {e}", error=True)
+        for receiver in receiver_meshes:
+            try:
+                bs_target, log = extract_targets_via_wrap(
+                    bs_node, base_mesh, receiver, targets)
+
+                # Prune near-zero targets in auto mode
+                pruned = 0
+                if auto_mode:
+                    for target_name, _ in log:
+                        idx = get_bs_weight_attribute_logical_index(bs_target, target_name)
+                        if idx is None:
+                            continue
+                        deltas = get_target_deltas(bs_target, idx)
+                        if not any(
+                            (dx*dx + dy*dy + dz*dz) >= 1e-6
+                            for dx, dy, dz in deltas.values()
+                        ):
+                            mel.eval(f"blendShapeDeleteTargetGroup {bs_target} {idx};")
+                            pruned += 1
+
+                kept = len(log) - pruned
+                total_kept   += kept
+                total_pruned += pruned
+
+                if self.chk_connect_targets.isChecked():
+                    names = [name for name, _ in log]
+                    connect_extracted_targets(bs_node, bs_target, names)
+
+                rec_short = receiver.split(":")[-1].split("|")[-1]
+                n_replaced = sum(1 for _, r in log if r)
+                n_added    = kept - n_replaced
+                detail = f"{rec_short}: {kept} target(s)"
+                if n_added and n_replaced:
+                    detail += f" ({n_added} added, {n_replaced} replaced)"
+                elif n_replaced:
+                    detail += f" ({n_replaced} replaced)"
+                receiver_reports.append(detail)
+
+            except Exception as e:
+                traceback.print_exc()
+                self._set_status(f"✗ Wrap Extract ({receiver}): {e}", error=True)
+                return
+
+        parts = [f"✓ Wrap Extract: {', '.join(receiver_reports)}"]
+        if total_pruned:
+            parts.append(f"{total_pruned} pruned (near-zero)")
+        if self.chk_connect_targets.isChecked():
+            parts.append("connected")
+        self._set_status("  ".join(parts))
 
     @undo_chunk
     def _run_extract_only(self):

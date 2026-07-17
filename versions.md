@@ -1,5 +1,61 @@
 # Changelog — Blendshape Editor Tool
 
+## v.05.00
+
+**Wrap Extract — multi-mesh support**
+
+- First selected mesh is the master (source of targets); all subsequent meshes are receivers
+- Works with any number of receivers in a single operation
+- If a receiver has no blendShape node, a dialog proposes to create `{meshName}_bs` automatically
+- If no targets are selected in the Shape Editor, all targets are wrapped and near-zero results (magnitude < 0.001) are pruned automatically
+- Status bar reports per-receiver: targets kept, added, replaced, pruned
+
+**Joints Setup tool**
+
+- New `Joints Setup` section (under Wire Setup in the Tools panel)
+- `build_lip_rig`: builds a joint-based lip rig from an edge loop — motionPath orientation baked into rest pose, joints skin-bound to the mesh
+
+**Modify Deltas — Add / Sub / Swap**
+
+- `Add Delta`: adds the delta of a source target on top of the current target
+- `Sub Delta`: subtracts the delta of a source target from the current target
+- `Swap Delta`: swaps delta data between two targets in one operation
+
+**Modify Deltas — Opacity slider extended**
+
+- Slider now controls Hammer and Average operations in addition to Smooth/Relax
+- Hammer: `n_passes = max(1, int(round(opacity × 20)))` → 1–20 passes
+- Average: `opacity` used directly as lerp factor between original and averaged value
+
+**Tools Shelf — settings bar**
+
+- New persistent bar above the sculpt shelf: `Strength` slider, `Falloff Type` combo, `Symmetry` toggle
+- Values are read by all sculpt-brush buttons at execution time
+
+**Bug fixes**
+
+- Multiply / Nullify: now correctly applies to all selected targets (was only acting on the first)
+- Split group reorder: fixed index collision when reordering locator groups
+- Bake Deformers: corrected delta accumulation formula (was double-counting the base pose)
+- Wrap Extract (no-selection mode): weights with incoming connections now properly disconnected/reconnected
+
+---
+
+## v.04.05
+
+- Wire Setup: default rotation value set to `0.15`
+- Partial mirror on vertex selection: Mirror and Flip buttons operate only on selected vertices when a vertex selection is active
+
+---
+
+## v.04.04
+
+- Opacity slider for Smooth/Relax: `n_passes = max(1, int(round(opacity × 10)))` → 1–10 passes
+- Bake Deformers: fix — deformer contribution now computed as `(deformed − base)` delta added on top of existing target deltas
+- BS weight disconnect/reconnect unified across Split, Wrap and Bake to handle combination (driven) targets cleanly
+
+---
+
 ## v.04.03
 
 **Rig Connector — Combo Driver: extended syntaxes**

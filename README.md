@@ -28,9 +28,11 @@ curve-based lip/mouth wire rig.
 
 - **Locator-based spatial split** — divide any target into N weighted regions using 1-D projection or 3-D radial falloff (Smoother Step, Linear, Ease In, Ease Out)
 - **Symmetric naming** — auto-generates paired L_/R_ targets from a single split operation
-- **Secondary mesh pipeline** — Extract Wrap Targets, Extract Only, Connect Targets A→B
-- **Delta editing suite** — Multiply, Normal Push, Smooth, Relax, Copy/Paste, Prune, Cluster, Joint helpers
+- **Secondary mesh pipeline** — Extract Wrap Targets (multi-mesh), Extract Only, Connect Targets A→B
+- **Delta editing suite** — Multiply, Normal Push, Smooth, Relax, Add/Sub/Swap, Copy/Paste, Prune, Cluster, Joint helpers
+- **Joints Setup** — joint-based lip rig from an edge loop with baked motionPath orientation and skin bind
 - **Wire Setup** — build a curve-based lip rig from an edge loop, sculpt shapes, bake to blendShape targets
+- **Tools Shelf settings bar** — persistent Strength / Falloff Type / Symmetry controls for sculpt brushes
 - **Naming Convention dialog** — configurable token order, prefix, and custom opposite-target pairs (persistent JSON)
 - **Undo safety** — every operation wrapped in a single Maya undo chunk
 
@@ -40,12 +42,23 @@ curve-based lip/mouth wire rig.
 
 See [versions.md](versions.md) for the full changelog.
 
+**v.05.00**
+- Wrap Extract: multi-mesh support — master mesh + any number of receivers in one pass; auto-creates BS nodes; prunes near-zero targets in auto mode
+- Joints Setup tool: joint-based lip rig with baked motionPath orientation and skin bind
+- Modify Deltas: Add / Sub / Swap delta operations
+- Modify Deltas: Opacity slider extended to Hammer and Average
+- Tools Shelf: persistent Strength / Falloff Type / Symmetry settings bar
+- Bug fixes: Multiply/Nullify multi-target, split group reorder, bake deformers formula
+
+**v.04.03**
+- Rig Connector: Combo Driver extended syntaxes (`node.attr`, `rev:` prefix)
+- Rig Connector: Add Row reads Shape Editor selection
+
 **v.04.00**
 - Edge Loop Split with persistent setup fields (Upper Vtx / Lower Vtx / Edgeloop)
 - Center side token renamed M_ → C_ throughout
 - Check Shapes: external JSON + File menu + Match Existing to List
 - Naming Convention: configurable Left / Center / Right side tokens
-- Actions section open by default; topology Edge field moved to top
 - Maya Tools Shelf row 2: Relax / Pinch / Amplify + Reset All Targets to 0
 - Bake Deformers button (Actions section)
 - Fixed scroll jump on section toggle; UI position preserved across sessions
