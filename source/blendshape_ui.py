@@ -2617,7 +2617,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             (f"{_icons_dir}/Flatten.png", "Sculpt Flatten\nDouble-click: Tool Settings", "SetMeshFlattenTool"),
             (f"{_icons_dir}/Bulge.png",   "Sculpt Bulge\nDouble-click: Tool Settings",   "SetMeshBulgeTool"),
         ]:
-            shelf_lay.addWidget(_shelf_btn(_ic, _tt, _cmd, dbl_click=self._open_tool_settings))
+            shelf_lay.addWidget(_shelf_btn(_ic, _tt,
+                callback=lambda _=False, c=_cmd: self._activate_sculpt_tool(c),
+                dbl_click=self._open_tool_settings))
 
         # Separator
         _sep = QtWidgets.QFrame()
@@ -2633,7 +2635,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             (f"{_icons_dir}/SmoothTarget.png", "Smooth Target\nDouble-click: Tool Settings", "SetMeshSmoothTargetTool"),
             (f"{_icons_dir}/Erase.png",        "Erase Target\nDouble-click: Tool Settings",  "SetMeshEraseTool"),
         ]:
-            shelf_lay.addWidget(_shelf_btn(_ic, _tt, _cmd, dbl_click=self._open_tool_settings))
+            shelf_lay.addWidget(_shelf_btn(_ic, _tt,
+                callback=lambda _=False, c=_cmd: self._activate_sculpt_tool(c),
+                dbl_click=self._open_tool_settings))
 
         # Separator — visualization tools
         _sep2 = QtWidgets.QFrame()
@@ -2663,7 +2667,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             (f"{_icons_dir}/Pinch.png",   "Pinch\nDouble-click: Tool Settings",   "SetMeshPinchTool"),
             (f"{_icons_dir}/Amplify.png", "Amplify\nDouble-click: Tool Settings", "SetMeshAmplifyTool"),
         ]:
-            row2_lay.addWidget(_shelf_btn(_ic, _tt, _cmd, dbl_click=self._open_tool_settings))
+            row2_lay.addWidget(_shelf_btn(_ic, _tt,
+                callback=lambda _=False, c=_cmd: self._activate_sculpt_tool(c),
+                dbl_click=self._open_tool_settings))
 
         _sep_r2a = QtWidgets.QFrame()
         _sep_r2a.setFrameShape(QtWidgets.QFrame.VLine)
@@ -2710,11 +2716,70 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         row2_lay.addStretch()
 
+        # ── Tool Settings (above shelf) ───────────────────────────────────────
+        ts_widget = QtWidgets.QWidget()
+        ts_lay = QtWidgets.QVBoxLayout(ts_widget)
+        ts_lay.setContentsMargins(0, 0, 0, 0)
+        ts_lay.setSpacing(12)
+
+        # Surface/Volume + Symmetry combos
+        combos_row = QtWidgets.QHBoxLayout()
+        combos_row.setSpacing(4)
+        combos_row.addWidget(QtWidgets.QLabel("Falloff Type"))
+        self.combo_tool_surf_vol = QtWidgets.QComboBox()
+        for _lbl, _val in [("Surface/Volume", 0), ("Surface", 1), ("Volume", 2)]:
+            self.combo_tool_surf_vol.addItem(_lbl, _val)
+        self.combo_tool_surf_vol.currentIndexChanged.connect(self._on_tool_surf_vol_changed)
+        combos_row.addWidget(self.combo_tool_surf_vol, 1)
+        combos_row.addSpacing(16)
+        combos_row.addWidget(QtWidgets.QLabel("Symmetry"))
+        self.combo_tool_symmetry = QtWidgets.QComboBox()
+        for _lbl, _val in [
+            ("Off",      0), ("Object X", 4), ("Object Y", 5), ("Object Z", 6),
+            ("World X",  1), ("World Y",  2), ("World Z",  3), ("Topology", 7),
+        ]:
+            self.combo_tool_symmetry.addItem(_lbl, _val)
+        self.combo_tool_symmetry.currentIndexChanged.connect(self._on_tool_symmetry_changed)
+        combos_row.addWidget(self.combo_tool_symmetry, 1)
+        ts_lay.addLayout(combos_row)
+
+        # Strength slider + spinbox
+        strength_row = QtWidgets.QHBoxLayout()
+        strength_row.setSpacing(4)
+        strength_row.addSpacing(4)
+        strength_row.addWidget(QtWidgets.QLabel("Strength"))
+        self.spin_tool_strength = QtWidgets.QDoubleSpinBox()
+        self.spin_tool_strength.setRange(0.0, 100.0)
+        self.spin_tool_strength.setDecimals(3)
+        self.spin_tool_strength.setValue(50.0)
+        self.spin_tool_strength.setFixedWidth(68)
+        self.spin_tool_strength.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self.spin_tool_strength.valueChanged.connect(self._on_tool_strength_spin)
+        strength_row.addWidget(self.spin_tool_strength)
+        self.slider_tool_strength = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_tool_strength.setRange(0, 1000)
+        self.slider_tool_strength.setValue(500)
+        self.slider_tool_strength.valueChanged.connect(self._on_tool_strength_slider)
+        strength_row.addWidget(self.slider_tool_strength, 1)
+        ts_lay.addLayout(strength_row)
+
         # Shelf pinned above the scroll — always visible
         shelf_wrapper = QtWidgets.QWidget()
-        shelf_wrapper_lay = QtWidgets.QHBoxLayout(shelf_wrapper)
+        shelf_wrapper_lay = QtWidgets.QVBoxLayout(shelf_wrapper)
         shelf_wrapper_lay.setContentsMargins(8, 4, 8, 2)
-        shelf_wrapper_lay.setSpacing(0)
+        shelf_wrapper_lay.setSpacing(12)
+
+        lbl_shelf_title = QtWidgets.QLabel("Tools Shelf")
+        lbl_shelf_title.setStyleSheet("""
+            QLabel {
+                background-color: rgba(255,255,255,28);
+                border-radius: 2px;
+                font-weight: bold;
+                padding: 2px 4px;
+            }
+        """)
+        shelf_wrapper_lay.addWidget(lbl_shelf_title)
+        shelf_wrapper_lay.addWidget(ts_widget)
         shelf_wrapper_lay.addWidget(shelf_frame)
         outer_layout.addWidget(shelf_wrapper)
         outer_layout.addWidget(scroll, 1)
@@ -3413,6 +3478,42 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_mod.addWidget(_hsep())
         lay_mod.addSpacing(4)
 
+        # ── Delta + / Delta − ─────────────────────────────────────────────────
+        _tt_add = (
+            "Add — Adds donor deltas onto the receiver target.\n"
+            "Select target A first, then add select the other targets.\n"
+            "Vertex selection: restricts the operation to selected verts.\n"
+            "No vertex selection: operates on the full target.")
+        _tt_sub = (
+            "Sub — Subtracts donor deltas from the receiver target.\n"
+            "Select target A first, then add select the other targets.\n"
+            "Vertex selection: restricts the operation to selected verts.\n"
+            "No vertex selection: operates on the full target.")
+        _tt_xfer = (
+            "Swap — Moves deltas from B to A (removes from B, adds to A).\n"
+            "Select target A first, then add select target B.\n"
+            "Vertex selection: transfers only selected verts.\n"
+            "No vertex selection: transfers all delta verts on B.")
+        _w_dadd, self.btn_delta_add = self._icon_btn(
+            f"{_icons_dir}/multiply.png", "Add", _tt_add)
+        self.btn_delta_add.clicked.connect(self._run_delta_add)
+        _w_dsub, self.btn_delta_sub = self._icon_btn(
+            f"{_icons_dir}/multiply.png", "Sub", _tt_sub)
+        self.btn_delta_sub.clicked.connect(self._run_delta_sub)
+        _w_dswap, self.btn_delta_swap = self._icon_btn(
+            f"{_icons_dir}/multiply.png", "Swap", _tt_xfer)
+        self.btn_delta_swap.clicked.connect(self._run_delta_swap)
+
+        row_delta_combine = QtWidgets.QHBoxLayout()
+        row_delta_combine.setSpacing(4)
+        row_delta_combine.addWidget(_w_dadd)
+        row_delta_combine.addWidget(_w_dsub)
+        row_delta_combine.addWidget(_w_dswap)
+        lay_mod.addLayout(row_delta_combine)
+        lay_mod.addSpacing(4)
+        lay_mod.addWidget(_hsep())
+        lay_mod.addSpacing(4)
+
         # ── Normal Push ───────────────────────────────────────────────────────
         self.field_push_factor = _make_factor_field("0.20")
         self.field_push_factor.setToolTip("Push magnitude relative to existing delta length.")
@@ -3491,8 +3592,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.slider_smooth_opacity.setRange(1, 100)
         self.slider_smooth_opacity.setValue(50)
         self.slider_smooth_opacity.setToolTip(
-            "Smoothing strength: maps to 1–10 iterative passes.\n"
-            "100 = 10 passes (very powerful)   1 = 1 pass (subtle).")
+            "Strength for Smooth, Relax, Hammer and Average.\n"
+            "Smooth / Relax: maps to 1–10 iterative passes.\n"
+            "Hammer: maps to 1–20 iterative passes (50% = 10, default).\n"
+            "Average: blend weight between original and averaged value.")
         self.lbl_smooth_opacity_val = QtWidgets.QLabel("0.50")
         self.lbl_smooth_opacity_val.setFixedWidth(30)
         self.slider_smooth_opacity.valueChanged.connect(
@@ -3528,13 +3631,15 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             f"{_icons_dir}/hammer_delta.png", "Hammer Deltas",
             "Replaces each selected vertex's delta with the IDW-weighted average\n"
             "of its topological neighbors' deltas (1-ring, Euclidean distance).\n"
-            "Like Maya's Hammer Weights — selection required.")
+            "Like Maya's Hammer Weights — selection required.\n"
+            "Opacity maps to 1–20 iterative passes (50% = 10, default).")
         self.btn_hammer.clicked.connect(self._run_hammer_deltas)
         _w_average, self.btn_average = self._icon_btn(
             f"{_icons_dir}/average_delta.png", "Average Deltas",
             "Replaces all selected vertices' deltas with their arithmetic mean.\n"
             "Levels a cluster to a common displacement value.\n"
-            "Selection required.")
+            "Selection required.\n"
+            "Opacity blends between the original delta and the averaged value.")
         self.btn_average.clicked.connect(self._run_average_deltas)
         row_ha.addWidget(_w_hammer)
         row_ha.addWidget(_w_average)
@@ -3621,6 +3726,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             f"{_icons_dir}/multiply.png",      "Multiply Deltas",       self._run_multiply)
         grp_mod.add_compact_action(
             f"{_icons_dir}/multiply.png",      "Nullify",               self._run_nullify)
+        grp_mod.add_compact_action(
+            f"{_icons_dir}/multiply.png",      "Add",                   self._run_delta_add)
+        grp_mod.add_compact_action(
+            f"{_icons_dir}/multiply.png",      "Sub",                   self._run_delta_sub)
+        grp_mod.add_compact_action(
+            f"{_icons_dir}/multiply.png",      "Swap",                  self._run_delta_swap)
         grp_mod.add_compact_action(
             f"{_icons_dir}/normal_push.png",   "Normal Push",           self._run_push_normals)
         grp_mod.add_compact_action(
@@ -3796,6 +3907,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.spin_wire_dropoff.setValue(100.0)
         self.spin_wire_dropoff.setDecimals(1)
         self.spin_wire_dropoff.setFixedWidth(60)
+        self.spin_wire_dropoff.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self.spin_wire_dropoff.setToolTip("Wire deformer dropoff distance")
         row_wparams.addWidget(self.spin_wire_dropoff)
         row_wparams.addSpacing(8)
@@ -3806,6 +3918,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.spin_wire_rotation.setSingleStep(0.05)
         self.spin_wire_rotation.setDecimals(2)
         self.spin_wire_rotation.setFixedWidth(50)
+        self.spin_wire_rotation.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self.spin_wire_rotation.setToolTip("Wire deformer rotation value")
         row_wparams.addWidget(self.spin_wire_rotation)
         row_wparams.addSpacing(8)
@@ -3853,6 +3966,43 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_wire.addWidget(self.chk_wire_delete_after_bake)
 
         lay_tools.addWidget(grp_wire)
+
+        # ── Joints Setup ──────────────────────────────────────────────────
+        grp_joints = QtWidgets.QGroupBox("Joints Setup")
+        lay_joints = QtWidgets.QVBoxLayout(grp_joints)
+        lay_joints.setContentsMargins(8, 8, 8, 8)
+        lay_joints.setSpacing(6)
+
+        # Middle Edge row
+        row_mid = QtWidgets.QHBoxLayout()
+        lbl_mid = QtWidgets.QLabel("Middle Edge")
+        lbl_mid.setFixedWidth(80)
+        self.line_joints_middle = QtWidgets.QLineEdit()
+        self.line_joints_middle.setReadOnly(True)
+        self.line_joints_middle.setPlaceholderText("— select an edge —")
+        self.line_joints_middle.setToolTip(
+            "Edge on the edge loop that defines bone/controller positions.\n"
+            "The full edge loop is extracted and split into upper/lower arcs.")
+        btn_mid_get = QtWidgets.QPushButton("Get")
+        btn_mid_get.setFixedWidth(40)
+        btn_mid_get.clicked.connect(self._joints_get_middle)
+        row_mid.addWidget(lbl_mid)
+        row_mid.addWidget(self.line_joints_middle)
+        row_mid.addWidget(btn_mid_get)
+        lay_joints.addLayout(row_mid)
+
+
+        btn_build_rig = QtWidgets.QPushButton("Build Rig")
+        btn_build_rig.setToolTip(
+            "Extracts both edge loops, splits them at the lip corners,\n"
+            "builds NURBS curves, duplicates the mesh, and creates\n"
+            "the full joint hierarchy (13 influences + zero_out).")
+        btn_build_rig.clicked.connect(self._run_build_lip_rig)
+        lay_joints.addWidget(btn_build_rig)
+
+
+        lay_tools.addWidget(grp_joints)
+
         root.addWidget(grp_tools)
 
         root.addStretch(1)
@@ -4486,9 +4636,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     # ── Action slots ──────────────────────────────────────────────────────────
 
-    def _set_status(self, msg, error=False):
+    def _set_status(self, msg, error=False, neutral=False):
         self.lbl_status.setText(msg)
-        color = "#e05252" if error else "#7ec87e"
+        color = "#e05252" if error else ("#ffffff" if neutral else "#7ec87e")
         self.lbl_status.setStyleSheet(f"color: {color};")
 
     def _get_targets_or_warn(self):
@@ -4575,6 +4725,55 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         mel.eval('artAttrInitPaintableAttr')
         mel.eval('toolPropertyShow')
         self._set_status("✓ Paint Wire tool opened")
+
+    def _activate_sculpt_tool(self, mel_cmd):
+        mel.eval(mel_cmd)
+        self._sync_tool_strength()
+
+    def _sync_tool_strength(self):
+        try:
+            val = cmds.sculptMeshCacheCtx("sculptMeshCacheContext", q=True, strength=True)
+            self.spin_tool_strength.blockSignals(True)
+            self.slider_tool_strength.blockSignals(True)
+            self.spin_tool_strength.setValue(val)
+            self.slider_tool_strength.setValue(int(round(val * 10)))
+            self.spin_tool_strength.blockSignals(False)
+            self.slider_tool_strength.blockSignals(False)
+        except Exception:
+            pass
+
+    def _apply_tool_strength(self, value):
+        try:
+            cmds.sculptMeshCacheCtx("sculptMeshCacheContext", edit=True, strength=value)
+        except Exception:
+            pass
+
+    def _on_tool_strength_slider(self, int_val):
+        val = int_val / 10.0
+        self.spin_tool_strength.blockSignals(True)
+        self.spin_tool_strength.setValue(val)
+        self.spin_tool_strength.blockSignals(False)
+        self._apply_tool_strength(val)
+
+    def _on_tool_strength_spin(self, val):
+        self.slider_tool_strength.blockSignals(True)
+        self.slider_tool_strength.setValue(int(round(val * 10)))
+        self.slider_tool_strength.blockSignals(False)
+        self._apply_tool_strength(val)
+
+    def _on_tool_surf_vol_changed(self, index):
+        value = self.combo_tool_surf_vol.itemData(index)
+        try:
+            cmds.sculptMeshCacheCtx("sculptMeshCacheContext", edit=True, falloffType=value)
+        except Exception:
+            pass
+
+    def _on_tool_symmetry_changed(self, index):
+        value = self.combo_tool_symmetry.itemData(index)
+        try:
+            cmds.sculptMeshCacheCtx("sculptMeshCacheContext", edit=True, mirror=value)
+        except Exception:
+            pass
 
     def _open_tool_settings(self):
         """Open Maya's Tool Settings window for the currently active tool."""
@@ -4677,6 +4876,33 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         except Exception as e:
             import traceback; traceback.print_exc()
             self._set_status(f"✗ Bake Wire: {e}", error=True)
+
+    # ── Joints Setup callbacks ─────────────────────────────────────────────────
+
+    def _joints_get_middle(self):
+        sel = cmds.ls(sl=True, fl=True) or []
+        edges = [s for s in sel if ".e[" in s]
+        if len(edges) != 1:
+            self._set_status(
+                f"✗ Select exactly 1 edge for Middle Edge ({len(edges)} selected)",
+                error=True)
+            return
+        self.line_joints_middle.setText(edges[0])
+
+    @undo_chunk
+    def _run_build_lip_rig(self):
+        middle = self.line_joints_middle.text().strip()
+        if not middle:
+            self._set_status("✗ Joints Setup: set Middle Edge first", error=True)
+            return
+        mesh = middle.split(".")[0]
+        try:
+            rig_grp, skin_joints = build_lip_rig(mesh, middle)
+            self._set_status(
+                f"✓ Lip rig built — {len(skin_joints)} influence(s), all weights on zero_out")
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            self._set_status(f"✗ Build Rig: {e}", error=True)
 
     def _open_check_shapes(self):
         dlg = CheckShapesDialog(parent=self)
@@ -4903,6 +5129,66 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 if lbl.isChecked() and i != idx:
                     fld.setText(value)
 
+    @undo_chunk
+    def _run_delta_combine(self, operation):
+        targets = self._get_targets_or_warn()
+        if not targets:
+            return
+        if len(targets) < 2:
+            self._set_status("✗ Select at least 2 targets: A (receiver) then B/C/… (donors)", error=True)
+            return
+
+        raw_sel     = cmds.ls(sl=True, flatten=True) or []
+        vtx_sel     = [s for s in raw_sel if ".vtx[" in s]
+        vtx_indices = None if not vtx_sel else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
+
+        bs_node_a, idx_a, name_a = targets[0]
+        donors = [(bs, idx) for bs, idx, _ in targets[1:]]
+
+        try:
+            written  = combine_target_deltas(bs_node_a, idx_a, donors, operation=operation,
+                                             vtx_indices=vtx_indices)
+            op_sym   = "+" if operation == 'add' else "\u2212"
+            n_donors = len(donors)
+            scope    = "all verts" if vtx_indices is None else f"{len(vtx_indices)} vtx"
+            self._set_status(
+                f"✓ Delta {op_sym} — {n_donors} donor{'s' if n_donors > 1 else ''} \u2192 {name_a}"
+                f"  ({scope}, {written} verts)")
+        except Exception as e:
+            traceback.print_exc()
+            self._set_status(f"✗ {e}", error=True)
+
+    def _run_delta_add(self):
+        self._run_delta_combine('add')
+
+    def _run_delta_sub(self):
+        self._run_delta_combine('sub')
+
+    @undo_chunk
+    def _run_delta_swap(self):
+        targets = self._get_targets_or_warn()
+        if not targets:
+            return
+        if len(targets) < 2:
+            self._set_status("✗ Swap: select A (receiver) then B (donor)", error=True)
+            return
+
+        raw_sel     = cmds.ls(sl=True, flatten=True) or []
+        vtx_sel     = [s for s in raw_sel if ".vtx[" in s]
+        vtx_indices = None if not vtx_sel else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
+
+        bs_node_a, idx_a, name_a = targets[0]
+        bs_node_b, idx_b, name_b = targets[1]
+
+        try:
+            n = transfer_target_deltas(bs_node_a, idx_a, bs_node_b, idx_b,
+                                       vtx_indices=vtx_indices)
+            scope = "all delta verts" if vtx_indices is None else f"{len(vtx_indices)} vtx"
+            self._set_status(f"✓ Swap {name_b} \u2192 {name_a}  ({scope}, {n} verts)")
+        except Exception as e:
+            traceback.print_exc()
+            self._set_status(f"✗ {e}", error=True)
+
     def _run_multiply_factors(self, fx, fy, fz):
         raw_sel   = cmds.ls(sl=True, flatten=True) or []
         vtx_sel   = [s for s in raw_sel if ".vtx[" in s]
@@ -4912,19 +5198,18 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         if not targets:
             return
 
-        vtx_indices        = None if all_verts else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
-        targets_to_process = targets if all_verts else [targets[0]]
+        vtx_indices = None if all_verts else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
+        scope       = "all verts" if all_verts else f"{len(vtx_indices)} vtx"
 
         try:
-            for bs_node, logical_index, target_name in targets_to_process:
+            for bs_node, logical_index, target_name in targets:
                 multiply_target_deltas(bs_node, logical_index, fx, fy, fz,
                                        vtx_indices=vtx_indices)
-            scope = "all verts" if all_verts else f"{len(vtx_indices)} vtx"
-            n_t   = len(targets_to_process)
+            n_t = len(targets)
             if fx == 0.0 and fy == 0.0 and fz == 0.0:
                 self._set_status(
                     f"Deltas wiped on {n_t} target{'s' if n_t > 1 else ''}  {scope}"
-                    f" — Ctrl+Z to undo", error=True)
+                    f" — Ctrl+Z to undo", neutral=True)
             else:
                 self._set_status(
                     f"Multiplied {n_t} target{'s' if n_t > 1 else ''}"
@@ -5042,11 +5327,13 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         if not targets:
             return
 
+        opacity = self.slider_smooth_opacity.value() / 100.0
+        n_passes = max(1, int(round(opacity * 20)))
         vtx_indices = [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
         try:
             bs_node, logical_index, target_name = targets[0]
-            hammer_target_deltas(bs_node, logical_index, vtx_indices)
-            self._set_status(f"✓ Hammer Deltas  {len(vtx_indices)} vtx")
+            hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=n_passes)
+            self._set_status(f"✓ Hammer Deltas  {len(vtx_indices)} vtx  ({n_passes} passes)")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
@@ -5063,11 +5350,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         if not targets:
             return
 
+        opacity = self.slider_smooth_opacity.value() / 100.0
         vtx_indices = [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
         try:
             bs_node, logical_index, target_name = targets[0]
-            average_target_deltas(bs_node, logical_index, vtx_indices)
-            self._set_status(f"✓ Average Deltas  {len(vtx_indices)} vtx")
+            average_target_deltas(bs_node, logical_index, vtx_indices, opacity=opacity)
+            self._set_status(f"✓ Average Deltas  {len(vtx_indices)} vtx  (opacity {opacity:.2f})")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
@@ -5683,9 +5971,109 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
     @undo_chunk
     def _run_wrap_extract(self):
         targets = self._get_targets_or_warn()
+        sel     = cmds.ls(sl=True, type='transform') or []
+        meshes  = [s for s in sel if cmds.listRelatives(s, shapes=True, type='mesh')]
+
         if not targets:
+            # ── No-targets mode: wrap ALL targets from donor mesh ──────────
+            if len(meshes) != 2:
+                self._set_status(
+                    "✗ Wrap Extract: select exactly 2 meshes in viewport (donor then receiver)",
+                    error=True)
+                return
+
+            donor_mesh    = meshes[0]
+            receiver_mesh = meshes[1]
+
+            donor_bs = _find_blendshape_on_mesh(donor_mesh)
+            if not donor_bs:
+                self._set_status(
+                    f"✗ Wrap Extract: no blendShape found on donor mesh '{donor_mesh}'",
+                    error=True)
+                return
+
+            donor_base = get_base_mesh(donor_bs)
+            if not donor_base:
+                self._set_status(
+                    f"✗ Wrap Extract: cannot find base mesh for '{donor_bs}'", error=True)
+                return
+
+            # Build all-targets list from donor BS
+            indices     = cmds.getAttr(f"{donor_bs}.w", multiIndices=True) or []
+            all_targets = []
+            for idx in indices:
+                alias = cmds.aliasAttr(f"{donor_bs}.w[{idx}]", q=True)
+                if alias:
+                    all_targets.append((donor_bs, idx, alias))
+
+            if not all_targets:
+                self._set_status(
+                    f"✗ Wrap Extract: no targets found on '{donor_bs}'", error=True)
+                return
+
+            # Dialog 1: confirm all-targets wrap
+            msg1 = QtWidgets.QMessageBox(self)
+            msg1.setWindowTitle("Wrap Extract — All Targets")
+            msg1.setText(
+                f"No targets selected in Shape Editor.\n\n"
+                f"Wrap all {len(all_targets)} target(s) from '{donor_bs}'\n"
+                f"onto '{receiver_mesh}'?")
+            msg1.setStandardButtons(
+                QtWidgets.QMessageBox.Ok | QtWidgets.QMessageBox.Cancel)
+            msg1.button(QtWidgets.QMessageBox.Ok).setText("Continue")
+            if msg1.exec() != QtWidgets.QMessageBox.Ok:
+                return
+
+            # Dialog 2: warn if receiver has no BS node
+            receiver_bs = _find_blendshape_on_mesh(receiver_mesh)
+            if receiver_bs is None:
+                mesh_short = receiver_mesh.split(":")[-1].split("|")[-1]
+                bs_name    = f"{mesh_short}_bs"
+                msg2 = QtWidgets.QMessageBox(self)
+                msg2.setWindowTitle("Wrap Extract — No BlendShape")
+                msg2.setText(
+                    f"'{receiver_mesh}' has no blendShape node.\n\n"
+                    f"A new node '{bs_name}' will be created automatically.")
+                btn_create = msg2.addButton("Create BS and Wrap",
+                                            QtWidgets.QMessageBox.AcceptRole)
+                msg2.addButton("Cancel", QtWidgets.QMessageBox.RejectRole)
+                msg2.exec()
+                if msg2.clickedButton() != btn_create:
+                    return
+
+            try:
+                bs_target, log = extract_targets_via_wrap(
+                    donor_bs, donor_base, receiver_mesh, all_targets)
+
+                # Post-wrap prune: remove near-zero targets
+                pruned = 0
+                for target_name, _ in log:
+                    idx = get_bs_weight_attribute_logical_index(bs_target, target_name)
+                    if idx is None:
+                        continue
+                    deltas = get_target_deltas(bs_target, idx)
+                    if not any(
+                        (dx*dx + dy*dy + dz*dz) >= 1e-6
+                        for dx, dy, dz in deltas.values()
+                    ):
+                        mel.eval(f"blendShapeDeleteTargetGroup {bs_target} {idx};")
+                        pruned += 1
+
+                n_kept = len(log) - pruned
+                parts  = [f"✓ Wrap Extract: {n_kept} target(s) → '{bs_target}'"]
+                if pruned:
+                    parts.append(f"{pruned} pruned (near-zero)")
+                if self.chk_connect_targets.isChecked():
+                    names = [name for name, _ in log]
+                    connect_extracted_targets(donor_bs, bs_target, names)
+                    parts.append("connected")
+                self._set_status("  ".join(parts))
+            except Exception as e:
+                traceback.print_exc()
+                self._set_status(f"✗ Wrap Extract: {e}", error=True)
             return
 
+        # ── Standard mode: selected targets ────────────────────────────────
         # All targets must be on the same bs_node
         bs_nodes = list({t[0] for t in targets})
         if len(bs_nodes) > 1:
@@ -5701,8 +6089,6 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             return
 
         # Get mesh_target from Maya scene selection
-        sel    = cmds.ls(sl=True, type='transform') or []
-        meshes = [s for s in sel if cmds.listRelatives(s, shapes=True, type='mesh')]
         if not meshes:
             self._set_status(
                 "✗ Wrap Extract: select a mesh in the scene to use as wrap target", error=True)
