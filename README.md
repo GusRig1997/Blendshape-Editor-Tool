@@ -42,7 +42,7 @@ curve-based lip/mouth wire rig.
 
 See [versions.md](versions.md) for the full changelog.
 
-**v.05.01**
+**v.05.02**
 - Shelf restructured: 4×2 sculpt brush grid, new button grouping with spaced separators
 - Actions section removed: Create Opposite on shelf (right-click for axis), Apply Moves + Bake Deformers moved to Modify Deltas
 - Secondary Meshes section removed: Extract Wrap/Only in Tools → Wrap Setup, Connect A→B on shelf

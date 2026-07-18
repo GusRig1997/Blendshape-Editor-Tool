@@ -1,5 +1,23 @@
 # Changelog — Blendshape Editor Tool
 
+## v.05.02
+
+**UI — Top status line**
+
+- New persistent status line above Tool Settings, always visible
+- Displays current blendShape node, selected target name, and selection count
+- Single selection: `body_bs  ·  L_mouthCornerPull`
+- Multi selection: `body_bs  ·  L_mouthCornerPull  [...]  5 of 38 selected`
+- Phantom slots warning in orange: `·  2 phantom slots` (updated after each operation)
+- Event-driven refresh via global `MouseButtonRelease` filter — no polling
+
+**UI — Layout**
+
+- Status bar footer: version label and operation status now on the same row (status left, version right)
+- Section spacing increased from 6px to 10px for better readability
+
+---
+
 ## v.05.01
 
 **UI — Shelf restructure**
