@@ -1550,7 +1550,7 @@ def relax_target_deltas(bs_node, logical_index, opacity, vtx_indices=None):
     print(f"  Relax Deltas: opacity={opacity:.2f}  ({scope})")
 
 
-def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10):
+def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progress_cb=None):
     """
     Volumetric Laplacian hammer applied to blendShape deltas.
 
@@ -1615,7 +1615,9 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10):
 
         current = dict(deltas)
 
-        for _ in range(n_passes):
+        for _pass in range(n_passes):
+            if progress_cb:
+                progress_cb(_pass, n_passes, f"Hammer pass {_pass + 1} / {n_passes}…")
             snapshot = dict(current)
             for vi in vtx_set:
                 nbrs = spatial_neighbors[vi]
@@ -1693,84 +1695,130 @@ def average_target_deltas(bs_node, logical_index, vtx_indices, opacity=1.0):
     print(f"  Average Deltas: opacity={opacity:.2f}, {len(vtx_indices)} vtx → ({mx:.4f}, {my:.4f}, {mz:.4f})")
 
 
-def create_delta_cluster(bs_node, logical_index, target_name):
+def _collect_magnitudes(bs_node, logical_index):
     """
-    Regenerates the target mesh directly (no duplicate) and creates a cluster on it.
-    The regen mesh stays live — user sculpts, then deletes it to bake back.
-    Cluster weights = normalized delta magnitudes.
-    Returns (grp, regen_mesh, cluster_handle).
+    Regenerates the target, reads per-vertex delta magnitudes from pnts[],
+    then immediately deletes the regen mesh (bakes back the unchanged deltas).
+    Returns (magnitudes_dict {vi: mag}, n_verts).
+    Used when we need magnitude data without keeping the regen mesh alive.
     """
-    # 1. Regenerate target → live mesh connected to blendShape target
-    regen_mesh = cmds.sculptTarget(bs_node, e=True, target=logical_index, regenerate=True)
-    regen_mesh = regen_mesh if isinstance(regen_mesh, str) else regen_mesh[0]
-    cmds.rename(regen_mesh, f"{target_name}_regenerated")
-    regen_mesh = f"{target_name}_regenerated"
+    saved = _save_shape_editor_selection()
+    try:
+        regen = cmds.sculptTarget(bs_node, e=True, target=logical_index, regenerate=True)
+        regen = regen if isinstance(regen, str) else regen[0]
+        n_verts = cmds.polyEvaluate(regen, vertex=True)
+        magnitudes = {}
+        for i in range(n_verts):
+            dx = cmds.getAttr(f"{regen}.pnts[{i}].pntx")
+            dy = cmds.getAttr(f"{regen}.pnts[{i}].pnty")
+            dz = cmds.getAttr(f"{regen}.pnts[{i}].pntz")
+            mag = math.sqrt(dx*dx + dy*dy + dz*dz)
+            if mag > 1e-6:
+                magnitudes[i] = mag
+        cmds.delete(regen)
+    finally:
+        _restore_shape_editor_selection(saved)
+    return magnitudes, n_verts
 
-    # 2. Read delta magnitudes directly from regen pnts[]
-    n_verts    = cmds.polyEvaluate(regen_mesh, vertex=True)
-    magnitudes = {}
-    for i in range(n_verts):
-        dx = cmds.getAttr(f"{regen_mesh}.pnts[{i}].pntx")
-        dy = cmds.getAttr(f"{regen_mesh}.pnts[{i}].pnty")
-        dz = cmds.getAttr(f"{regen_mesh}.pnts[{i}].pntz")
-        mag = math.sqrt(dx*dx + dy*dy + dz*dz)
-        if mag > 1e-6:
-            magnitudes[i] = mag
+
+def _add_empty_bs_target(bs_node, base_mesh, ref_logical_index, new_name):
+    """
+    Add a new empty (zero-delta) target to the blendShape, positioned just after
+    ref_logical_index in the Shape Editor.
+    Returns the logical index of the new target.
+    """
+    purge_empty_bs_slots(bs_node)
+
+    temp = cmds.duplicate(base_mesh, name=f"_temp_{new_name}")[0]
+    try:
+        used_indices = cmds.getAttr(f"{bs_node}.w", multiIndices=True) or []
+        next_idx = (max(used_indices) + 1) if used_indices else 0
+        cmds.blendShape(bs_node, e=True, target=(base_mesh, next_idx, temp, 1.0))
+    finally:
+        cmds.delete(temp)
+
+    try:
+        cmds.aliasAttr(new_name, f"{bs_node}.w[{next_idx}]")
+    except Exception:
+        try:
+            mel.eval(f"blendShapeDeleteTargetGroup {bs_node} {next_idx};")
+        except Exception:
+            pass
+        raise RuntimeError(
+            f"Could not assign alias '{new_name}' on {bs_node}.w[{next_idx}] — "
+            f"name may already be in use or contain invalid characters."
+        )
+
+    _insert_indices_after(bs_node, ref_logical_index, [next_idx])
+    return next_idx
+
+
+def create_delta_cluster(bs_node, logical_index, target_name,
+                         neutral=False, _precomputed=None):
+    """
+    Creates a cluster rig driven by the delta magnitudes of the target.
+    Cluster handle is placed at the bbox center of delta vertices.
+
+    neutral=False, _precomputed=None  — single target, posed mesh:
+        Regen mesh stays live; delete it to bake back into the target.
+    neutral=False, _precomputed=(mags, n)  — multi-target combined, posed mesh:
+        Regen mesh of the primary target stays live; weights = sum of all targets.
+    neutral=True, _precomputed=None  — single target, neutral mesh:
+        Creates a new empty '{target_name}_Copy' target; its regen mesh (neutral
+        pose, connected to the new target) stays live for bake-back.
+    neutral=True, _precomputed=(mags, n)  — multi-target combined, neutral mesh:
+        Like above but magnitudes are pre-summed externally.
+
+    Returns (grp, working_mesh, cluster_handle).
+    """
+    saved = _save_shape_editor_selection()
+    try:
+        if neutral:
+            # ── Collect magnitudes (regen → read → delete) ──────────────────
+            if _precomputed is None:
+                magnitudes, n_verts = _collect_magnitudes(bs_node, logical_index)
+            else:
+                magnitudes, n_verts = _precomputed
+
+            # ── Create the '_Copy' target and regen it (neutral live mesh) ──
+            base_mesh = get_base_mesh(bs_node)
+            copy_name = f"{target_name}_Copy"
+            copy_idx  = _add_empty_bs_target(bs_node, base_mesh, logical_index, copy_name)
+
+            regen = cmds.sculptTarget(bs_node, e=True, target=copy_idx, regenerate=True)
+            regen = regen if isinstance(regen, str) else regen[0]
+            cmds.rename(regen, f"{copy_name}_regenerated")
+            working_mesh = f"{copy_name}_regenerated"
+        else:
+            # ── Regen primary target → posed live mesh ───────────────────────
+            regen = cmds.sculptTarget(bs_node, e=True, target=logical_index, regenerate=True)
+            regen = regen if isinstance(regen, str) else regen[0]
+            cmds.rename(regen, f"{target_name}_regenerated")
+            working_mesh = f"{target_name}_regenerated"
+
+            if _precomputed is None:
+                n_verts = cmds.polyEvaluate(working_mesh, vertex=True)
+                magnitudes = {}
+                for i in range(n_verts):
+                    dx = cmds.getAttr(f"{working_mesh}.pnts[{i}].pntx")
+                    dy = cmds.getAttr(f"{working_mesh}.pnts[{i}].pnty")
+                    dz = cmds.getAttr(f"{working_mesh}.pnts[{i}].pntz")
+                    mag = math.sqrt(dx*dx + dy*dy + dz*dz)
+                    if mag > 1e-6:
+                        magnitudes[i] = mag
+            else:
+                magnitudes, n_verts = _precomputed
+    finally:
+        _restore_shape_editor_selection(saved)
 
     max_mag = max(magnitudes.values()) if magnitudes else 1.0
 
-    # 3. Create cluster on the regen mesh
-    cluster_node, cluster_handle = cmds.cluster(regen_mesh, name=f"{target_name}_cluster")
-
-    # 4. Set weights — normalized magnitudes
-    weights_list = [magnitudes.get(i, 0.0) / max_mag for i in range(n_verts)]
-    cmds.setAttr(
-        f"{cluster_node}.weightList[0].weights[0:{n_verts - 1}]",
-        *weights_list, size=n_verts
-    )
-
-    grp = cmds.group(regen_mesh, cluster_handle, name=f"{target_name}_deltaCluster_grp")
-    print(f"  ✓ Delta cluster on regen mesh : {cluster_handle} → {grp}")
-    print(f"    Delete '{regen_mesh}' when done to bake back into blendShape.")
-    return grp, regen_mesh, cluster_handle
-
-
-def create_delta_joint(bs_node, logical_index, target_name):
-    """
-    Regenerates the target mesh, duplicates it as a posed mesh,
-    creates two joints and a skinCluster:
-      - {target_name}_jnt   : weights = normalized delta magnitudes
-      - {target_name}_zero_jnt : absorbs remaining weights (1 - w)
-    Everything is grouped under {target_name}_grp.
-    Returns (group, posed_mesh, deform_jnt, zero_jnt).
-    """
-    # 1. Regenerate target → live mesh connected to blendShape target
-    regen_mesh = cmds.sculptTarget(bs_node, e=True, target=logical_index, regenerate=True)
-    regen_mesh = regen_mesh if isinstance(regen_mesh, str) else regen_mesh[0]
-    cmds.rename(regen_mesh, f"{target_name}_regenerated")
-    posed_mesh = f"{target_name}_regenerated"
-
-    # 2. Compute normalized delta magnitudes directly from regen pnts[]
-    n_verts    = cmds.polyEvaluate(posed_mesh, vertex=True)
-    magnitudes = {}
-    for i in range(n_verts):
-        dx = cmds.getAttr(f"{posed_mesh}.pnts[{i}].pntx")
-        dy = cmds.getAttr(f"{posed_mesh}.pnts[{i}].pnty")
-        dz = cmds.getAttr(f"{posed_mesh}.pnts[{i}].pntz")
-        mag = math.sqrt(dx*dx + dy*dy + dz*dz)
-        if mag > 1e-6:
-            magnitudes[i] = mag
-
-    max_mag = max(magnitudes.values()) if magnitudes else 1.0
-
-    # 3. Compute bbox center of delta vertices in world space.
-    #    If the shape is empty (no deltas), fall back to the mesh bbox center
-    #    so the joint is still placed at a meaningful position.
-    posed_shapes = cmds.listRelatives(posed_mesh, shapes=True, type="mesh") or [posed_mesh]
-    posed_shape  = posed_shapes[0]
-    xs, ys, zs   = [], [], []
+    # ── Compute bbox center of delta vertices (for cluster handle position) ──
+    wshapes = cmds.listRelatives(working_mesh, shapes=True, type="mesh") or [working_mesh]
+    wshape  = wshapes[0]
+    xs, ys, zs = [], [], []
     for vi in magnitudes:
-        pos = cmds.pointPosition(f"{posed_shape}.vtx[{vi}]", world=True)
+        pos = cmds.pointPosition(f"{wshape}.vtx[{vi}]", world=True)
         xs.append(pos[0]); ys.append(pos[1]); zs.append(pos[2])
 
     if xs:
@@ -1780,8 +1828,111 @@ def create_delta_joint(bs_node, logical_index, target_name):
             (min(zs) + max(zs)) * 0.5,
         )
     else:
-        # Empty shape — place joint at the overall mesh bbox center
-        bbox = cmds.exactWorldBoundingBox(posed_mesh)   # xmin xmax ymin ymax zmin zmax
+        bbox = cmds.exactWorldBoundingBox(working_mesh)
+        center = (
+            (bbox[0] + bbox[3]) * 0.5,
+            (bbox[1] + bbox[4]) * 0.5,
+            (bbox[2] + bbox[5]) * 0.5,
+        )
+
+    rig_name = f"{target_name}_Copy" if neutral else target_name
+
+    # ── Create cluster ───────────────────────────────────────────────────────
+    cluster_node, cluster_handle = cmds.cluster(working_mesh, name=f"{rig_name}_cluster")
+
+    # ── Set weights — normalized magnitudes ─────────────────────────────────
+    weights_list = [magnitudes.get(i, 0.0) / max_mag for i in range(n_verts)]
+    cmds.setAttr(
+        f"{cluster_node}.weightList[0].weights[0:{n_verts - 1}]",
+        *weights_list, size=n_verts
+    )
+
+    # ── Reposition cluster handle at delta center (no deformation:
+    #    move handle then update bindPreMatrix → net transform = identity) ───
+    cx, cy, cz = center
+    cmds.xform(cluster_handle, ws=True, t=[cx, cy, cz])
+    new_inv = cmds.getAttr(f"{cluster_handle}.worldInverseMatrix[0]")
+    cmds.setAttr(f"{cluster_node}.bindPreMatrix", new_inv, type="matrix")
+
+    mode_label = "neutral (_Copy)" if neutral else "posed"
+    grp = cmds.group(working_mesh, cluster_handle, name=f"{rig_name}_deltaCluster_grp")
+    print(f"  ✓ Delta cluster on {mode_label} mesh : {cluster_handle} → {grp}")
+    print(f"    Delete '{working_mesh}' when done to bake back into blendShape.")
+    return grp, working_mesh, cluster_handle
+
+
+def create_delta_joint(bs_node, logical_index, target_name,
+                       neutral=False, _precomputed=None):
+    """
+    Creates a joint rig driven by the delta magnitudes of the target.
+      - {name}_jnt      : weights = normalized delta magnitudes
+      - {name}_zero_jnt : absorbs remaining weights (1 - w)
+    Joint is placed at the bbox center of delta vertices.
+
+    neutral=False, _precomputed=None  — single target, posed mesh.
+    neutral=False, _precomputed=(mags, n)  — multi-target combined, posed mesh.
+    neutral=True, _precomputed=None  — single target: creates '{target_name}_Copy'
+        target; its neutral regen mesh stays live for bake-back.
+    neutral=True, _precomputed=(mags, n)  — multi-target combined, neutral mesh.
+
+    Returns (group, working_mesh, deform_jnt, zero_jnt).
+    """
+    saved = _save_shape_editor_selection()
+    try:
+        if neutral:
+            if _precomputed is None:
+                magnitudes, n_verts = _collect_magnitudes(bs_node, logical_index)
+            else:
+                magnitudes, n_verts = _precomputed
+
+            base_mesh = get_base_mesh(bs_node)
+            copy_name = f"{target_name}_Copy"
+            copy_idx  = _add_empty_bs_target(bs_node, base_mesh, logical_index, copy_name)
+
+            regen = cmds.sculptTarget(bs_node, e=True, target=copy_idx, regenerate=True)
+            regen = regen if isinstance(regen, str) else regen[0]
+            cmds.rename(regen, f"{copy_name}_regenerated")
+            working_mesh = f"{copy_name}_regenerated"
+        else:
+            regen = cmds.sculptTarget(bs_node, e=True, target=logical_index, regenerate=True)
+            regen = regen if isinstance(regen, str) else regen[0]
+            cmds.rename(regen, f"{target_name}_regenerated")
+            working_mesh = f"{target_name}_regenerated"
+
+            if _precomputed is None:
+                n_verts = cmds.polyEvaluate(working_mesh, vertex=True)
+                magnitudes = {}
+                for i in range(n_verts):
+                    dx = cmds.getAttr(f"{working_mesh}.pnts[{i}].pntx")
+                    dy = cmds.getAttr(f"{working_mesh}.pnts[{i}].pnty")
+                    dz = cmds.getAttr(f"{working_mesh}.pnts[{i}].pntz")
+                    mag = math.sqrt(dx*dx + dy*dy + dz*dz)
+                    if mag > 1e-6:
+                        magnitudes[i] = mag
+            else:
+                magnitudes, n_verts = _precomputed
+    finally:
+        _restore_shape_editor_selection(saved)
+
+    max_mag = max(magnitudes.values()) if magnitudes else 1.0
+    rig_name = f"{target_name}_Copy" if neutral else target_name
+
+    # ── Compute bbox center of delta vertices ────────────────────────────────
+    wshapes    = cmds.listRelatives(working_mesh, shapes=True, type="mesh") or [working_mesh]
+    wshape     = wshapes[0]
+    xs, ys, zs = [], [], []
+    for vi in magnitudes:
+        pos = cmds.pointPosition(f"{wshape}.vtx[{vi}]", world=True)
+        xs.append(pos[0]); ys.append(pos[1]); zs.append(pos[2])
+
+    if xs:
+        center = (
+            (min(xs) + max(xs)) * 0.5,
+            (min(ys) + max(ys)) * 0.5,
+            (min(zs) + max(zs)) * 0.5,
+        )
+    else:
+        bbox = cmds.exactWorldBoundingBox(working_mesh)
         center = (
             (bbox[0] + bbox[3]) * 0.5,
             (bbox[1] + bbox[4]) * 0.5,
@@ -1789,27 +1940,24 @@ def create_delta_joint(bs_node, logical_index, target_name):
         )
         print(f"  ⚠ '{target_name}' has no deltas — joint placed at mesh bbox center.")
 
-    # 4. Create joints
+    # ── Create joints ────────────────────────────────────────────────────────
     cmds.select(clear=True)
-    deform_jnt = cmds.joint(name=f"{target_name}_jnt", position=center)
+    deform_jnt = cmds.joint(name=f"{rig_name}_jnt", position=center)
     cmds.select(clear=True)
-    zero_jnt   = cmds.joint(name=f"{target_name}_zero_jnt")  # stays at world origin
+    zero_jnt   = cmds.joint(name=f"{rig_name}_zero_jnt")
     cmds.select(clear=True)
 
-    # 5. Create skinCluster
+    # ── Create skinCluster ───────────────────────────────────────────────────
     skin_node = cmds.skinCluster(
-        deform_jnt, zero_jnt, posed_mesh,
-        name=f"{target_name}_skinCluster",
+        deform_jnt, zero_jnt, working_mesh,
+        name=f"{rig_name}_skinCluster",
         toSelectedBones=True,
         bindMethod=0,
         skinMethod=0,
         normalizeWeights=1
     )[0]
 
-    # 6. Write weights via direct setAttr — faster than skinPercent loop
-    # Disable normalization while writing to avoid Maya redistributing mid-loop.
-    # If the shape is empty (no deltas), all weights go to zero_jnt (index 1)
-    # so the user can paint custom weights from scratch.
+    # ── Write weights — disable normalization mid-loop ───────────────────────
     cmds.setAttr(f"{skin_node}.normalizeWeights", 0)
     for vi in range(n_verts):
         w = magnitudes.get(vi, 0.0) / max_mag if magnitudes else 0.0
@@ -1817,12 +1965,13 @@ def create_delta_joint(bs_node, logical_index, target_name):
         cmds.setAttr(f"{skin_node}.weightList[{vi}].weights[1]", 1.0 - w)
     cmds.setAttr(f"{skin_node}.normalizeWeights", 1)
 
-    # 7. Group everything
-    grp = cmds.group(posed_mesh, deform_jnt, zero_jnt, name=f"{target_name}_deltaJoint_grp")
+    # ── Group everything ─────────────────────────────────────────────────────
+    mode_label = "neutral (_Copy)" if neutral else "posed"
+    grp = cmds.group(working_mesh, deform_jnt, zero_jnt, name=f"{rig_name}_deltaJoint_grp")
 
-    print(f"  ✓ Delta joint on regen mesh : {deform_jnt} / {zero_jnt} → {grp}")
-    print(f"    Delete '{posed_mesh}' when done to bake back into blendShape.")
-    return grp, posed_mesh, deform_jnt, zero_jnt
+    print(f"  ✓ Delta joint on {mode_label} mesh : {deform_jnt} / {zero_jnt} → {grp}")
+    print(f"    Delete '{working_mesh}' when done to bake back into blendShape.")
+    return grp, working_mesh, deform_jnt, zero_jnt
 
 
 import re as _re
