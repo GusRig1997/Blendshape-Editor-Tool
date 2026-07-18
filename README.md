@@ -43,8 +43,12 @@ curve-based lip/mouth wire rig.
 See [versions.md](versions.md) for the full changelog.
 
 **v.05.01**
-- Wrap Extract: multi-mesh support — master mesh + any number of receivers in one pass; auto-creates BS nodes; prunes near-zero targets in auto mode
-- Joints Setup tool: joint-based lip rig with baked motionPath orientation and skin bind
+- Shelf restructuré : 4×2 sculpt brushes, nouveau grouping avec séparateurs espacés
+- Section Actions supprimée : Create Opposite dans le shelf (clic droit axe), Apply Moves + Bake Deformers dans Modify Deltas
+- Section Secondary Meshes supprimée : Extract Wrap/Only dans Tools → Wrap Setup, Connect A→B dans le shelf
+- Tool Settings : collapsible inline (style Edge Loop Options) dans un QGroupBox au-dessus du shelf
+- Dialogs de confirmation sur Nullify et Swap sans sélection vertex
+- Smooth remplace Amplify comme brush de sculpt ; Falloff en mode Surface par défaut
 - Modify Deltas: Add / Sub / Swap delta operations
 - Modify Deltas: Opacity slider extended to Hammer and Average
 - Tools Shelf: persistent Strength / Falloff Type / Symmetry settings bar
