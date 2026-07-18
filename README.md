@@ -42,7 +42,7 @@ curve-based lip/mouth wire rig.
 
 See [versions.md](versions.md) for the full changelog.
 
-**v.05.00**
+**v.05.01**
 - Wrap Extract: multi-mesh support — master mesh + any number of receivers in one pass; auto-creates BS nodes; prunes near-zero targets in auto mode
 - Joints Setup tool: joint-based lip rig with baked motionPath orientation and skin bind
 - Modify Deltas: Add / Sub / Swap delta operations

@@ -1,6 +1,6 @@
 # Changelog — Blendshape Editor Tool
 
-## v.05.00
+## v.05.01
 
 **Wrap Extract — multi-mesh support**
 
