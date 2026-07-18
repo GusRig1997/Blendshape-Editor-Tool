@@ -24,6 +24,24 @@ class _DblClickFilter(QtCore.QObject):
         return super().eventFilter(obj, event)
 
 
+class _GlobalMouseReleaseFilter(QtCore.QObject):
+    """App-level event filter that fires a callback shortly after any mouse release.
+    Used to detect Shape Editor selection changes, which have no dedicated Maya event."""
+    def __init__(self, callback, parent=None):
+        super().__init__(parent)
+        self._cb = callback
+        self._timer = QtCore.QTimer()
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(100)
+        self._timer.timeout.connect(self._cb)
+
+    def eventFilter(self, obj, event):
+        if event.type() == QtCore.QEvent.MouseButtonRelease:
+            if not self._timer.isActive():
+                self._timer.start()
+        return False
+
+
 def _user_naming_prefs_path():
     return os.path.join(cmds.internalVar(userPrefDir=True),
                         "blendshape_editor_naming.json")
@@ -2323,7 +2341,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
 class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     TOOL_NAME = "BlendshapeEditorUI"
-    VERSION   = "v.05.01"
+    VERSION   = "v.05.02"
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -2344,9 +2362,18 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._nom_side_left   = "L"
         self._nom_side_center = "C"
         self._nom_side_right  = "R"
+        self._sel_changed_job = None
+        self._cached_phantom_count = 0
         self._build_ui()
         self.resize(_SHELF_W, _DEFAULT_H)
+        self._mouse_filter = _GlobalMouseReleaseFilter(self._refresh_top_status, self)
+        QtWidgets.QApplication.instance().installEventFilter(self._mouse_filter)
+        self._refresh_top_status(check_phantoms=True)
 
+
+    def closeEvent(self, event):
+        QtWidgets.QApplication.instance().removeEventFilter(self._mouse_filter)
+        super().closeEvent(event)
 
     def _icon_btn(self, icon_path, label, tooltip=""):
         """
@@ -2621,7 +2648,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         inner = QtWidgets.QWidget()
         root = QtWidgets.QVBoxLayout(inner)
         root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(6)
+        root.setSpacing(10)
 
         # ── Maya Tools Shelf ──────────────────────────────────────────────
         shelf_frame = QtWidgets.QFrame()
@@ -2858,6 +2885,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_ts.addLayout(strength_row)
 
         grp_ts_box_lay.addWidget(ts_widget)
+        # ── Top status line ────────────────────────────────────────────────
+        self.lbl_top_status = QtWidgets.QLabel("— no selection —")
+        self.lbl_top_status.setAlignment(QtCore.Qt.AlignCenter)
+        self.lbl_top_status.setStyleSheet("color: #666666; font-size: 11px; padding-bottom: 8px;")
+        shelf_wrapper_lay.addWidget(self.lbl_top_status)
+
         shelf_wrapper_lay.addWidget(grp_ts_box)
         shelf_wrapper_lay.addWidget(shelf_frame)
 
@@ -4010,17 +4043,17 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Status + Version pinned below scroll — always visible ──────────
         self.lbl_status = QtWidgets.QLabel("")
-        self.lbl_status.setAlignment(QtCore.Qt.AlignCenter)
+        self.lbl_status.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
 
         lbl_version = QtWidgets.QLabel(self.VERSION)
-        lbl_version.setAlignment(QtCore.Qt.AlignRight)
+        lbl_version.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         lbl_version.setStyleSheet("color: #7a7a7a; font-size: 10px;")
 
         bottom_wrapper = QtWidgets.QWidget()
-        bottom_lay = QtWidgets.QVBoxLayout(bottom_wrapper)
+        bottom_lay = QtWidgets.QHBoxLayout(bottom_wrapper)
         bottom_lay.setContentsMargins(8, 2, 8, 4)
-        bottom_lay.setSpacing(0)
-        bottom_lay.addWidget(self.lbl_status)
+        bottom_lay.setSpacing(8)
+        bottom_lay.addWidget(self.lbl_status, 1)
         bottom_lay.addWidget(lbl_version)
         outer_layout.addWidget(bottom_wrapper)
 
@@ -4644,6 +4677,48 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.lbl_status.setText(msg)
         color = "#e05252" if error else ("#ffffff" if neutral else "#7ec87e")
         self.lbl_status.setStyleSheet(f"color: {color};")
+        self._refresh_top_status(check_phantoms=True)
+
+    def _refresh_top_status(self, check_phantoms=False):
+        try:
+            results = get_selected_targets()  # [(bs_node, idx), ...]
+            if not results:
+                self.lbl_top_status.setText("— no selection —")
+                self.lbl_top_status.setStyleSheet("color: #666666; font-size: 11px; padding-bottom: 8px;")
+                self._cached_phantom_count = 0
+                return
+
+            bs_node = results[0][0]
+            first_idx = results[0][1]
+            n_selected = len(results)
+
+            indices = cmds.getAttr(f"{bs_node}.weight", multiIndices=True) or []
+            n_total = len(indices)
+
+            if check_phantoms:
+                self._cached_phantom_count = sum(
+                    1 for i in indices
+                    if cmds.aliasAttr(f"{bs_node}.weight[{i}]", query=True) is None
+                )
+
+            first_name = cmds.aliasAttr(f"{bs_node}.weight[{first_idx}]", query=True) or "?"
+            if n_selected == 1:
+                sel_str = f"{bs_node}  ·  {first_name}"
+            else:
+                sel_str = f"{bs_node}  ·  {first_name}  [...]  {n_selected} of {n_total} selected"
+
+            parts = [sel_str]
+            if self._cached_phantom_count:
+                parts.append(
+                    f"{self._cached_phantom_count} phantom slot"
+                    f"{'s' if self._cached_phantom_count > 1 else ''}"
+                )
+
+            self.lbl_top_status.setText("  ·  ".join(parts))
+            color = "#c8a030" if self._cached_phantom_count else "#aaaaaa"
+            self.lbl_top_status.setStyleSheet(f"color: {color}; font-size: 11px; padding-bottom: 8px;")
+        except Exception:
+            pass
 
     def _get_targets_or_warn(self):
         results = get_selected_targets()
