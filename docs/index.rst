@@ -19,8 +19,6 @@ curve-based lip/mouth wire rig.
    sections/shelf
    sections/nomenclature
    sections/split
-   sections/secondary_meshes
-   sections/actions
    sections/modify_deltas
    sections/wire_setup
 

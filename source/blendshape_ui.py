@@ -3431,7 +3431,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             f"{_icons_dir}/sub_delta.png", "Sub", _tt_sub)
         self.btn_delta_sub.clicked.connect(self._run_delta_sub)
         _w_dswap, self.btn_delta_swap = self._icon_btn(
-            f"{_icons_dir}/swap_delta.png", "Swap", _tt_xfer)
+            f"{_icons_dir}/transfert_delta.png", "Transfer Delta", _tt_xfer)
         self.btn_delta_swap.clicked.connect(self._run_delta_swap)
 
         row_delta_combine = QtWidgets.QHBoxLayout()
@@ -3712,7 +3712,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         grp_mod.add_compact_action(
             f"{_icons_dir}/sub_delta.png",     "Sub",                   self._run_delta_sub)
         grp_mod.add_compact_action(
-            f"{_icons_dir}/swap_delta.png",    "Swap",                  self._run_delta_swap)
+            f"{_icons_dir}/transfert_delta.png", "Transfer Delta",       self._run_delta_swap)
         grp_mod.add_compact_action(
             f"{_icons_dir}/normal_push.png",   "Normal Push",           self._run_push_normals)
         grp_mod.add_compact_action(

@@ -16,25 +16,30 @@ The interface is divided into a fixed top shelf and a scrollable body.
 
    * - Area
      - Description
-   * - **Maya Tools Shelf** *(top, fixed — 2 rows)*
-     - Row 1: sculpt brushes, Shape Editor, Smooth Target, Erase, Delta View.
-       Row 2: Relax / Pinch / Amplify brushes, Add Target, Clean BS Node,
-       Reset All Targets to 0.
+   * - **Top status line** *(fixed)*
+     - Displays the active blendShape node, selected target name and count,
+       and a phantom-slot warning when empty slots are detected.
+   * - **Tool Settings** *(collapsible, above shelf)*
+     - Strength, Falloff and Symmetry options shared by all sculpt brushes.
+   * - **Maya Tools Shelf** *(fixed — 2 rows)*
+     - Row 1: Grab / Flatten / Bulge / SmoothTarget, Shape Editor, Clean BS
+       Node, Reset All Targets, Exit Delta View.
+       Row 2: Smooth / Relax / Pinch / Erase, Add Target, Create Opposite
+       Target, Connect A→B, Delta View.
    * - **Nomenclature** *(collapsible)*
-     - Naming convention setup, target rename utilities, and Check Shapes
+     - Naming convention setup, target rename utilities, and Check Shapes.
    * - **Split** *(collapsible, open by default)*
-     - Radial / 1D split of targets using spatial locators; Edge Loop Split
-   * - **Secondary Meshes** *(collapsible)*
-     - Extract and connect targets on secondary meshes via wrap deformers
-   * - **Actions** *(collapsible, open by default)*
-     - Duplicate, Mirror, Flip, Create Opposite Target, Apply Moves,
-       Bake Deformers
+     - Radial / 1D split of targets using spatial locators; Edge Loop Split.
    * - **Modify Deltas** *(collapsible)*
-     - Post-sculpt delta operations (multiply, push, smooth, prune, etc.)
+     - Post-sculpt delta operations: multiply, add/sub/swap, normal push,
+       smooth, relax, hammer, average, copy/paste, prune, apply moves,
+       bake deformers, delta cluster and delta joint helpers.
    * - **Tools** *(collapsible)*
-     - Wire Setup — curve-based lip/mouth deformation rig
+     - Wrap Setup — extract wrap targets onto secondary meshes.
+       Wire Setup — curve-based lip/mouth deformation rig.
+       Joints Setup — joint-based lip rig from an edge loop.
    * - **Status bar** *(bottom, fixed)*
-     - Real-time feedback for every operation (green = success, red = error)
+     - Real-time feedback for every operation (green = success, red = error).
 
 Key Features
 ------------
@@ -49,10 +54,12 @@ Key Features
 - **Check Shapes** — compare existing targets against an external JSON
   reference list, with a *Match Existing to List* tool that suggests
   token-based renames including missing side prefixes.
-- **Secondary mesh pipeline** — extract wrap targets, extract-only, and
-  connect matching targets between two meshes.
-- **Full delta editing suite** — multiply, normal push, Laplacian smooth,
-  relax, copy/paste, prune, cluster, and joint helpers.
+- **Secondary mesh pipeline** — extract wrap targets onto one or more
+  receiver meshes in a single pass; auto-creates blendShape nodes; connects
+  matching target weights automatically. Accessible from the Tools panel.
+- **Full delta editing suite** — multiply, add/sub/swap, normal push,
+  Laplacian smooth, relax, hammer, average, copy/paste, prune, apply moves,
+  bake deformers, cluster and joint helpers.
 - **Wire Setup** — build a curve-based lip rig from an edge loop selection,
   sculpt each shape curve, and bake results back as blendShape targets.
 - **Undo safety** — every operation is wrapped in a single Maya undo chunk
