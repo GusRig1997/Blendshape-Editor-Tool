@@ -2,49 +2,49 @@
 
 ## v.05.01
 
-**UI — Refonte du shelf**
+**UI — Shelf restructure**
 
-- Sculpt brushes reorganisés en grille 4×2 : Grab / Flatten / Bulge / SmoothTarget (ligne 1), Smooth / Relax / Pinch / Erase (ligne 2)
-- Smooth remplace Amplify comme quatrième brush de sculpt
-- Nouveau grouping avec séparateurs visuels espacés symétriquement (`spacing=8`)
-- Ligne 1 : 4 sculpt | Shape Editor / Clean BS Node / Reset All Targets | Exit Delta View
-- Ligne 2 : 4 sculpt | Add Target / Create Opposite / Connect A→B | Delta View
+- Sculpt brushes reorganized into a 4×2 grid: Grab / Flatten / Bulge / SmoothTarget (row 1), Smooth / Relax / Pinch / Erase (row 2)
+- Smooth replaces Amplify as the fourth row-2 sculpt brush
+- Visual separators with symmetric spacing (`spacing=8`) between button groups
+- Row 1: 4 sculpt | Shape Editor / Clean BS Node / Reset All Targets | Exit Delta View
+- Row 2: 4 sculpt | Add Target / Create Opposite / Connect A→B | Delta View
 
-**UI — Suppression de la section Actions**
+**UI — Actions section removed**
 
-- Create Opposite déplacé dans le shelf (ligne 2) — clic droit pour choisir l'axe (Object X/Y/Z, Topology)
-- Apply Moves et Bake Deformers déplacés dans la section Modify Deltas
-- Les boutons Duplicate, Mirror et Flip retirés de l'UI principale
+- Create Opposite moved to shelf row 2 — right-click to pick axis (Object X/Y/Z, Topology)
+- Apply Moves and Bake Deformers moved into the Modify Deltas section
+- Duplicate, Mirror and Flip buttons removed from the main UI
 
-**UI — Suppression de la section Secondary Meshes**
+**UI — Secondary Meshes section removed**
 
-- Extract Wrap et Extract Only déplacés dans un QGroupBox "Wrap Setup" en tête du panneau Tools
-- Connect A→B déplacé dans le shelf (ligne 2)
+- Extract Wrap and Extract Only moved into a "Wrap Setup" QGroupBox at the top of the Tools panel
+- Connect A→B moved to shelf row 2
 
 **UI — Tool Settings**
 
-- Nouveau bloc collapsible style "Edge Loop Options" (QToolButton flèche + widget caché) dans un QGroupBox, au-dessus du shelf
-- Regroupe Strength, Radius, Falloff et Symmetry
+- New inline collapsible block (Edge Loop Options style: arrow QToolButton + hidden widget) wrapped in a QGroupBox, placed above the shelf
+- Groups Strength, Radius, Falloff and Symmetry controls
 
 **UI — Falloff**
 
-- Label raccourci : "Falloff Type" → "Falloff"
-- Mode par défaut : Surface (index 1)
+- Label shortened: "Falloff Type" → "Falloff"
+- Default mode: Surface (index 1)
 
 **UI — Strength**
 
-- Valeur par défaut : 50
-- Décimales : 3
-- Boutons +/− retirés (`NoButtons`)
+- Default value: 50
+- Decimals: 3
+- Spin buttons removed (`NoButtons`)
 
 **UI — Radius**
 
-- Boutons +/− retirés (`NoButtons`)
+- Spin buttons removed (`NoButtons`)
 
-**Sécurité — Dialogs de confirmation**
+**Safety — Confirmation dialogs**
 
-- Nullify : dialog d'avertissement si aucun vertex sélectionné, avec liste des targets affectées et boutons Continue / Cancel (Cancel par défaut)
-- Swap : même dialog si aucun vertex sélectionné
+- Nullify: warning dialog when no vertices are selected, listing affected targets, with Continue / Cancel buttons (Cancel as default)
+- Swap: same dialog when no vertices are selected
 
 ---
 

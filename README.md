@@ -43,12 +43,12 @@ curve-based lip/mouth wire rig.
 See [versions.md](versions.md) for the full changelog.
 
 **v.05.01**
-- Shelf restructuré : 4×2 sculpt brushes, nouveau grouping avec séparateurs espacés
-- Section Actions supprimée : Create Opposite dans le shelf (clic droit axe), Apply Moves + Bake Deformers dans Modify Deltas
-- Section Secondary Meshes supprimée : Extract Wrap/Only dans Tools → Wrap Setup, Connect A→B dans le shelf
-- Tool Settings : collapsible inline (style Edge Loop Options) dans un QGroupBox au-dessus du shelf
-- Dialogs de confirmation sur Nullify et Swap sans sélection vertex
-- Smooth remplace Amplify comme brush de sculpt ; Falloff en mode Surface par défaut
+- Shelf restructured: 4×2 sculpt brush grid, new button grouping with spaced separators
+- Actions section removed: Create Opposite on shelf (right-click for axis), Apply Moves + Bake Deformers moved to Modify Deltas
+- Secondary Meshes section removed: Extract Wrap/Only in Tools → Wrap Setup, Connect A→B on shelf
+- Tool Settings: inline collapsible (Edge Loop Options style) in a QGroupBox above the shelf
+- Confirmation dialogs on Nullify and Swap when no vertices are selected
+- Smooth replaces Amplify as sculpt brush; Falloff defaults to Surface
 - Modify Deltas: Add / Sub / Swap delta operations
 - Modify Deltas: Opacity slider extended to Hammer and Average
 - Tools Shelf: persistent Strength / Falloff Type / Symmetry settings bar
