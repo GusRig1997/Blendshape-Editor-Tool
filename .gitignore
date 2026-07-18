@@ -1,7 +1,7 @@
-  .claude/
-  __pycache__/
-  *.pyc
-  docs/_build/
-  .idea/
-  /#debug/
-  resources/icons.psd
+.claude/
+__pycache__/
+*.pyc
+docs/_build/
+.idea/
+#debug/
+resources/icons.psd
