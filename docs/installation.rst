@@ -4,7 +4,8 @@ Installation
 Requirements
 ------------
 
-- Autodesk Maya **2022 or later** (PySide6 / shiboken6 required)
+- Autodesk Maya **2022 or later** (tested up to Maya 2026)
+- PySide6 / shiboken6 — bundled with Maya 2022+
 - No external Python packages — uses Maya's bundled interpreter
 
 Drag & Drop Installer
@@ -33,3 +34,4 @@ It can be docked to any panel area or left floating.
 .. note::
    If the tool is already open when you click the shelf button again,
    it will be brought to the front rather than opening a second instance.
+   The panel position and dock state are preserved across Maya sessions.

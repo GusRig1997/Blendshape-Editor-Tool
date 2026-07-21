@@ -1,7 +1,7 @@
 Nomenclature
 ============
 
-The **Nomenclature** section (collapsed by default) contains two independent
+The **Nomenclature** section (closed by default) contains two independent
 tools:
 
 - **Naming Convention** — configure how the tool auto-names generated targets.
@@ -206,16 +206,17 @@ name is displayed with a status indicator:
 Match Existing to List
 ^^^^^^^^^^^^^^^^^^^^^^
 
-Click **Match existing to List** to automatically suggest renames for targets
-whose names do not match the reference list exactly but are close enough to
-identify.
+Click **Match existing to List** to run a two-step workflow that helps
+synchronise the blendShape node and the reference JSON.
 
-The tool compares targets using token sets (order-independent), so
-``up_brow_L`` would match ``L_brow_up`` in the reference list.
+**Step 1 — Rename Suggestions**
+
+The tool compares existing targets against the reference list using token
+sets (order-independent), so ``up_brow_L`` would match ``L_brow_up``.
 It also detects targets that are missing only a side prefix (``C_``, ``L_``,
 or ``R_``) and proposes adding it.
 
-A **Rename Suggestions** dialog opens with a table showing:
+If any renaming suggestions are found, a **Rename Suggestions** dialog opens:
 
 .. list-table::
    :widths: 30 30 40
@@ -237,3 +238,33 @@ A **Rename Suggestions** dialog opens with a table showing:
 Use **Check All** / **Uncheck All** to select or deselect all rows, then
 **Apply Checked** to execute the renames. Renames are performed via
 ``aliasAttr`` and are fully undoable.
+
+**Step 2 — Add to List**
+
+After the rename step (or immediately if no renames are needed), the tool
+identifies blendShape targets that are not present in the reference JSON
+at all and cannot be matched. If any are found, an **Add to List** dialog
+opens:
+
+.. list-table::
+   :widths: 25 75
+   :header-rows: 1
+
+   * - Control
+     - Description
+   * - **Shape list** *(checkboxes)*
+     - Lists every unmatched target name. All items are checked by default.
+       Uncheck any shape you do not want to add to the reference.
+   * - **Group** dropdown
+     - Selects the category group in the reference list where the shapes will
+       be added. Shows all groups currently present in the loaded JSON.
+   * - **New…** button
+     - Opens a prompt to create a new group and adds it to the dropdown.
+
+Click **OK** to append the selected shapes to the chosen group and save the
+updated list to the current JSON file.
+
+.. note::
+   The Add to List dialog modifies the **in-memory** reference list shown
+   in the Check Shapes dialog. Use **File → Save…** inside Check Shapes to
+   persist the changes to disk.

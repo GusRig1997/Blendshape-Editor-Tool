@@ -39,6 +39,22 @@ Step-by-step Workflow
 Controls
 --------
 
+Shelf Buttons
+^^^^^^^^^^^^^
+
+Two paint-utility buttons sit at the top of the Wire Setup group:
+
+.. list-table::
+   :widths: 30 70
+   :header-rows: 1
+
+   * - Button
+     - Description
+   * - **Paint Wire Weights**
+     - Opens Maya's Paint Weights tool for the wire deformer.
+   * - **Mirror Wire Weights (YZ)**
+     - Mirrors wire deformer weights across the YZ plane.
+
 Base Mesh
 ^^^^^^^^^
 
