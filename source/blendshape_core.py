@@ -701,6 +701,40 @@ def bake_deformers_to_targets(bs_node, base_mesh, logical_indices):
         restore_all_bs_weights(bs_node, bs_state)
 
 
+def _source_is_in_subgroup(bs_node, source_index):
+    """
+    Returns True if source_index is inside a sub-group in the targetDirectory tree
+    (i.e. NOT at the root level).
+
+    When source IS in a sub-group, callers must NOT call _insert_indices_after —
+    the Shape Editor maintains its own in-memory directory state and our direct
+    childIndices writes would diverge from it, causing targets to be duplicated
+    across directories or orphaned when the user later re-groups them in the SE.
+    """
+    dir_indices = cmds.getAttr(f"{bs_node}.targetDirectory", multiIndices=True) or []
+
+    # Find which directory hosts source_index
+    host_dir = None
+    for d in dir_indices:
+        children = cmds.getAttr(f"{bs_node}.targetDirectory[{d}].childIndices") or []
+        if source_index in children:
+            host_dir = d
+            break
+
+    if host_dir is None:
+        return False  # Not in any directory — root / flat list
+
+    # If host_dir is referenced as a sub-group (negative value) by another directory,
+    # the source is nested and not at root level.
+    neg_ref = -host_dir
+    for d in dir_indices:
+        children = cmds.getAttr(f"{bs_node}.targetDirectory[{d}].childIndices") or []
+        if neg_ref in children:
+            return True  # host_dir is a sub-group
+
+    return False  # host_dir is the root directory
+
+
 def _insert_indices_after(bs_node, source_index, new_indices, source_is_directory=False):
 
     key = -source_index if source_is_directory else source_index
@@ -768,6 +802,9 @@ def zero_all_bs_weights(bs_node):
         attr = f"{bs_node}.w[{i}]"
         value = cmds.getAttr(attr)
         connections = cmds.listConnections(attr, source=True, destination=False, plugs=True) or []
+        # Combination shape connections: skip entirely — disconnecting them destroys the target slot
+        if any(cmds.nodeType(s.split(".")[0]) == "combinationShape" for s in connections):
+            continue
         for src in connections:
             cmds.disconnectAttr(src, attr)
         if not cmds.getAttr(attr, lock=True):
@@ -781,6 +818,8 @@ def restore_all_bs_weights(bs_node, state):
     Restores blendShape weights and connections saved by zero_all_bs_weights().
     Connected attributes are reconnected (the controller value then drives the weight again).
     Free attributes are set back to their saved value.
+    Slots that were deleted during the operation (no alias) are skipped — their
+    connections have already been re-routed to the new slot by the caller.
     """
     for i, info in state.items():
         attr = f"{bs_node}.w[{i}]"
@@ -794,39 +833,38 @@ def restore_all_bs_weights(bs_node, state):
 
 def purge_empty_bs_slots(bs_node):
     """
-    Removes phantom target slots from a blendShape node and cleans up
+    Removes phantom and empty target slots from a blendShape node and cleans up
     stale targetDirectory references.
 
-    A slot is phantom when weight[N] exists but has no alias — it shows up as
-    'w[N]' in the Shape Editor with no deformation data.
-
-    Per phantom slot:
+    Pass 1 — Phantom slots (no alias):
+      A slot where weight[N] exists but has no alias.  Shows up as 'w[N]' in the
+      Shape Editor with no name.  Common after Maya .shp re-import.
       - If inputTargetGroup[N] also exists → blendShapeDeleteTargetGroup (full removal)
       - Otherwise                          → removeMultiInstance on w[N] only
 
-    After purging, stale childIndices entries in targetDirectory pointing to
-    deleted slots are removed so the Shape Editor display stays consistent.
+    Pass 2 — Empty named slots (alias present but no inputTargetGroup or empty ITI):
+      Slots that appear in the Shape Editor with a name but carry no deformation data.
+      Created for example by .shp imports that register a weight entry without geometry.
+      - Removed via blendShapeDeleteTargetGroup if ITG exists, else removeMultiInstance.
+
+    After purging, stale childIndices entries in targetDirectory are cleaned up.
 
     Called automatically before every new target creation via duplicate_target().
-    Returns the number of phantom slots removed.
+    Returns the total number of slots removed.
     """
     purged = 0
-    weight_indices = sorted(cmds.getAttr(f"{bs_node}.w", multiIndices=True) or [])
 
-    for idx in weight_indices:
-        # Query the alias for this specific slot — the most reliable approach,
-        # avoids any short-name / long-name ambiguity in the flat aliasAttr list.
+    # ── Pass 1: phantom slots (no alias) ──────────────────────────────────────
+    for idx in sorted(cmds.getAttr(f"{bs_node}.w", multiIndices=True) or []):
         alias = cmds.aliasAttr(f"{bs_node}.w[{idx}]", q=True)
         if alias:
-            continue  # Valid named target — leave it alone
+            continue  # named — skip for now, handled in pass 2
 
-        # No alias → phantom slot
         try:
             mel.eval(f"blendShapeDeleteTargetGroup {bs_node} {idx};")
             print(f"  purged phantom slot [{idx}] on {bs_node}")
             purged += 1
         except Exception:
-            # blendShapeDeleteTargetGroup failed (no ITG) — remove weight directly
             try:
                 cmds.removeMultiInstance(f"{bs_node}.w[{idx}]", b=True)
                 print(f"  removed orphaned weight [{idx}] on {bs_node}")
@@ -834,13 +872,43 @@ def purge_empty_bs_slots(bs_node):
             except Exception as e:
                 print(f"  could not purge slot [{idx}] on {bs_node}: {e}")
 
-    # Remove stale targetDirectory references pointing to now-deleted slots
+    # ── Pass 2: empty named slots (alias present, no usable ITG data) ─────────
+    itg_indices = set(
+        cmds.getAttr(f"{bs_node}.inputTarget[0].inputTargetGroup", multiIndices=True) or []
+    )
+    for idx in sorted(cmds.getAttr(f"{bs_node}.w", multiIndices=True) or []):
+        alias = cmds.aliasAttr(f"{bs_node}.w[{idx}]", q=True)
+        if not alias:
+            continue  # still phantom (pass 1 couldn't remove it) — skip
+
+        if idx not in itg_indices:
+            # Named weight entry with no inputTargetGroup at all
+            try:
+                cmds.removeMultiInstance(f"{bs_node}.w[{idx}]", b=True)
+                print(f"  removed named slot [{idx}] ({alias}) with no ITG on {bs_node}")
+                purged += 1
+            except Exception as e:
+                print(f"  could not remove slot [{idx}] on {bs_node}: {e}")
+        else:
+            # ITG exists — check if it has any inputTargetItem data
+            iti = cmds.getAttr(
+                f"{bs_node}.inputTarget[0].inputTargetGroup[{idx}].inputTargetItem",
+                multiIndices=True
+            ) or []
+            if not iti:
+                try:
+                    mel.eval(f"blendShapeDeleteTargetGroup {bs_node} {idx};")
+                    print(f"  removed empty named slot [{idx}] ({alias}) on {bs_node}")
+                    purged += 1
+                except Exception as e:
+                    print(f"  could not remove empty slot [{idx}] on {bs_node}: {e}")
+
+    # ── Cleanup: remove stale targetDirectory references ──────────────────────
     if purged:
         valid = set(cmds.getAttr(f"{bs_node}.w", multiIndices=True) or [])
         for d in (cmds.getAttr(f"{bs_node}.targetDirectory", multiIndices=True) or []):
             attr = f"{bs_node}.targetDirectory[{d}].childIndices"
             children = list(cmds.getAttr(attr) or [])
-            # Negative values are directory references — keep them untouched
             filtered = [c for c in children if c < 0 or c in valid]
             if filtered != children:
                 cmds.setAttr(attr, filtered, type="Int32Array")
@@ -848,7 +916,7 @@ def purge_empty_bs_slots(bs_node):
     return purged
 
 
-def duplicate_target(bs_node, base_mesh, original_index, new_name, reorder=True):
+def duplicate_target(bs_node, base_mesh, original_index, new_name, reorder=True, force_reorder=False, target_index=None):
     """
     Regenerates the original target to get its live mesh,
     duplicates it, uses the duplicate to create a new target slot,
@@ -872,14 +940,18 @@ def duplicate_target(bs_node, base_mesh, original_index, new_name, reorder=True)
     finally:
         _restore_shape_editor_selection(saved)
 
-    # 4. Find next available logical index
-    used_indices = cmds.getAttr(f"{bs_node}.w", multiIndices=True) or []
-    next_idx = (max(used_indices) + 1) if used_indices else 0
+    # 4. Find target logical index (caller may specify an index to reuse a freed slot)
+    if target_index is not None:
+        next_idx = target_index
+    else:
+        used_indices = cmds.getAttr(f"{bs_node}.w", multiIndices=True) or []
+        next_idx = (max(used_indices) + 1) if used_indices else 0
 
     # 5. Add new target slot using the duplicate as geometry reference
     cmds.blendShape(bs_node, e=True, target=(base_mesh, next_idx, temp_dup, 1.0))
-    cmds.delete(temp_dup)
 
+    # Set alias immediately — before disconnect/delete so the Shape Editor never
+    # shows an unnamed or geometry-named ("_TEMP") slot if it refreshes mid-operation.
     try:
         cmds.aliasAttr(new_name, f"{bs_node}.w[{next_idx}]")
     except Exception:
@@ -894,8 +966,22 @@ def duplicate_target(bs_node, base_mesh, original_index, new_name, reorder=True)
             f"name may already be in use or contain invalid characters."
         )
 
-    # 6. Reorder Shape Editor display: insert just after the source target
-    if reorder:
+    # Disconnect inputGeomTarget before deleting temp_dup — if left connected to a
+    # deleted node, Maya stores a dead reference that causes phantom slots when the
+    # target is later deleted via the Shape Editor.
+    igt_attr = (f"{bs_node}.inputTarget[0].inputTargetGroup[{next_idx}]"
+                f".inputTargetItem[6000].inputGeomTarget")
+    for src in (cmds.listConnections(igt_attr, source=True, plugs=True) or []):
+        cmds.disconnectAttr(src, igt_attr)
+
+    cmds.delete(temp_dup)
+
+    # 6. Reorder Shape Editor display: insert just after the source target.
+    # Skip when source is inside a sub-group — the SE caches the directory tree
+    # in memory and our direct childIndices writes would diverge from that cache,
+    # causing targets to appear in duplicate directories or become orphaned when
+    # the user subsequently groups them inside the Shape Editor.
+    if reorder and (force_reorder or not _source_is_in_subgroup(bs_node, original_index)):
         _insert_indices_after(bs_node, original_index, [next_idx])
 
     return next_idx
@@ -909,28 +995,58 @@ def create_split_target(bs_node, base_mesh, target_name, source_index, loc_idx, 
       3. Scaling each pnts[vi] by w[loc_idx] in place — vertices where w==1 are skipped
       4. Deleting the regen mesh to bake the result back into the blendShape slot
 
-    The caller (_run_split) is responsible for:
-      - Zeroing all blendShape weights before the split loop
-      - Calling _insert_indices_after once with all new indices in order
+    The caller (_run_split) is responsible for zeroing all blendShape weights
+    before the split loop, and for restoring incoming connections (SDK etc.) to the
+    new slot after this function returns (via the state it popped from bs_states).
+
+    Outgoing connections and combination-shape incoming connections are handled here.
 
     Returns the logical index of the newly created target.
     """
-    # 1. Duplicate source target — skip reorder, done after sculptTarget cycle
+    # 1. If a target with the same name exists: save its outgoing connections and any
+    #    combination-shape incoming connections (regular incoming were disconnected by
+    #    zero_all_bs_weights and are handled by the caller), then delete the old slot.
+    saved_out  = []
+    saved_in   = []   # combo-incoming only; regular incoming handled by caller
+    saved_val  = 0.0
+    existing = cmds.listAttr(f"{bs_node}.w", m=True) or []
+    if target_name in existing:
+        old_idx  = get_bs_weight_attribute_logical_index(bs_node, target_name)
+        old_attr = f"{bs_node}.weight[{old_idx}]"
+        saved_val = cmds.getAttr(old_attr)
+        saved_out = cmds.listConnections(old_attr, plugs=True, s=False, d=True) or []
+        # Incoming at this point: only combo connections (regular ones were disconnected earlier)
+        saved_in  = cmds.listConnections(old_attr, plugs=True, s=True,  d=False) or []
+        for src in saved_in:
+            cmds.disconnectAttr(src, old_attr)
+        for dst in saved_out:
+            cmds.disconnectAttr(old_attr, dst)
+        mel.eval(f"blendShapeDeleteTargetGroup {bs_node} {old_idx};")
+        print(f"  overriding existing target : {target_name}")
+
+    # 2. Duplicate source target — reorder handled below after sculptTarget cycle
     target_idx = duplicate_target(bs_node, base_mesh, source_index, target_name, reorder=False)
 
-    # 2. Regenerate the duplicate → live mesh with full deltas in pnts[]
+    # Restore outgoing + combo-incoming connections onto the new slot
+    new_attr = f"{bs_node}.weight[{target_idx}]"
+    for dst in saved_out:
+        cmds.connectAttr(new_attr, dst, force=True)
+    for src in saved_in:
+        cmds.connectAttr(src, new_attr, force=True)
+
+    # Regenerate the duplicate → live mesh with full source deltas in pnts[]
     saved = _save_shape_editor_selection()
     try:
         regen_mesh = cmds.sculptTarget(bs_node, e=True, target=target_idx, regenerate=True)
         regen_mesh = regen_mesh if isinstance(regen_mesh, str) else regen_mesh[0]
 
-        # 3. Scale each delta by w — skip vertices where w==1 (no change needed)
+        # 3. Scale each delta by w — skip w==1 (vertex keeps full delta, no write needed)
         for vi, (dx, dy, dz) in deltas.items():
             w_list = weights.get(vi)
             w      = w_list[loc_idx] if w_list is not None else 0.0
             w      = max(0.0, min(1.0, w))
             if abs(w - 1.0) < 1e-7:
-                continue  # vertex keeps full delta — no write needed
+                continue
             cmds.setAttr(f"{regen_mesh}.pnts[{vi}].pntx", dx * w)
             cmds.setAttr(f"{regen_mesh}.pnts[{vi}].pnty", dy * w)
             cmds.setAttr(f"{regen_mesh}.pnts[{vi}].pntz", dz * w)
@@ -940,8 +1056,10 @@ def create_split_target(bs_node, base_mesh, target_name, source_index, loc_idx, 
     finally:
         _restore_shape_editor_selection(saved)
 
-    # 5. Position in targetDirectory AFTER the sculptTarget cycle to avoid duplicates
-    _insert_indices_after(bs_node, source_index, [target_idx])
+    # 5. Position in targetDirectory — skip if source is inside a sub-group
+    #    (see _source_is_in_subgroup for explanation).
+    if not _source_is_in_subgroup(bs_node, source_index):
+        _insert_indices_after(bs_node, source_index, [target_idx])
 
     print(f"  ✓ Created : {target_name}")
     return target_idx
@@ -980,8 +1098,7 @@ def _setup_topo_sym(topo_edge):
 def _restore_sym_state(was_sym):
     """Restores symmetricModelling state after a topology flip/mirror."""
     cmds.symmetricModelling(e=True, topoSymmetry=False)
-    if not was_sym:
-        cmds.symmetricModelling(e=True, symmetry=False)
+    cmds.symmetricModelling(e=True, symmetry=was_sym)
 
 
 def do_flip_target(bs_node, logical_index, base_shape, mirror_direction,
@@ -997,165 +1114,18 @@ def do_flip_target(bs_node, logical_index, base_shape, mirror_direction,
         finally:
             _restore_sym_state(was_sym)
     else:
-        cmds.blendShape(bs_node, edit=True,
-                        flipTarget=[(0, logical_index)],
-                        mirrorDirection=mirror_direction,
-                        symmetrySpace=space,
-                        symmetryAxis=axis)
+        was_sym = cmds.symmetricModelling(q=True, symmetry=True)
+        try:
+            cmds.blendShape(bs_node, edit=True,
+                            flipTarget=[(0, logical_index)],
+                            mirrorDirection=mirror_direction,
+                            symmetrySpace=space,
+                            symmetryAxis=axis)
+        finally:
+            cmds.symmetricModelling(e=True, symmetry=was_sym)
     print(f"  ✓ Flip : {bs_node}.w[{logical_index}] ({symmetry_axis})")
 
 
-def do_mirror_target(bs_node, logical_index, base_shape, mirror_direction,
-                     symmetry_axis="Topology", topo_edge=None):
-    space, axis = FLIP_AXIS_MAP.get(symmetry_axis, (1, 'x'))
-    if space == 0:  # Topology
-        was_sym = _setup_topo_sym(topo_edge)
-        try:
-            cmds.blendShape(bs_node, edit=True,
-                            mirrorTarget=[(0, logical_index)],
-                            mirrorDirection=mirror_direction,
-                            symmetrySpace=0)
-        finally:
-            _restore_sym_state(was_sym)
-    else:
-        cmds.blendShape(bs_node, edit=True,
-                        mirrorTarget=[(0, logical_index)],
-                        mirrorDirection=mirror_direction,
-                        symmetrySpace=space,
-                        symmetryAxis=axis)
-    print(f"  ✓ Mirror : {bs_node}.w[{logical_index}] ({symmetry_axis})")
-
-
-# ---------------------------------------------------------------------------
-# Partial (vertex-selection) mirror helpers
-# ---------------------------------------------------------------------------
-
-def _build_sym_map_axis(base_mesh, axis_char, threshold=1e-4):
-    """
-    Returns {vi: sym_vi} by finding each vertex's mirror across the given axis.
-    Uses an O(n) rounded-position dict lookup.
-    axis_char : 'x', 'y', or 'z'
-    """
-    from maya.api import OpenMaya as om
-    base_shapes = cmds.listRelatives(base_mesh, shapes=True, type="mesh") or []
-    shape = base_shapes[0] if base_shapes else base_mesh
-    sel = om.MSelectionList()
-    sel.add(shape)
-    fn  = om.MFnMesh(sel.getDagPath(0))
-    pts = fn.getPoints(om.MSpace.kObject)
-
-    ai   = {'x': 0, 'y': 1, 'z': 2}[axis_char.lower()]
-    PREC = int(1.0 / threshold)
-
-    pos_map = {}
-    for i, p in enumerate(pts):
-        key = (round(p.x * PREC), round(p.y * PREC), round(p.z * PREC))
-        pos_map[key] = i
-
-    sym_map = {}
-    for i, p in enumerate(pts):
-        coords      = [round(p.x * PREC), round(p.y * PREC), round(p.z * PREC)]
-        coords[ai]  = -coords[ai]
-        j = pos_map.get(tuple(coords))
-        if j is not None:
-            sym_map[i] = j
-
-    return sym_map
-
-
-def _build_sym_map_topo(base_mesh, topo_edge):
-    """
-    Returns {vi: sym_vi} using Maya's topology symmetry (polySymmetryQuery).
-    Requires a central edge set via symmetricModelling -topoSymmetry.
-    Returns {} if polySymmetryQuery is unavailable or returns unexpected data.
-    """
-    was_sym = _setup_topo_sym(topo_edge)
-    try:
-        result = cmds.polySymmetryQuery(base_mesh, sidesToComponents=True)
-        # result: [side0_comp_list, side1_comp_list]
-        # Paired by index: result[0][k] <-> result[1][k]
-        if not result or len(result) < 2:
-            return {}
-        sym_map = {}
-        for c0, c1 in zip(result[0], result[1]):
-            vi0 = int(c0.split('[')[1].rstrip(']'))
-            vi1 = int(c1.split('[')[1].rstrip(']'))
-            sym_map[vi0] = vi1
-            sym_map[vi1] = vi0
-        return sym_map
-    except Exception as e:
-        cmds.warning(f"polySymmetryQuery failed ({e}). Partial mirror unavailable for Topology mode.")
-        return {}
-    finally:
-        _restore_sym_state(was_sym)
-
-
-# Delta component to negate for each symmetry axis when copying to the opposite side
-_SYM_NEGATE = {
-    'x': (True,  False, False),
-    'y': (False, True,  False),
-    'z': (False, False, True),
-}
-
-
-def do_mirror_target_vtx(bs_node, logical_index, vtx_indices,
-                          symmetry_axis="Topology", topo_edge=None):
-    """
-    Mirror only the given vertex indices on the blendShape target.
-    Reads each selected vertex's delta and writes the axis-negated version
-    to its symmetric counterpart. Source vertices are left unchanged.
-
-    Returns the number of pairs written, or raises RuntimeError if the
-    symmetry map could not be built.
-    """
-    space, axis_char = FLIP_AXIS_MAP.get(symmetry_axis, (1, 'x'))
-    base_mesh = get_base_mesh(bs_node)
-
-    if space == 0:  # Topology
-        sym_map = _build_sym_map_topo(base_mesh, topo_edge)
-        negate  = _SYM_NEGATE['x']          # topo symmetry assumes X as the mirror axis
-    else:
-        sym_map = _build_sym_map_axis(base_mesh, axis_char)
-        negate  = _SYM_NEGATE.get(axis_char, (False, False, False))
-
-    if not sym_map:
-        raise RuntimeError(
-            f"Could not build symmetry map for '{symmetry_axis}'. "
-            "For Topology mode, ensure a central edge is set and the mesh has valid topology symmetry."
-        )
-
-    nx, ny, nz = negate
-    mesh_shape, tgt_transform, was_live = _get_regen_mesh(bs_node, logical_index)
-
-    try:
-        # Read all source deltas first to avoid reading partially-written data mid-loop
-        src = {
-            vi: (
-                cmds.getAttr(f"{mesh_shape}.pnts[{vi}].pntx"),
-                cmds.getAttr(f"{mesh_shape}.pnts[{vi}].pnty"),
-                cmds.getAttr(f"{mesh_shape}.pnts[{vi}].pntz"),
-            )
-            for vi in vtx_indices
-        }
-
-        # Write mirrored delta to each symmetric counterpart
-        written = 0
-        for vi, (dx, dy, dz) in src.items():
-            sym_vi = sym_map.get(vi)
-            if sym_vi is None or sym_vi == vi:
-                continue   # center vertex or no counterpart found
-            cmds.setAttr(f"{mesh_shape}.pnts[{sym_vi}].pntx", -dx if nx else dx)
-            cmds.setAttr(f"{mesh_shape}.pnts[{sym_vi}].pnty", -dy if ny else dy)
-            cmds.setAttr(f"{mesh_shape}.pnts[{sym_vi}].pntz", -dz if nz else dz)
-            written += 1
-
-    finally:
-        if not was_live:
-            cmds.delete(tgt_transform)
-
-    print(f"  ✓ Mirror vtx : {bs_node}.w[{logical_index}]"
-          f" — {written}/{len(vtx_indices)} pairs ({symmetry_axis})")
-    return written
 
 
 def multiply_target_deltas(bs_node, logical_index, fx, fy, fz, vtx_indices=None):
@@ -3554,8 +3524,15 @@ def build_and_connect_rig(bs_node, rows):
             cmds.setAttr(attr_full, channelBox=False)
             cmds.setAttr(attr_full, lock=True)
 
-        # hasLimits attr (added last on the ctrl)
-        if not cmds.attributeQuery("hasLimits", node=ctrl, exists=True):
+        # hasLimits attr — must always be the last attribute on the ctrl.
+        # Technique: delete it then immediately undo the delete.
+        # Maya's undo restores the attribute at the END of the list while keeping
+        # all existing connections intact (including any custom user connections).
+        # On first build the attribute simply does not exist yet, so we add it fresh.
+        if cmds.attributeQuery("hasLimits", node=ctrl, exists=True):
+            cmds.deleteAttr(f"{ctrl}.hasLimits")
+            cmds.undo()  # restores attribute last in the list with connections intact
+        else:
             cmds.addAttr(ctrl, longName="hasLimits", attributeType="bool",
                          defaultValue=True, keyable=True)
         cmds.setAttr(f"{ctrl}.hasLimits", True)

@@ -6,7 +6,7 @@ from PySide6 import QtWidgets, QtCore, QtGui
 
 from blendshape_core import *
 from blendshape_core import (_save_shape_editor_selection, _restore_shape_editor_selection,
-                             _collect_magnitudes)
+                             _collect_magnitudes, _find_blendshape_on_mesh)
 
 import json, os
 
@@ -114,6 +114,40 @@ def _load_user_duos():
 def _save_user_duos(data):
     with open(_user_naming_prefs_path(), "w") as f:
         json.dump(data, f, indent=2)
+
+
+_BASE_DUOS = [
+    ["L", "R"], ["l", "r"], ["lft", "rgt"], ["left", "right"],
+    ["in", "out"], ["pos", "neg"], ["p", "n"],
+    ["up", "dn"], ["up", "down"], ["upper", "lower"], ["top", "bot"], ["hi", "lo"],
+    ["fwd", "bwd"], ["front", "back"], ["frt", "bck"],
+]
+
+
+def _swap_opposite_name(name):
+    """
+    Swaps the first recognizable symmetric token in `name` and returns the opposite.
+    Returns None if no matching token is found.
+    Uses _BASE_DUOS plus any user-defined pairs.
+    """
+    all_duos = list(_BASE_DUOS)
+    for pairs in _load_user_duos().values():
+        for p in pairs:
+            if p not in all_duos:
+                all_duos.append(p)
+
+    tokens = name.split("_")
+    for duo in all_duos:
+        for i, tok in enumerate(tokens):
+            if tok == duo[0]:
+                new = tokens[:]
+                new[i] = duo[1]
+                return "_".join(new)
+            elif tok == duo[1]:
+                new = tokens[:]
+                new[i] = duo[0]
+                return "_".join(new)
+    return None
 
 
 def create_opposite_shape(symmetry_axis="Topology", topo_edge=None):
@@ -225,7 +259,7 @@ def create_opposite_shape(symmetry_axis="Topology", topo_edge=None):
         dup_idx          = None
         duplicated_shape = f"{shape}_Copy"
         try:
-            dup_idx = duplicate_target(bs_name, base_mesh, index, duplicated_shape)
+            dup_idx = duplicate_target(bs_name, base_mesh, index, duplicated_shape, force_reorder=True)
 
             # Flip the duplicate — flip_axis_name set at loop start, may be overridden by fallback dialog
             do_flip_target(bs_name, dup_idx, None, 0, flip_axis_name, topo_edge)
@@ -233,7 +267,8 @@ def create_opposite_shape(symmetry_axis="Topology", topo_edge=None):
 
             # Replace the existing opposite target if it already exists
             existing_shapes = cmds.listAttr(f'{bs_name}.w', m=True) or []
-            if opposite_shape in existing_shapes:
+            was_fresh = opposite_shape not in existing_shapes
+            if not was_fresh:
                 existing_index = get_bs_weight_attribute_logical_index(bs_name, opposite_shape)
                 old_shape   = f"{bs_name}.weight[{existing_index}]"
                 new_shape   = f"{bs_name}.weight[{dup_idx}]"
@@ -255,6 +290,65 @@ def create_opposite_shape(symmetry_axis="Topology", topo_edge=None):
             # Rename the flipped duplicate to the opposite name
             cmds.aliasAttr(opposite_shape, f"{bs_name}.{duplicated_shape}")
             print(f"  ✓ Opposite created : {opposite_shape}")
+
+            # Mirror driver connection — only when freshly created
+            if was_fresh:
+                src_weight = f"{bs_name}.weight[{index}]"
+                drivers = cmds.listConnections(src_weight, source=True, plugs=True, d=False) or []
+                for driver_plug in drivers:
+                    dot = driver_plug.rfind(".")
+                    if dot == -1:
+                        continue
+                    driver_node = driver_plug[:dot]
+                    driver_attr = driver_plug[dot + 1:]
+
+                    # Separate namespace from base node name
+                    ns_sep    = driver_node.rfind(":")
+                    ns_prefix = driver_node[:ns_sep + 1] if ns_sep != -1 else ""
+                    base_node = driver_node[ns_sep + 1:] if ns_sep != -1 else driver_node
+
+                    # Find a matching token in the node name and swap it
+                    node_tokens = base_node.split("_")
+                    opp_node = None
+                    for duo in (primary_duos + fallback_duos):
+                        for i, tok in enumerate(node_tokens):
+                            if tok == duo[0]:
+                                opp_tokens    = node_tokens[:]
+                                opp_tokens[i] = duo[1]
+                                opp_node      = ns_prefix + "_".join(opp_tokens)
+                                break
+                            elif tok == duo[1]:
+                                opp_tokens    = node_tokens[:]
+                                opp_tokens[i] = duo[0]
+                                opp_node      = ns_prefix + "_".join(opp_tokens)
+                                break
+                        if opp_node:
+                            break
+
+                    if opp_node is None or opp_node == driver_node:
+                        cmds.warning(
+                            f"Create Opposite: could not find opposite driver for '{driver_node}'. "
+                            f"Connect '{opposite_shape}' manually."
+                        )
+                        continue
+
+                    opp_plug = f"{opp_node}.{driver_attr}"
+                    if not cmds.objExists(opp_node):
+                        cmds.warning(
+                            f"Create Opposite: opposite node '{opp_node}' not found. "
+                            f"Connect '{opposite_shape}' manually."
+                        )
+                        continue
+                    if not cmds.objExists(opp_plug):
+                        cmds.warning(
+                            f"Create Opposite: attribute '{opp_plug}' not found. "
+                            f"Connect '{opposite_shape}' manually."
+                        )
+                        continue
+
+                    new_weight = f"{bs_name}.weight[{dup_idx}]"
+                    cmds.connectAttr(opp_plug, new_weight, force=True)
+                    print(f"  ✓ Driver mirrored : {opp_plug} → {new_weight}")
 
         except Exception:
             # Clean up the _Copy slot so it doesn't become a phantom target
@@ -281,34 +375,115 @@ class _ProgressCtx:
                 bake(target)
             pb.set(n_targets, "Done")
     """
-    def __init__(self, title, max_value=100, interruptable=True):
+    def __init__(self, title, max_value=100, interruptable=True, min_items=2):
         self._title         = title
         self._max           = max_value
         self._interruptable = interruptable
+        self._active        = max_value >= min_items
 
     def __enter__(self):
-        cmds.progressWindow(
-            title=self._title,
-            minValue=0,
-            maxValue=self._max,
-            progress=0,
-            isInterruptable=self._interruptable,
-            status="Please wait…"
-        )
+        if self._active:
+            cmds.progressWindow(
+                title=self._title,
+                minValue=0,
+                maxValue=self._max,
+                progress=0,
+                isInterruptable=self._interruptable,
+                status="Please wait…"
+            )
         return self
 
     def __exit__(self, *_):
-        cmds.progressWindow(endProgress=True)
+        if self._active:
+            cmds.progressWindow(endProgress=True)
 
     def set(self, value, status=""):
-        cmds.progressWindow(e=True, progress=value, status=status)
+        if self._active:
+            cmds.progressWindow(e=True, progress=value, status=status)
 
     def advance(self, step=1, status=""):
-        cmds.progressWindow(e=True, step=step, status=status)
+        if self._active:
+            cmds.progressWindow(e=True, step=step, status=status)
 
     @property
     def cancelled(self):
-        return self._interruptable and cmds.progressWindow(q=True, isCancelled=True)
+        return self._active and self._interruptable and cmds.progressWindow(q=True, isCancelled=True)
+
+
+class _AddToListDialog(QtWidgets.QDialog):
+    """
+    Shows blendShape targets that are not in the Check Shapes JSON list and
+    lets the user select which ones to add and to which group.
+    """
+
+    def __init__(self, unmatched, group_names, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add to List")
+        self.setMinimumWidth(380)
+        lay = QtWidgets.QVBoxLayout(self)
+
+        lbl = QtWidgets.QLabel(
+            f"{len(unmatched)} target(s) found in the blendShape node are not in the list.\n"
+            "Select which ones to add:")
+        lbl.setWordWrap(True)
+        lay.addWidget(lbl)
+
+        self._list = QtWidgets.QListWidget()
+        self._list.setAlternatingRowColors(True)
+        for name in sorted(unmatched):
+            item = QtWidgets.QListWidgetItem(name)
+            item.setFlags(item.flags() | QtCore.Qt.ItemIsUserCheckable)
+            item.setCheckState(QtCore.Qt.Checked)
+            self._list.addItem(item)
+        lay.addWidget(self._list)
+
+        sel_row = QtWidgets.QHBoxLayout()
+        btn_all  = QtWidgets.QPushButton("All")
+        btn_none = QtWidgets.QPushButton("None")
+        btn_all.setFixedHeight(22)
+        btn_none.setFixedHeight(22)
+        btn_all.clicked.connect(lambda: self._set_all(QtCore.Qt.Checked))
+        btn_none.clicked.connect(lambda: self._set_all(QtCore.Qt.Unchecked))
+        sel_row.addWidget(btn_all)
+        sel_row.addWidget(btn_none)
+        sel_row.addStretch()
+        lay.addLayout(sel_row)
+
+        grp_row = QtWidgets.QHBoxLayout()
+        grp_row.addWidget(QtWidgets.QLabel("Add to group:"))
+        self._combo = QtWidgets.QComboBox()
+        self._combo.addItems(group_names if group_names else ["misc"])
+        grp_row.addWidget(self._combo, 1)
+        btn_new = QtWidgets.QPushButton("New…")
+        btn_new.setFixedWidth(52)
+        btn_new.clicked.connect(self._new_group)
+        grp_row.addWidget(btn_new)
+        lay.addLayout(grp_row)
+
+        bb = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        bb.accepted.connect(self.accept)
+        bb.rejected.connect(self.reject)
+        lay.addWidget(bb)
+
+    def _set_all(self, state):
+        for i in range(self._list.count()):
+            self._list.item(i).setCheckState(state)
+
+    def _new_group(self):
+        name, ok = QtWidgets.QInputDialog.getText(self, "New Group", "Group name:")
+        if ok and name.strip():
+            name = name.strip()
+            self._combo.addItem(name)
+            self._combo.setCurrentIndex(self._combo.count() - 1)
+
+    def selected_names(self):
+        return [self._list.item(i).text()
+                for i in range(self._list.count())
+                if self._list.item(i).checkState() == QtCore.Qt.Checked]
+
+    def selected_group(self):
+        return self._combo.currentText()
 
 
 class RenameMatchDialog(QtWidgets.QDialog):
@@ -512,7 +687,9 @@ class CheckShapesDialog(QtWidgets.QDialog):
 
         # ── Menu bar ──────────────────────────────────────────────────────
         menu_bar  = QtWidgets.QMenuBar(self)
-        menu_bar.setStyleSheet("QMenuBar { font-size: 11px; } QMenuBar::item { padding: 2px 8px; }")
+        _mb_font = menu_bar.font()
+        _mb_font.setPointSize(8)
+        menu_bar.setFont(_mb_font)
         menu_file = menu_bar.addMenu("File")
         act_load  = menu_file.addAction("Load…")
         act_load.setToolTip("Load a JSON shapes list from disk")
@@ -531,13 +708,49 @@ class CheckShapesDialog(QtWidgets.QDialog):
         lay.addWidget(self.tree)
 
         # Tree buttons
-        btn_row = QtWidgets.QHBoxLayout()
-        btn_add_grp = QtWidgets.QPushButton("+ Group")
-        btn_add_shp = QtWidgets.QPushButton("+ Shape")
-        btn_remove  = QtWidgets.QPushButton("Remove")
-        for b in (btn_add_grp, btn_add_shp, btn_remove):
-            btn_row.addWidget(b)
-        lay.addLayout(btn_row)
+        _SB = 26  # small square button size
+
+        btn_add_shp = QtWidgets.QPushButton("+")
+        btn_add_shp.setToolTip("Add a shape entry")
+
+        btn_remove = QtWidgets.QPushButton("−")
+        btn_remove.setToolTip("Remove selected entry")
+
+        btn_add_grp = QtWidgets.QToolButton()
+        btn_add_grp.setToolTip("Add a group")
+        _grp_px = QtGui.QPixmap(cmds.internalVar(userAppDir=True) + "prefs/icons/group.png")
+        if not _grp_px.isNull():
+            btn_add_grp.setIcon(QtGui.QIcon(
+                _grp_px.scaled(_SB - 4, _SB - 4,
+                               QtCore.Qt.KeepAspectRatio,
+                               QtCore.Qt.SmoothTransformation)))
+            btn_add_grp.setIconSize(QtCore.QSize(_SB - 4, _SB - 4))
+        else:
+            btn_add_grp.setText("G+")
+
+        btn_up = QtWidgets.QPushButton("↑")
+        btn_dn = QtWidgets.QPushButton("↓")
+
+        btn_opp = QtWidgets.QPushButton("Create Opposite")
+        btn_opp.setToolTip("Insert the opposite name of the selected shape into the same group")
+
+        for b in (btn_add_shp, btn_remove, btn_add_grp, btn_up, btn_dn):
+            b.setFocusPolicy(QtCore.Qt.NoFocus)
+
+        row1 = QtWidgets.QHBoxLayout()
+        row1.setSpacing(3)
+        row1.addWidget(btn_add_shp, 1)
+        row1.addWidget(btn_remove, 1)
+        row1.addWidget(btn_add_grp, 1)
+
+        row2 = QtWidgets.QHBoxLayout()
+        row2.setSpacing(3)
+        row2.addWidget(btn_opp, 1)
+        row2.addWidget(btn_up, 1)
+        row2.addWidget(btn_dn, 1)
+
+        lay.addLayout(row1)
+        lay.addLayout(row2)
 
         # Separator
         sep = QtWidgets.QFrame()
@@ -572,6 +785,9 @@ class CheckShapesDialog(QtWidgets.QDialog):
         btn_add_grp.clicked.connect(self._add_group)
         btn_add_shp.clicked.connect(self._add_shape)
         btn_remove.clicked.connect(self._remove_selected)
+        btn_up.clicked.connect(self._move_item_up)
+        btn_dn.clicked.connect(self._move_item_down)
+        btn_opp.clicked.connect(self._create_opposite_item)
         btn_check.clicked.connect(self._run_check)
         btn_match.clicked.connect(self._run_match_to_list)
 
@@ -673,6 +889,64 @@ class CheckShapesDialog(QtWidgets.QDialog):
                 self.tree.takeTopLevelItem(self.tree.indexOfTopLevelItem(item))
             else:
                 parent.removeChild(item)
+
+    def _create_opposite_item(self):
+        item = self.tree.currentItem()
+        if item is None:
+            return
+        parent = item.parent()
+        if parent is None:
+            return  # groups don't have an obvious opposite
+        name = item.text(0)
+        opp = _swap_opposite_name(name)
+        if opp is None or opp == name:
+            QtWidgets.QMessageBox.information(
+                self, "Create Opposite",
+                f"Could not find an opposite name for '{name}'.")
+            return
+        new_item = QtWidgets.QTreeWidgetItem([opp])
+        new_item.setFlags(new_item.flags() | QtCore.Qt.ItemIsEditable)
+        idx = parent.indexOfChild(item)
+        parent.insertChild(idx + 1, new_item)
+        self.tree.setCurrentItem(new_item)
+
+    def _move_item_up(self):
+        item = self.tree.currentItem()
+        if item is None:
+            return
+        parent = item.parent()
+        if parent is None:
+            idx = self.tree.indexOfTopLevelItem(item)
+            if idx <= 0:
+                return
+            self.tree.takeTopLevelItem(idx)
+            self.tree.insertTopLevelItem(idx - 1, item)
+        else:
+            idx = parent.indexOfChild(item)
+            if idx <= 0:
+                return
+            parent.removeChild(item)
+            parent.insertChild(idx - 1, item)
+        self.tree.setCurrentItem(item)
+
+    def _move_item_down(self):
+        item = self.tree.currentItem()
+        if item is None:
+            return
+        parent = item.parent()
+        if parent is None:
+            idx = self.tree.indexOfTopLevelItem(item)
+            if idx >= self.tree.topLevelItemCount() - 1:
+                return
+            self.tree.takeTopLevelItem(idx)
+            self.tree.insertTopLevelItem(idx + 1, item)
+        else:
+            idx = parent.indexOfChild(item)
+            if idx >= parent.childCount() - 1:
+                return
+            parent.removeChild(item)
+            parent.insertChild(idx + 1, item)
+        self.tree.setCurrentItem(item)
 
     def _resolve_bs_node(self):
         targets = get_selected_targets()
@@ -794,15 +1068,46 @@ class CheckShapesDialog(QtWidgets.QDialog):
             proposed = matches[0]
             suggestions.append((alias, idx, proposed, is_ambiguous))
 
-        if not suggestions:
+        # Targets that are in the BS node but not in the JSON and have no token match
+        matched_aliases = {alias for alias, _, _, _ in suggestions}
+        matched_aliases |= json_name_set & set(existing)
+        unmatched = [alias for alias in sorted(existing.keys())
+                     if alias not in matched_aliases]
+
+        if not suggestions and not unmatched:
             QtWidgets.QMessageBox.information(
                 self, "Match existing to List",
-                "No rename suggestions found.\n"
-                "All existing targets either already match the list or have no token equivalent.")
+                "Nothing to do.\n"
+                "All existing targets already match the list.")
             return
 
-        dlg = RenameMatchDialog(bs_node, suggestions, parent=self)
-        dlg.exec_()
+        # Step 1 — rename suggestions (token-equivalent matches)
+        if suggestions:
+            dlg = RenameMatchDialog(bs_node, suggestions, parent=self)
+            dlg.exec_()
+
+        # Step 2 — add unmatched targets to the JSON list
+        if unmatched:
+            group_names = [self.tree.topLevelItem(i).text(0)
+                           for i in range(self.tree.topLevelItemCount())]
+            add_dlg = _AddToListDialog(unmatched, group_names, parent=self)
+            if add_dlg.exec_() == QtWidgets.QDialog.Accepted:
+                names     = add_dlg.selected_names()
+                grp_name  = add_dlg.selected_group()
+                if names:
+                    # Find or create the target group in the tree
+                    target_grp = None
+                    for i in range(self.tree.topLevelItemCount()):
+                        if self.tree.topLevelItem(i).text(0) == grp_name:
+                            target_grp = self.tree.topLevelItem(i)
+                            break
+                    if target_grp is None:
+                        target_grp = self._add_group_item(grp_name)
+                    for name in names:
+                        child = QtWidgets.QTreeWidgetItem([name])
+                        child.setFlags(child.flags() | QtCore.Qt.ItemIsEditable)
+                        target_grp.addChild(child)
+                    target_grp.setExpanded(True)
 
 
 
@@ -870,6 +1175,17 @@ class RigConnectorDialog(QtWidgets.QDialog):
         toolbar.addWidget(btn_load_json)
 
         outer.addLayout(toolbar)
+
+        # ── Search ────────────────────────────────────────────────────────────
+        search_row = QtWidgets.QHBoxLayout()
+        search_row.setSpacing(4)
+        search_row.addWidget(QtWidgets.QLabel("Filter:"))
+        self._le_search = QtWidgets.QLineEdit()
+        self._le_search.setPlaceholderText("Search shapes…")
+        self._le_search.setClearButtonEnabled(True)
+        self._le_search.textChanged.connect(self._filter_rows)
+        search_row.addWidget(self._le_search)
+        outer.addLayout(search_row)
 
         # ── Table ─────────────────────────────────────────────────────────────
         self._table = QtWidgets.QTableWidget(0, 8)
@@ -1017,6 +1333,14 @@ class RigConnectorDialog(QtWidgets.QDialog):
         btn_remove.clicked.connect(self._remove_rows)
         btn_bar.addWidget(btn_remove)
 
+        btn_opp = QtWidgets.QPushButton("Create Opposite")
+        btn_opp.setToolTip(
+            "Duplicate the selected row with opposite names:\n"
+            "swaps L/R (and other symmetric tokens) in the Shape and Controller fields.\n"
+            "The new row is inserted directly below the source row.")
+        btn_opp.clicked.connect(self._create_opposite_row)
+        btn_bar.addWidget(btn_opp)
+
         btn_up = QtWidgets.QPushButton("\u2191")
         btn_up.setFixedWidth(26)
         btn_up.setToolTip("Move selected rows up by one position")
@@ -1031,15 +1355,15 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         btn_bar.addStretch()
 
-        btn_save = QtWidgets.QPushButton("Save Mapping")
-        btn_save.setToolTip("Save the current table mapping to a JSON file")
-        btn_save.clicked.connect(self._save_mapping)
-        btn_bar.addWidget(btn_save)
-
         btn_load = QtWidgets.QPushButton("Load Mapping")
         btn_load.setToolTip("Load a previously saved table mapping from a JSON file")
         btn_load.clicked.connect(self._load_mapping)
         btn_bar.addWidget(btn_load)
+
+        btn_save = QtWidgets.QPushButton("Save Mapping")
+        btn_save.setToolTip("Save the current table mapping to a JSON file")
+        btn_save.clicked.connect(self._save_mapping)
+        btn_bar.addWidget(btn_save)
 
         btn_bar.addSpacing(8)
 
@@ -1489,6 +1813,26 @@ class RigConnectorDialog(QtWidgets.QDialog):
         for i in range(len(snapshots)):
             self._table.selectRow(adj_target + i)
 
+    def _create_opposite_row(self):
+        sel_rows = sorted(set(idx.row() for idx in self._table.selectedIndexes()))
+        if not sel_rows:
+            return
+        # Process in reverse so inserted rows don't shift subsequent indices
+        for src in reversed(sel_rows):
+            snap = self._snapshot_row(src)
+            opp_shape = _swap_opposite_name(snap["shape"]) or snap["shape"]
+            opp_ctrl  = _swap_opposite_name(snap["ctrl"])  or snap["ctrl"]
+            opp_gate  = _swap_opposite_name(snap["gate"])  or snap["gate"]
+            new_snap = dict(snap,
+                            shape=opp_shape,
+                            ctrl=opp_ctrl,
+                            gate=opp_gate,
+                            stat_text="\u25cf",
+                            stat_style="color: grey;",
+                            stat_tip="")
+            self._insert_row_data_at(src + 1, new_snap)
+        self._renumber_rows()
+
     def _move_up(self):
         src_rows = sorted(set(idx.row() for idx in self._table.selectedIndexes()))
         if not src_rows or src_rows[0] == 0:
@@ -1662,6 +2006,15 @@ class RigConnectorDialog(QtWidgets.QDialog):
             new_row = last_row + 1
             _apply_row_data(new_row, rd)
 
+
+    # ── Search / filter ───────────────────────────────────────────────────────
+
+    def _filter_rows(self, text):
+        text = text.strip().lower()
+        for row in range(self._table.rowCount()):
+            item = self._table.item(row, self._COL_SHAPE)
+            shape_name = item.text().lower() if item else ""
+            self._table.setRowHidden(row, bool(text) and text not in shape_name)
 
     # ── Context menu ──────────────────────────────────────────────────────────
 
@@ -2341,7 +2694,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
 class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     TOOL_NAME = "BlendshapeEditorUI"
-    VERSION   = "v.05.02"
+    VERSION   = "v.05.03"
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -2618,24 +2971,27 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         outer_layout.setSpacing(0)
 
         # ── Menu bar ──────────────────────────────────────────────────────
-        menu_bar   = QtWidgets.QMenuBar(self)
-        menu_bar.setStyleSheet("QMenuBar { font-size: 11px; } QMenuBar::item { padding: 2px 8px; }")
-        menu_edit  = menu_bar.addMenu("Edit")
-        act_reset  = menu_edit.addAction("Reset Default Options")
+        menu_bar = QtWidgets.QMenuBar(self)
+        _mb_font = menu_bar.font()
+        _mb_font.setPointSize(8)
+        menu_bar.setFont(_mb_font)
+        menu_edit = menu_bar.addMenu("Edit")
+        act_reset = menu_edit.addAction("Reset Default Options")
         act_reset.setToolTip("Restore all split options to their default values")
         act_reset.triggered.connect(self._reset_default_options)
-        menu_edit.addSeparator()
-        act_check = menu_edit.addAction("Check Shapes…")
-        act_check.setToolTip("Open the Check Shapes dialog to verify expected targets on a blendShape node")
-        act_check.triggered.connect(self._open_check_shapes)
-        act_rig = menu_edit.addAction("Rig Connector…")
-        act_rig.setToolTip("Open the Rig Connector to map FK controllers to blendShape targets")
-        act_rig.triggered.connect(self._open_rig_connector)
         menu_edit.addSeparator()
         act_doc = menu_edit.addAction("Documentation")
         act_doc.setToolTip("Open the online documentation in your web browser")
         act_doc.triggered.connect(lambda: QtGui.QDesktopServices.openUrl(
             QtCore.QUrl("https://blendshape-editor-tool.readthedocs.io")))
+        menu_check = menu_bar.addMenu("Check Shapes")
+        act_check = menu_check.addAction("Open Check Shapes…")
+        act_check.setToolTip("Open the Check Shapes dialog to verify expected targets on a blendShape node")
+        act_check.triggered.connect(self._open_check_shapes)
+        menu_rig = menu_bar.addMenu("Rig Connector")
+        act_rig = menu_rig.addAction("Open Rig Connector…")
+        act_rig.setToolTip("Open the Rig Connector to map FK controllers to blendShape targets")
+        act_rig.triggered.connect(self._open_rig_connector)
         outer_layout.setMenuBar(menu_bar)
 
         # ── Scroll area ───────────────────────────────────────────────────
@@ -2696,16 +3052,17 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 btn.installEventFilter(_f)
             return btn
 
-        def _vsep(layout, spacing=8):
-            layout.addSpacing(spacing)
+        def _vsep(layout):
+            layout.addStretch(1)
             sep = QtWidgets.QFrame()
             sep.setFrameShape(QtWidgets.QFrame.VLine)
             sep.setFrameShadow(QtWidgets.QFrame.Sunken)
             sep.setFixedWidth(6)
             layout.addWidget(sep)
-            layout.addSpacing(spacing)
+            layout.addStretch(1)
 
         # ── Row 1 ─────────────────────────────────────────────────────────
+        shelf_lay.addStretch(1)
         # Sculpt tools (4)
         for _ic, _tt, _cmd in [
             (f"{_icons_dir}/Grab.png",         "Sculpt Grab\nDouble-click: Tool Settings",         "SetMeshGrabTool"),
@@ -2716,12 +3073,14 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             shelf_lay.addWidget(_shelf_btn(_ic, _tt,
                 callback=lambda _=False, c=_cmd: self._activate_sculpt_tool(c),
                 dbl_click=self._open_tool_settings))
+            shelf_lay.addStretch(1)
 
         _vsep(shelf_lay)
 
         # Node tools (3)
         shelf_lay.addWidget(_shelf_btn(
             f"{_icons_dir}/blendShapeEditor.png", "Shape Editor", mel_cmd="ShapeEditor"))
+        shelf_lay.addStretch(1)
         self.btn_clean_bs = _shelf_btn(
             f"{_icons_dir}/clean_bsnode.png",
             "Clean Blendshape Node\n"
@@ -2729,6 +3088,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "of the selected targets in the Shape Editor.",
             callback=self._run_clean_bs)
         shelf_lay.addWidget(self.btn_clean_bs)
+        shelf_lay.addStretch(1)
         self.btn_reset_weights = _shelf_btn(
             f"{_icons_dir}/reset_bsnode.png",
             "Reset All Targets to 0\n"
@@ -2746,10 +3106,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             callback=self._exit_delta_view)
         self.btn_exit_delta_view.setEnabled(False)
         shelf_lay.addWidget(self.btn_exit_delta_view)
-
-        shelf_lay.addStretch()
+        shelf_lay.addStretch(1)
 
         # ── Row 2 ─────────────────────────────────────────────────────────
+        row2_lay.addStretch(1)
         # Sculpt tools (4)
         for _ic, _tt, _cmd in [
             (f"{_icons_dir}/Smooth.png",  "Smooth\nDouble-click: Tool Settings",  "SetMeshSmoothTool"),
@@ -2760,6 +3120,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             row2_lay.addWidget(_shelf_btn(_ic, _tt,
                 callback=lambda _=False, c=_cmd: self._activate_sculpt_tool(c),
                 dbl_click=self._open_tool_settings))
+            row2_lay.addStretch(1)
 
         _vsep(row2_lay)
 
@@ -2778,6 +3139,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.btn_add_target.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.btn_add_target.customContextMenuRequested.connect(self._show_add_target_context_menu)
         row2_lay.addWidget(self.btn_add_target)
+        row2_lay.addStretch(1)
         self.btn_create_opposite = _shelf_btn(
             f"{_icons_dir}/create_opposite.png",
             "Create Opposite Target\n"
@@ -2789,6 +3151,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.btn_create_opposite.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self.btn_create_opposite.customContextMenuRequested.connect(self._opp_axis_menu)
         row2_lay.addWidget(self.btn_create_opposite)
+        row2_lay.addStretch(1)
         self.btn_connect_ab = _shelf_btn(
             f"{_icons_dir}/connect_a_b.png",
             "Connect Targets A to B\n"
@@ -2806,8 +3169,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Delta View — colorize vertices by delta magnitude (black→red→yellow)",
             callback=self._run_delta_view)
         row2_lay.addWidget(self.btn_delta_view)
-
-        row2_lay.addStretch()
+        row2_lay.addStretch(1)
 
         # Shelf pinned above the scroll — always visible
         shelf_wrapper = QtWidgets.QWidget()
@@ -2815,13 +3177,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         shelf_wrapper_lay.setContentsMargins(8, 4, 8, 2)
         shelf_wrapper_lay.setSpacing(4)
 
-        # ── Tool Settings (QGroupBox + inline collapsible like Edge Loop Options) ──
-        grp_ts_box = QtWidgets.QGroupBox()
-        grp_ts_box.setStyleSheet("QGroupBox { font-size: 11px; }")
-        grp_ts_box_lay = QtWidgets.QVBoxLayout(grp_ts_box)
-        grp_ts_box_lay.setContentsMargins(8, 6, 8, 6)
-        grp_ts_box_lay.setSpacing(4)
-
+        # ── Tool Settings (inline collapsible like Edge Loop Options) ──
         self._ts_toggle = QtWidgets.QToolButton()
         self._ts_toggle.setText("  Tool Settings")
         self._ts_toggle.setArrowType(QtCore.Qt.RightArrow)
@@ -2832,12 +3188,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "QToolButton { background: transparent; border: none; "
             "font-size: 10px; color: #888888; text-align: center; }"
             "QToolButton:hover { color: #aaaaaa; }")
-        grp_ts_box_lay.addWidget(self._ts_toggle)
 
         ts_widget = QtWidgets.QWidget()
         ts_widget.setVisible(False)
         lay_ts = QtWidgets.QVBoxLayout(ts_widget)
-        lay_ts.setContentsMargins(0, 2, 0, 0)
+        lay_ts.setContentsMargins(12, 2, 0, 0)
         lay_ts.setSpacing(6)
 
         # Surface/Volume + Symmetry combos
@@ -2884,14 +3239,48 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         strength_row.addWidget(self.slider_tool_strength, 1)
         lay_ts.addLayout(strength_row)
 
-        grp_ts_box_lay.addWidget(ts_widget)
-        # ── Top status line ────────────────────────────────────────────────
-        self.lbl_top_status = QtWidgets.QLabel("— no selection —")
-        self.lbl_top_status.setAlignment(QtCore.Qt.AlignCenter)
-        self.lbl_top_status.setStyleSheet("color: #666666; font-size: 11px; padding-bottom: 8px;")
-        shelf_wrapper_lay.addWidget(self.lbl_top_status)
+        # ── Connect From File ──────────────────────────────────────────────
+        cff_row = QtWidgets.QHBoxLayout()
+        cff_row.setSpacing(4)
+        btn_rig_browse = QtWidgets.QPushButton()
+        _pix_browse = QtGui.QPixmap(f"{_icons_dir}/path.png")
+        if not _pix_browse.isNull():
+            btn_rig_browse.setIcon(QtGui.QIcon(_pix_browse))
+        btn_rig_browse.setFixedSize(24, 24)
+        btn_rig_browse.setToolTip("Browse for a rig mapping JSON file")
+        self.line_rig_json = QtWidgets.QLineEdit()
+        self.line_rig_json.setReadOnly(True)
+        self.line_rig_json.setPlaceholderText("C:/path/to/rig_mapping.json")
+        btn_rig_connect = QtWidgets.QToolButton()
+        btn_rig_connect.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        btn_rig_connect.setToolTip(
+            "Build and connect the rig for all targets defined in the referenced JSON mapping file.\n"
+            "The blendShape node is automatically detected from the current mesh selection.")
+        btn_rig_connect.setStyleSheet("""
+            QToolButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 3px;
+                padding: 2px;
+            }
+            QToolButton:hover   { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """)
+        _pix_connect = QtGui.QPixmap(f"{_icons_dir}/connect_rig.png")
+        if not _pix_connect.isNull():
+            _scaled_connect = _pix_connect.scaled(32, 32, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
+            btn_rig_connect.setIcon(QtGui.QIcon(_scaled_connect))
+            btn_rig_connect.setIconSize(QtCore.QSize(32, 32))
+        btn_rig_connect.setFixedSize(40, 40)
+        cff_row.addWidget(btn_rig_browse)
+        cff_row.addWidget(self.line_rig_json, 1)
+        cff_row.addWidget(btn_rig_connect)
+        shelf_wrapper_lay.addLayout(cff_row)
+        btn_rig_browse.clicked.connect(self._browse_rig_json)
+        btn_rig_connect.clicked.connect(self._run_connect_from_file)
 
-        shelf_wrapper_lay.addWidget(grp_ts_box)
+        shelf_wrapper_lay.addWidget(self._ts_toggle)
+        shelf_wrapper_lay.addWidget(ts_widget)
         shelf_wrapper_lay.addWidget(shelf_frame)
 
         def _toggle_ts():
@@ -2903,6 +3292,21 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._ts_toggle.clicked.connect(_toggle_ts)
         outer_layout.addWidget(shelf_wrapper)
         outer_layout.addWidget(scroll, 1)
+
+        # ── Auto-resize when vertical scrollbar appears / disappears ──────────
+        self._vscroll_visible = False
+
+        def _on_vscroll_range(min_val, max_val):
+            if not self.isVisible():
+                return
+            sb_w    = scroll.verticalScrollBar().sizeHint().width()
+            visible = max_val > min_val
+            if visible == self._vscroll_visible:
+                return
+            self._vscroll_visible = visible
+            self.resize(self.width() + (sb_w if visible else -sb_w), self.height())
+
+        scroll.verticalScrollBar().rangeChanged.connect(_on_vscroll_range)
 
         # ── Nomenclature ──────────────────────────────────────────────────────
         grp_nom, _body_nom, lay_nom = self._collapsible_section("Nomenclature", two_state=True, initial_state=0)
@@ -3017,6 +3421,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         def _side_btn(label, tooltip, callback):
             b = QtWidgets.QPushButton(label)
             b.setFixedSize(_BW, _BW)
+            b.setFocusPolicy(QtCore.Qt.NoFocus)
             b.setToolTip(tooltip)
             b.clicked.connect(callback)
             return b
@@ -3272,7 +3677,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         els_setup_widget = QtWidgets.QWidget()
         els_setup_widget.setVisible(False)
         els_setup_lay = QtWidgets.QVBoxLayout(els_setup_widget)
-        els_setup_lay.setContentsMargins(0, 2, 0, 2)
+        els_setup_lay.setContentsMargins(12, 2, 0, 2)
         els_setup_lay.setSpacing(4)
 
         def _els_field(edit_attr, placeholder, get_handler):
@@ -4041,19 +4446,29 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         scroll.setWidget(inner)
 
-        # ── Status + Version pinned below scroll — always visible ──────────
+        # ── Progress bar + Status + Version pinned below scroll ─────────────
+        self.progress_bar = QtWidgets.QProgressBar()
+        self.progress_bar.setTextVisible(False)
+        self.progress_bar.setVisible(False)
+
+        self.lbl_top_status = QtWidgets.QLabel("— no selection —")
+        self.lbl_top_status.setAlignment(QtCore.Qt.AlignCenter)
+        self.lbl_top_status.setStyleSheet("color: #666666; font-size: 11px; padding-top: 4px; padding-bottom: 4px;")
+
         self.lbl_status = QtWidgets.QLabel("")
-        self.lbl_status.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        self.lbl_status.setAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignVCenter)
 
         lbl_version = QtWidgets.QLabel(self.VERSION)
         lbl_version.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
         lbl_version.setStyleSheet("color: #7a7a7a; font-size: 10px;")
 
         bottom_wrapper = QtWidgets.QWidget()
-        bottom_lay = QtWidgets.QHBoxLayout(bottom_wrapper)
+        bottom_lay = QtWidgets.QVBoxLayout(bottom_wrapper)
         bottom_lay.setContentsMargins(8, 2, 8, 4)
-        bottom_lay.setSpacing(8)
-        bottom_lay.addWidget(self.lbl_status, 1)
+        bottom_lay.setSpacing(0)
+        bottom_lay.addWidget(self.progress_bar)
+        bottom_lay.addWidget(self.lbl_top_status)
+        bottom_lay.addWidget(self.lbl_status)
         bottom_lay.addWidget(lbl_version)
         outer_layout.addWidget(bottom_wrapper)
 
@@ -4580,18 +4995,27 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._resize_table_to_content()
 
     def _move_row_up(self):
-        row = self.table.currentRow()
-        if row <= 0:
+        rows = sorted({idx.row() for idx in self.table.selectedIndexes()})
+        if not rows or rows[0] <= 0:
             return
-        self._swap_rows(row, row - 1)
-        self.table.selectRow(row - 1)
+        for row in rows:
+            self._swap_rows(row, row - 1)
+        self._reselect_rows([r - 1 for r in rows])
 
     def _move_row_down(self):
-        row = self.table.currentRow()
-        if row < 0 or row >= self.table.rowCount() - 1:
+        rows = sorted({idx.row() for idx in self.table.selectedIndexes()}, reverse=True)
+        if not rows or rows[0] >= self.table.rowCount() - 1:
             return
-        self._swap_rows(row, row + 1)
-        self.table.selectRow(row + 1)
+        for row in rows:
+            self._swap_rows(row, row + 1)
+        self._reselect_rows([r + 1 for r in rows])
+
+    def _reselect_rows(self, rows):
+        self.table.clearSelection()
+        last_col = self.table.columnCount() - 1
+        for r in rows:
+            rng = QtWidgets.QTableWidgetSelectionRange(r, 0, r, last_col)
+            self.table.setRangeSelected(rng, True)
 
     def _swap_rows(self, r1, r2):
         for col in range(self.table.columnCount()):
@@ -4679,12 +5103,28 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.lbl_status.setStyleSheet(f"color: {color};")
         self._refresh_top_status(check_phantoms=True)
 
+    def _progress_begin(self, total):
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
+
+    def _progress_step(self, value, msg=""):
+        self.progress_bar.setValue(value)
+        if msg:
+            self.lbl_status.setText(msg)
+            self.lbl_status.setStyleSheet("color: #aaaaaa;")
+        QtWidgets.QApplication.processEvents()
+
+    def _progress_end(self):
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setValue(0)
+
     def _refresh_top_status(self, check_phantoms=False):
         try:
             results = get_selected_targets()  # [(bs_node, idx), ...]
             if not results:
                 self.lbl_top_status.setText("— no selection —")
-                self.lbl_top_status.setStyleSheet("color: #666666; font-size: 11px; padding-bottom: 8px;")
+                self.lbl_top_status.setStyleSheet("color: #666666; font-size: 11px; padding-top: 4px; padding-bottom: 4px;")
                 self._cached_phantom_count = 0
                 return
 
@@ -4716,7 +5156,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
             self.lbl_top_status.setText("  ·  ".join(parts))
             color = "#c8a030" if self._cached_phantom_count else "#aaaaaa"
-            self.lbl_top_status.setStyleSheet(f"color: {color}; font-size: 11px; padding-bottom: 8px;")
+            self.lbl_top_status.setStyleSheet(f"color: {color}; font-size: 11px; padding-top: 4px; padding-bottom: 4px;")
         except Exception:
             pass
 
@@ -4991,6 +5431,83 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         dlg = RigConnectorDialog(parent=self)
         dlg.show()
 
+    def _browse_rig_json(self):
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Load Rig Mapping", _rig_mapping_prefs_path(), "JSON files (*.json)")
+        if path:
+            self.line_rig_json.setText(path)
+
+    @undo_chunk
+    def _run_connect_from_file(self):
+        path = self.line_rig_json.text().strip()
+        if not path or not os.path.exists(path):
+            self._set_status("✗ No JSON file selected", error=True)
+            return
+
+        # Auto-detect blendShape node from scene selection
+        sel = cmds.ls(selection=True) or []
+        bs_node = None
+        for obj in sel:
+            bs_node = _find_blendshape_on_mesh(obj)
+            if bs_node:
+                break
+        if not bs_node:
+            self._set_status("✗ No blendShape node found — select the mesh first", error=True)
+            return
+
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+        except Exception as e:
+            self._set_status(f"✗ Could not read JSON: {e}", error=True)
+            return
+
+        # Normalize rows (handles old JSON format with direction / custom_attr)
+        rows = []
+        for rd in data:
+            if not isinstance(rd, dict):
+                continue
+            attr        = rd.get("attr", "ty")
+            in_min      = float(rd.get("in_min", 0.0))
+            in_max      = float(rd.get("in_max", 1.0))
+            custom_attr = rd.get("custom_attr", "")
+            if attr == "custom" and custom_attr:
+                attr = custom_attr
+            if rd.get("direction", "+") == "\u2212":
+                in_max = -abs(in_max)
+                if in_min != 0.0:
+                    in_min = -abs(in_min)
+            rows.append({
+                "shape":      rd.get("shape", ""),
+                "proxy":      rd.get("proxy", False),
+                "controller": rd.get("controller", ""),
+                "attr":       attr,
+                "in_min":     in_min,
+                "in_max":     in_max,
+                "gate":       rd.get("gate", ""),
+            })
+
+        results = build_and_connect_rig(bs_node, rows)
+        ok      = sum(1 for r in results if r["status"] in ("ok", "ok:direct"))
+        missing = sum(1 for r in results if r["status"] == "no_target")
+        skp     = sum(1 for r in results if r["status"] in ("skip", "no_ctrl", "no_attr"))
+        errors  = sum(1 for r in results if r["status"].startswith("error:"))
+
+        html_parts = []
+        if ok:
+            html_parts.append(f'<span style="color:#7ec87e;">✓ {ok} connected</span>')
+        if missing:
+            html_parts.append(f'<span style="color:#aaaaaa;">{missing} missing</span>')
+        if skp:
+            html_parts.append(f'<span style="color:#aaaaaa;">{skp} skipped</span>')
+        if errors:
+            html_parts.append(f'<span style="color:#e05252;">✗ {errors} errors</span>')
+
+        sep = '<span style="color:#555555;">  ·  </span>'
+        self.lbl_status.setText(sep.join(html_parts) if html_parts else
+                                '<span style="color:#7ec87e;">✓ Done</span>')
+        self._refresh_top_status(check_phantoms=True)
+
     def _open_naming_convention(self):
         dlg = NamingConventionDialog(parent_ui=self)
         dlg.show()
@@ -5170,9 +5687,30 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
                 # Create all split targets and collect their new indices
                 new_indices = []
+                existing_shapes = cmds.listAttr(f"{bs_node}.w", m=True) or []
                 for loc_idx, final_name in pairs:
+                    # Pop the old slot's state so restore_all_bs_weights doesn't try to
+                    # reconnect it to a dead index.  The saved connections (SDK etc.) will
+                    # be transferred to the new slot after create_split_target returns.
+                    old_state = None
+                    if final_name in existing_shapes:
+                        old_idx   = get_bs_weight_attribute_logical_index(bs_node, final_name)
+                        old_state = bs_states[bs_node].pop(old_idx, None)
+
                     idx = create_split_target(bs_node, base_mesh, final_name,
                                               logical_index, loc_idx, weights, deltas)
+
+                    # Transfer regular incoming connections (SDK, expressions) that were
+                    # disconnected by zero_all_bs_weights and saved in old_state.
+                    if old_state and old_state["connections"]:
+                        new_attr = f"{bs_node}.weight[{idx}]"
+                        for src in old_state["connections"]:
+                            if cmds.objExists(src.split(".")[0]):
+                                try:
+                                    cmds.connectAttr(src, new_attr, force=True)
+                                except Exception as e:
+                                    print(f"  Warning: could not reconnect {src} → {new_attr}: {e}")
+
                     new_indices.append(idx)
                     total += 1
 
@@ -5402,14 +5940,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         n_t = len(targets_to_process)
 
         try:
-            with _ProgressCtx("Smooth Deltas", max_value=n_t) as pb:
-                for i, (bs_node, logical_index, target_name) in enumerate(targets_to_process):
-                    if pb.cancelled:
-                        break
-                    pb.set(i, f"Smoothing {target_name}…")
-                    smooth_target_deltas(bs_node, logical_index, opacity,
-                                         vtx_indices=vtx_indices)
-                pb.set(n_t)
+            self._progress_begin(n_t)
+            for i, (bs_node, logical_index, target_name) in enumerate(targets_to_process):
+                self._progress_step(i, f"Smoothing {target_name}…")
+                smooth_target_deltas(bs_node, logical_index, opacity,
+                                     vtx_indices=vtx_indices)
             n_passes = max(1, int(round(opacity * 10)))
             scope = "all verts" if all_verts else f"{len(vtx_indices)} vtx"
             self._set_status(
@@ -5418,6 +5953,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
+        finally:
+            self._progress_end()
 
     @undo_chunk
     def _run_relax_deltas(self):
@@ -5435,14 +5972,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         n_t = len(targets_to_process)
 
         try:
-            with _ProgressCtx("Relax Deltas", max_value=n_t) as pb:
-                for i, (bs_node, logical_index, target_name) in enumerate(targets_to_process):
-                    if pb.cancelled:
-                        break
-                    pb.set(i, f"Relaxing {target_name}…")
-                    relax_target_deltas(bs_node, logical_index, opacity,
-                                        vtx_indices=vtx_indices)
-                pb.set(n_t)
+            self._progress_begin(n_t)
+            for i, (bs_node, logical_index, target_name) in enumerate(targets_to_process):
+                self._progress_step(i, f"Relaxing {target_name}…")
+                relax_target_deltas(bs_node, logical_index, opacity,
+                                    vtx_indices=vtx_indices)
             n_passes = max(1, int(round(opacity * 10)))
             scope = "all verts" if all_verts else f"{len(vtx_indices)} vtx"
             self._set_status(
@@ -5451,6 +5985,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
+        finally:
+            self._progress_end()
 
     @undo_chunk
     def _run_hammer_deltas(self):
@@ -5469,16 +6005,17 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         vtx_indices = [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
         try:
             bs_node, logical_index, target_name = targets[0]
-            with _ProgressCtx("Hammer Deltas", max_value=n_passes) as pb:
-                def _cb(p, total, status):
-                    pb.set(p, status)
-                hammer_target_deltas(bs_node, logical_index, vtx_indices,
-                                     n_passes=n_passes, progress_cb=_cb)
-                pb.set(n_passes)
+            self._progress_begin(n_passes)
+            def _cb(p, total, status):
+                self._progress_step(p, status)
+            hammer_target_deltas(bs_node, logical_index, vtx_indices,
+                                 n_passes=n_passes, progress_cb=_cb)
             self._set_status(f"✓ Hammer Deltas  {len(vtx_indices)} vtx  ({n_passes} passes)")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
+        finally:
+            self._progress_end()
 
     @undo_chunk
     def _run_average_deltas(self):
@@ -5544,22 +6081,23 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
     @undo_chunk
     def _run_clean_bs(self):
         try:
-            targets = get_selected_targets()
-            if not targets:
-                self._set_status("Select at least one target in the Shape Editor.", error=True)
+            # Collect bs nodes from Shape Editor selection; fall back to the current
+            # bs node so the tool works even when no target is selectable (e.g. after
+            # a .shp re-import that produced only phantom / unnamed slots).
+            bs_nodes = {bs for bs, _, _ in get_selected_targets()}
+            if not bs_nodes and self.bs_node:
+                bs_nodes = {self.bs_node}
+            if not bs_nodes:
+                self._set_status("No blendShape node found. Get a BS node first.", error=True)
                 return
-            seen = set()
             total = 0
-            for bs_node, _, _ in targets:
-                if bs_node in seen:
-                    continue
-                seen.add(bs_node)
+            for bs_node in bs_nodes:
                 total += purge_empty_bs_slots(bs_node)
-            nodes = ", ".join(seen)
+            nodes = ", ".join(bs_nodes)
             if total:
-                self._set_status(f"✓ Cleaned {total} phantom slot(s) on: {nodes}")
+                self._set_status(f"✓ Cleaned {total} slot(s) on: {nodes}")
             else:
-                self._set_status(f"✓ No phantom slots found on: {nodes}")
+                self._set_status(f"✓ No empty slots found on: {nodes}")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ Clean BS: {e}", error=True)
@@ -5613,26 +6151,23 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             total = 0
             n_total = len(targets)
             done = 0
-            with _ProgressCtx("Bake Deformers", max_value=n_total) as pb:
-                for bs_node, indices in seen.items():
-                    base_mesh = get_base_mesh(bs_node)
-                    if not base_mesh:
-                        done += len(indices)
-                        continue
-                    for idx in indices:
-                        if pb.cancelled:
-                            break
-                        name = cmds.aliasAttr(f"{bs_node}.w[{idx}]", q=True) or str(idx)
-                        pb.set(done, f"Baking {name}…")
-                        total += bake_deformers_to_targets(bs_node, base_mesh, [idx])
-                        done += 1
-                    if pb.cancelled:
-                        break
-                pb.set(n_total)
+            self._progress_begin(n_total)
+            for bs_node, indices in seen.items():
+                base_mesh = get_base_mesh(bs_node)
+                if not base_mesh:
+                    done += len(indices)
+                    continue
+                for idx in indices:
+                    name = cmds.aliasAttr(f"{bs_node}.w[{idx}]", q=True) or str(idx)
+                    self._progress_step(done, f"Baking {name}…")
+                    total += bake_deformers_to_targets(bs_node, base_mesh, [idx])
+                    done += 1
             self._set_status(f"✓ Bake Deformers: {total} target(s) baked")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ Bake Deformers: {e}", error=True)
+        finally:
+            self._progress_end()
 
     @undo_chunk
     # ── Edge Loop Split — Get handlers ────────────────────────────────────
@@ -6085,15 +6620,16 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         """
         combined = {}
         n_verts  = 0
-        with _ProgressCtx("Combining targets", max_value=len(targets),
-                          interruptable=False) as pb:
+        self._progress_begin(len(targets))
+        try:
             for i, (bs_node, logical_index, name) in enumerate(targets):
-                pb.set(i, f"Reading {name}…")
+                self._progress_step(i, f"Reading {name}…")
                 mags, nv = _collect_magnitudes(bs_node, logical_index)
                 n_verts  = nv
                 for vi, mag in mags.items():
                     combined[vi] = combined.get(vi, 0.0) + mag
-            pb.set(len(targets))
+        finally:
+            self._progress_end()
         return combined, n_verts
 
     @undo_chunk
