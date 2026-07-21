@@ -1,9 +1,10 @@
-Blendshape Editor Tool
-======================
+Blendshape Editor Tool  v.05.10
+================================
 
 A Maya PySide6 tool for creating, editing, and managing blendShape targets —
-with spatial splitting, secondary mesh extraction, delta editing, and a
-curve-based lip/mouth wire rig.
+with spatial splitting, delta editing, secondary mesh extraction, a
+curve-based lip/mouth wire rig, a joint-based lip rig, and an FK/blendShape
+rig connector.
 
 .. toctree::
    :maxdepth: 2
@@ -20,7 +21,8 @@ curve-based lip/mouth wire rig.
    sections/nomenclature
    sections/split
    sections/modify_deltas
-   sections/wire_setup
+   sections/tools
+   sections/rig_connector
 
 .. toctree::
    :maxdepth: 1
