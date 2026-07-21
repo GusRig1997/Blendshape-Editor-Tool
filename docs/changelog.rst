@@ -1,6 +1,42 @@
 Changelog
 =========
 
+v.05.03
+-------
+
+**Bug fixes — Split**
+
+- ``zero_all_bs_weights`` now skips ``combinationShape`` connections. Disconnecting
+  them could silently destroy the target slot in Maya.
+- Re-splitting an existing split target (e.g. ``L_shape`` already present) no longer
+  loses its incoming SDK / expression connections. ``_run_split`` saves those
+  connections before the operation and reconnects them to the new slot index.
+- ``create_opposite_shape`` now passes ``force_reorder=True`` to
+  ``duplicate_target`` so the opposite is always inserted directly after the
+  source, even when the source lives inside a Shape Editor sub-group.
+
+**Clean BS Node — empty named slots**
+
+- ``purge_empty_bs_slots`` now runs a second pass that removes named slots that
+  have no ``inputTargetGroup`` or an empty ``inputTargetItem`` array. These
+  phantom-named slots are created by Maya's ``.shp`` import/export round-trip.
+- ``Clean BS Node`` in the shelf now falls back to the currently loaded BS node
+  when the Shape Editor has no selection.
+
+**Rig Connector — hasLimits attribute ordering**
+
+- On rebuild, ``hasLimits`` is now repositioned as the last attribute on the
+  controller using a delete + undo technique, which also preserves all existing
+  custom connections on the attribute.
+
+**Check Shapes — Add unmatched shapes to list**
+
+- After the *Rename Suggestions* step, a new *Add to List* dialog lists all
+  blendShape targets that are not in the reference JSON. The user can select
+  which shapes to add and choose an existing group or create a new one.
+
+----
+
 v.04.00
 -------
 
