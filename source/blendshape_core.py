@@ -1262,6 +1262,136 @@ def transfer_target_deltas(bs_node_a, idx_a, bs_node_b, idx_b, vtx_indices=None)
     return len(to_transfer)
 
 
+def replace_target_deltas(bs_node_a, idx_a, bs_node_b, idx_b, vtx_indices=None):
+    """
+    Replaces A's deltas with B's (A = B). B is left intact.
+      - vtx_indices provided : replaces only those verts on A with B's values
+      - vtx_indices is None  : replaces all of A's delta set with B's delta set
+    Verts that were in A but not in B are zeroed out.
+    Returns the number of vertices written.
+    """
+    deltas_a = get_target_deltas(bs_node_a, idx_a)
+    deltas_b = get_target_deltas(bs_node_b, idx_b)
+
+    if vtx_indices is not None:
+        vtx_set  = set(vtx_indices)
+        to_write = {vi: v for vi, v in deltas_b.items() if vi in vtx_set}
+        to_zero  = {vi for vi in deltas_a if vi in vtx_set and vi not in deltas_b}
+    else:
+        to_write = deltas_b
+        to_zero  = {vi for vi in deltas_a if vi not in deltas_b}
+
+    mesh_a, tgt_a, was_live_a = _get_regen_mesh(bs_node_a, idx_a)
+    try:
+        for vi in to_zero:
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pntx", 0.0)
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pnty", 0.0)
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pntz", 0.0)
+        for vi, (dx, dy, dz) in to_write.items():
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pntx", dx)
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pnty", dy)
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pntz", dz)
+    finally:
+        if not was_live_a:
+            cmds.delete(tgt_a)
+
+    scope = f"{len(vtx_indices)} vtx" if vtx_indices is not None else "all delta verts"
+    print(f"  REPL : {len(to_write)} verts  {bs_node_b}.w[{idx_b}] \u2192\u2192 {bs_node_a}.w[{idx_a}]  ({scope})")
+    return len(to_write)
+
+
+def swap_target_deltas(bs_node_a, idx_a, bs_node_b, idx_b, vtx_indices=None):
+    """
+    Swaps deltas between A and B (A \u2194 B), pure replace in both directions.
+      - vtx_indices provided : swaps only those verts
+      - vtx_indices is None  : swaps the full delta sets
+    Verts present in one target but not the other are zeroed on the receiving side.
+    Returns the number of vertices affected (max of both sides).
+    """
+    deltas_a = get_target_deltas(bs_node_a, idx_a)
+    deltas_b = get_target_deltas(bs_node_b, idx_b)
+
+    if vtx_indices is not None:
+        vtx_set  = set(vtx_indices)
+        new_a    = {vi: v for vi, v in deltas_b.items() if vi in vtx_set}
+        new_b    = {vi: v for vi, v in deltas_a.items() if vi in vtx_set}
+        orig_a   = {vi for vi in deltas_a if vi in vtx_set}
+        orig_b   = {vi for vi in deltas_b if vi in vtx_set}
+    else:
+        new_a, new_b = deltas_b, deltas_a
+        orig_a, orig_b = set(deltas_a), set(deltas_b)
+
+    mesh_a, tgt_a, was_live_a = _get_regen_mesh(bs_node_a, idx_a)
+    try:
+        for vi in orig_a:
+            if vi not in new_a:
+                cmds.setAttr(f"{mesh_a}.pnts[{vi}].pntx", 0.0)
+                cmds.setAttr(f"{mesh_a}.pnts[{vi}].pnty", 0.0)
+                cmds.setAttr(f"{mesh_a}.pnts[{vi}].pntz", 0.0)
+        for vi, (dx, dy, dz) in new_a.items():
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pntx", dx)
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pnty", dy)
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pntz", dz)
+    finally:
+        if not was_live_a:
+            cmds.delete(tgt_a)
+
+    mesh_b, tgt_b, was_live_b = _get_regen_mesh(bs_node_b, idx_b)
+    try:
+        for vi in orig_b:
+            if vi not in new_b:
+                cmds.setAttr(f"{mesh_b}.pnts[{vi}].pntx", 0.0)
+                cmds.setAttr(f"{mesh_b}.pnts[{vi}].pnty", 0.0)
+                cmds.setAttr(f"{mesh_b}.pnts[{vi}].pntz", 0.0)
+        for vi, (dx, dy, dz) in new_b.items():
+            cmds.setAttr(f"{mesh_b}.pnts[{vi}].pntx", dx)
+            cmds.setAttr(f"{mesh_b}.pnts[{vi}].pnty", dy)
+            cmds.setAttr(f"{mesh_b}.pnts[{vi}].pntz", dz)
+    finally:
+        if not was_live_b:
+            cmds.delete(tgt_b)
+
+    n = max(len(new_a), len(new_b))
+    scope = f"{len(vtx_indices)} vtx" if vtx_indices is not None else "all delta verts"
+    print(f"  SWAP : {n} verts  {bs_node_a}.w[{idx_a}] \u2194 {bs_node_b}.w[{idx_b}]  ({scope})")
+    return n
+
+
+def multiply_shapes_deltas(bs_node_a, idx_a, bs_node_b, idx_b, vtx_indices=None):
+    """
+    Multiplies A's deltas by B's deltas component-wise (A[vi] *= B[vi]).
+    Vertices present in A but not in B are zeroed (B contributes 0).
+    Vertices in B but not in A are ignored (nothing to multiply).
+    Returns the number of vertices affected.
+    """
+    deltas_a = get_target_deltas(bs_node_a, idx_a)
+    deltas_b = get_target_deltas(bs_node_b, idx_b)
+
+    if vtx_indices is not None:
+        vtx_set  = set(vtx_indices)
+        work_a   = {vi: v for vi, v in deltas_a.items() if vi in vtx_set}
+    else:
+        work_a = deltas_a
+
+    if not work_a:
+        return 0
+
+    mesh_a, tgt_a, was_live_a = _get_regen_mesh(bs_node_a, idx_a)
+    try:
+        for vi, (ax, ay, az) in work_a.items():
+            bx, by, bz = deltas_b.get(vi, (0.0, 0.0, 0.0))
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pntx", ax * bx)
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pnty", ay * by)
+            cmds.setAttr(f"{mesh_a}.pnts[{vi}].pntz", az * bz)
+    finally:
+        if not was_live_a:
+            cmds.delete(tgt_a)
+
+    scope = f"{len(vtx_indices)} vtx" if vtx_indices is not None else "all delta verts"
+    print(f"  MULT : {len(work_a)} verts  {bs_node_a}.w[{idx_a}] \u00d7 {bs_node_b}.w[{idx_b}]  ({scope})")
+    return len(work_a)
+
+
 def push_normals_deltas(bs_node, logical_index, factor, vtx_indices=None):
     """
     Adds displacement along vertex outward normals, weighted by existing delta magnitude.
@@ -1520,7 +1650,7 @@ def relax_target_deltas(bs_node, logical_index, opacity, vtx_indices=None):
     print(f"  Relax Deltas: opacity={opacity:.2f}  ({scope})")
 
 
-def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progress_cb=None):
+def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progress_cb=None, n_laplacian=1):
     """
     Spatial Laplacian hammer applied to blendShape deltas.
 
@@ -1603,6 +1733,11 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progr
 
         # k-nearest neighbors in neutral space via grid lookup
         k = min(max(8, n_verts // 50), 32)
+        # eps softens the IDW kernel: w = 1/(dist² + eps) instead of 1/dist²
+        # Prevents near-coincident vertices (e.g. upper/lower lip center touching in
+        # neutral pose) from getting infinite weight and crushing all other neighbors.
+        # Scaled to ~average squared edge length so weighting stays meaningful.
+        eps_idw = (bbox_diag / max(n_verts ** 0.5, 1.0)) ** 2
         spatial_neighbors = {}
         for vi in vtx_indices:
             x, y, z = neutral[vi]
@@ -1641,32 +1776,32 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progr
             for vi in vtx_set:
                 sx = sy = sz = total_w = 0.0
                 for vj, dist2 in spatial_neighbors[vi]:
-                    if dist2 < 1e-12:
-                        continue
-                    w = 1.0 / dist2
+                    w = 1.0 / (dist2 + eps_idw)
                     d = snapshot.get(vj, (0.0, 0.0, 0.0))
                     sx += w * d[0]; sy += w * d[1]; sz += w * d[2]
                     total_w += w
                 if total_w > 0:
                     current[vi] = (sx / total_w, sy / total_w, sz / total_w)
 
-        # Topological Laplacian pass to smooth the resulting delta field
-        base_mesh = get_base_mesh(bs_node)
-        adj       = _build_adjacency(base_mesh)
-        snapshot  = dict(current)
-        for vi in vtx_set:
-            nbrs = adj.get(vi, [])
-            if not nbrs:
-                continue
-            sx = sy = sz = 0.0
-            for nb in nbrs:
-                d = snapshot.get(nb, (0.0, 0.0, 0.0))
-                sx += d[0]; sy += d[1]; sz += d[2]
-            n  = len(nbrs)
-            ox, oy, oz = current.get(vi, (0.0, 0.0, 0.0))
-            current[vi] = (ox + (sx / n - ox) * 0.5,
-                           oy + (sy / n - oy) * 0.5,
-                           oz + (sz / n - oz) * 0.5)
+        # Topological Laplacian passes to smooth the resulting delta field
+        if n_laplacian > 0:
+            base_mesh = get_base_mesh(bs_node)
+            adj       = _build_adjacency(base_mesh)
+            for _ in range(n_laplacian):
+                snapshot = dict(current)
+                for vi in vtx_set:
+                    nbrs = adj.get(vi, [])
+                    if not nbrs:
+                        continue
+                    sx = sy = sz = 0.0
+                    for nb in nbrs:
+                        d = snapshot.get(nb, (0.0, 0.0, 0.0))
+                        sx += d[0]; sy += d[1]; sz += d[2]
+                    n  = len(nbrs)
+                    ox, oy, oz = current.get(vi, (0.0, 0.0, 0.0))
+                    current[vi] = (ox + (sx / n - ox) * 0.5,
+                                   oy + (sy / n - oy) * 0.5,
+                                   oz + (sz / n - oz) * 0.5)
 
         # Write back only changed verts
         for vi in vtx_set:
