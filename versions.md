@@ -1,5 +1,43 @@
 # Changelog — Blendshape Editor Tool
 
+## v.05.15
+
+**UI — Modify Deltas : refonte complète**
+
+- Section restructurée en 6 `QGroupBox` titrés (comme la section Split) :
+  - **Deltas Scale** — Multiply, Invert, Nullify, Normal Push
+  - **Deltas Exchange** — Add, Sub, Mult, Transfer, Swap, Replace
+  - **Smooth & Average** — Smooth, Relax, Hammer, Average + slider Opacity
+  - **Deltas Clipboard** — Copy, Paste, Prune, Select Delta Vrtx
+  - **Deltas Bake** — Apply Moves, Bake Deformers
+  - **Deltas to Rig** — Create Delta Cluster, Create Delta Joint
+
+**Deltas Scale — layout**
+
+- Ligne X/Y/Z : icône `transformXYZ.png` (40 × 34 px) suivie de 3 labels + champs extensibles
+- Champs extensibles (`Expanding` + `stretch=1`) sur toute la largeur disponible
+- Boutons Multiply / Invert / Nullify pleine largeur (via `_icon_btn`)
+- Espacement 8 px entre Nullify et Normal Push pour signaler la séparation thématique
+
+**Deltas Exchange — layout**
+
+- Grille 2 × 3 : Add / Sub / Mult (ligne 0), Transfer / Swap / Replace (ligne 1)
+- `setColumnStretch` appliqué sur les 3 colonnes pour une répartition uniforme
+
+**Deltas Clipboard — layout**
+
+- Grille 2 × 2 : Copy (0,0) / Prune + spinbox (0,1) / Paste (1,0) / Select Delta Vrtx (1,1)
+- Largeur du spinbox calculée automatiquement : `fontMetrics().horizontalAdvance("0.0001") + 12`
+
+**State compact — grille multi-lignes**
+
+- `add_compact_row_break()` fonctionnel en mode grille via un sentinel `_ROW_BREAK`
+- `finalize_compact()` détecte le sentinel et incrémente la ligne courante
+- `setColumnStretch(max_col, 1)` : l'espace vide va dans la colonne virtuelle après le dernier bouton (évite l'espacement inter-boutons)
+- 3 lignes : Row 0 = Scale + Smooth & Average (8 boutons), Row 1 = Exchange (6 boutons), Row 2 = Clipboard + Bake + Rig (8 boutons)
+
+---
+
 ## v.05.02
 
 **UI — Top status line**
