@@ -2694,7 +2694,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
 class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     TOOL_NAME = "BlendshapeEditorUI"
-    VERSION   = "v.05.11"
+    VERSION   = "v.05.15"
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -2919,17 +2919,28 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 btn.clicked.connect(callback)
                 _pending_compact.append(btn)
 
+            def add_compact_spacer():
+                _pending_compact.append(None)
+
+            _ROW_BREAK = object()
+
             def add_compact_row_break():
-                pass  # no-op in grid mode
+                _pending_compact.append(_ROW_BREAK)
 
             def finalize_compact():
-                import math
-                n = len(_pending_compact)
-                if n == 0:
+                if not _pending_compact:
                     return
-                cols = math.ceil(n / compact_rows)
-                for i, btn in enumerate(_pending_compact):
-                    shelf_grid.addWidget(btn, i // cols, i % cols)
+                row, col, max_col = 0, 0, 0
+                for item in _pending_compact:
+                    if item is _ROW_BREAK:
+                        row += 1
+                        col = 0
+                    elif item is not None:
+                        shelf_grid.addWidget(item, row, col)
+                        col += 1
+                        if col > max_col:
+                            max_col = col
+                shelf_grid.setColumnStretch(max_col, 1)
         else:
             def add_compact_action(icon_path, tooltip, callback):
                 btn = _make_compact_btn(icon_path, tooltip, callback)
@@ -2947,6 +2958,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 row = shelf_cur_row[0]
                 row.insertWidget(row.count() - 1, btn)
 
+            def add_compact_spacer():
+                pass  # no-op in single-row mode
+
             def add_compact_row_break():
                 shelf_cur_row[0] = _new_shelf_row()
 
@@ -2955,6 +2969,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         outer.add_compact_action    = add_compact_action
         outer.add_compact_text_btn  = add_compact_text_btn
+        outer.add_compact_spacer    = add_compact_spacer
         outer.add_compact_row_break = add_compact_row_break
         outer.finalize_compact      = finalize_compact
 
@@ -3741,16 +3756,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         root.addWidget(grp_split)
 
         # ── Modify ────────────────────────────────────────────────────────
-        grp_mod, _body_mod, lay_mod = self._collapsible_section("Modify Deltas", initial_state=1, compact_rows=3)
+        grp_mod, _body_mod, lay_mod = self._collapsible_section("Modify Deltas", initial_state=1, compact_rows=4)
         lay_mod.setSpacing(4)
 
-        lay_mod.addSpacing(10)
-
-        def _hsep():
-            sep = QtWidgets.QFrame()
-            sep.setFrameShape(QtWidgets.QFrame.HLine)
-            sep.setFrameShadow(QtWidgets.QFrame.Sunken)
-            return sep
+        _GRP_STYLE = "QGroupBox { font-size: 11px; }"
+        _GRP_MARGINS = (8, 6, 8, 6)
 
         def _make_factor_field(default="1.0"):
             field = QtWidgets.QLineEdit(default)
@@ -3761,13 +3771,15 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             field.setValidator(validator)
             return field
 
-        # ── Multiply : X Y Z on one row + Multiply Deltas button ─────────────
+        # ── Scalar ────────────────────────────────────────────────────────────
+        grp_scalar = QtWidgets.QGroupBox("Deltas Scale")
+        grp_scalar.setStyleSheet(_GRP_STYLE)
+        lay_scalar = QtWidgets.QVBoxLayout(grp_scalar)
+        lay_scalar.setContentsMargins(*_GRP_MARGINS)
+        lay_scalar.setSpacing(4)
+
         self._mult_labels = []
         self._mult_fields = []
-
-        row_mult = QtWidgets.QHBoxLayout()
-        row_mult.setSpacing(4)
-
         for idx, axis in enumerate(('X', 'Y', 'Z')):
             lbl = QtWidgets.QPushButton(axis)
             lbl.setCheckable(True)
@@ -3778,78 +3790,51 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             fld = _make_factor_field("1.2")
             self._mult_labels.append(lbl)
             self._mult_fields.append(fld)
-            row_mult.addWidget(lbl)
-            row_mult.addWidget(fld)
-            if idx < 2:
-                row_mult.addSpacing(6)
 
         for idx, lbl in enumerate(self._mult_labels):
             lbl.clicked.connect(lambda *args, i=idx: self._on_mult_label_click(i))
         for idx, fld in enumerate(self._mult_fields):
             fld.editingFinished.connect(lambda i=idx: self._on_mult_field_edited(i))
 
-        lay_mod.addLayout(row_mult)
+        _tt_multiply = ("Multiply X/Y/Z delta components directly (object space).\n"
+                        "1.0 = unchanged   0.0 = zero   -1.0 = invert\n"
+                        "Click X/Y/Z labels to select axes — Shift+click to multi-select.")
+        _tt_invert   = ("Invert all delta components (multiply X, Y, Z by -1).\n"
+                        "Works on selected vertices or the full target.")
+        _tt_nullify  = ("Zero out all delta components (X=0, Y=0, Z=0).\n"
+                        "Equivalent to Multiply Deltas with all factors set to 0.\n"
+                        "Works on selected vertices or the full target.")
 
-        _w_mult, self.btn_mult = self._icon_btn(
-            f"{_icons_dir}/multiply.png", "Multiply Deltas",
-            "Multiply X/Y/Z delta components directly (object space).\n"
-            "1.0 = unchanged   0.0 = zero   -1.0 = invert\n"
-            "Click X/Y/Z labels to select axes — Shift+click to multi-select.")
-        self.btn_mult.clicked.connect(self._run_multiply)
+        # X/Y/Z labels + fields — indented to align with button text (after icon)
+        row_xyz = QtWidgets.QHBoxLayout()
+        row_xyz.setSpacing(4)
+        _lbl_xyz_ico = QtWidgets.QLabel()
+        _px_xyz = QtGui.QPixmap(f"{_icons_dir}/transformXYZ.png")
+        if not _px_xyz.isNull():
+            _lbl_xyz_ico.setPixmap(_px_xyz.scaled(32, 32, QtCore.Qt.KeepAspectRatio,
+                                                   QtCore.Qt.SmoothTransformation))
+        _lbl_xyz_ico.setFixedSize(40, 34)
+        _lbl_xyz_ico.setAlignment(QtCore.Qt.AlignCenter)
+        row_xyz.addWidget(_lbl_xyz_ico)
+        for _lbl, _fld in zip(self._mult_labels, self._mult_fields):
+            _fld.setFixedWidth(16777215)
+            _fld.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+            row_xyz.addWidget(_lbl)
+            row_xyz.addWidget(_fld, 1)
+        lay_scalar.addLayout(row_xyz)
 
-        _w_nullify, self.btn_nullify = self._icon_btn(
-            f"{_icons_dir}/nullify_delta.png", "Nullify",
-            "Zero out all delta components (X=0, Y=0, Z=0).\n"
-            "Equivalent to Multiply Deltas with all factors set to 0.\n"
-            "Works on selected vertices or the full target.")
-        self.btn_nullify.clicked.connect(self._run_nullify)
+        # Multiply / Invert / Nullify — full-width buttons
+        for _ico_file, _label, _tt, _handler in (
+                ("multiply_delta.png", "Multiply", _tt_multiply, self._run_multiply),
+                ("invert_delta.png",   "Invert",   _tt_invert,   self._run_invert_deltas),
+                ("nullify_delta.png",  "Nullify",  _tt_nullify,  self._run_nullify)):
+            _w, _b = self._icon_btn(f"{_icons_dir}/{_ico_file}", _label, _tt)
+            _b.clicked.connect(_handler)
+            lay_scalar.addWidget(_w)
 
-        row_mult_btns = QtWidgets.QHBoxLayout()
-        row_mult_btns.setSpacing(4)
-        row_mult_btns.addWidget(_w_mult)
-        row_mult_btns.addWidget(_w_nullify)
-        lay_mod.addLayout(row_mult_btns)
-        lay_mod.addSpacing(4)
-        lay_mod.addWidget(_hsep())
-        lay_mod.addSpacing(4)
+        lay_scalar.addSpacing(8)
 
-        # ── Delta + / Delta − ─────────────────────────────────────────────────
-        _tt_add = (
-            "Add — Adds donor deltas onto the receiver target.\n"
-            "Select target A first, then add select the other targets.\n"
-            "Vertex selection: restricts the operation to selected verts.\n"
-            "No vertex selection: operates on the full target.")
-        _tt_sub = (
-            "Sub — Subtracts donor deltas from the receiver target.\n"
-            "Select target A first, then add select the other targets.\n"
-            "Vertex selection: restricts the operation to selected verts.\n"
-            "No vertex selection: operates on the full target.")
-        _tt_xfer = (
-            "Swap — Moves deltas from B to A (removes from B, adds to A).\n"
-            "Select target A first, then add select target B.\n"
-            "Vertex selection: transfers only selected verts.\n"
-            "No vertex selection: transfers all delta verts on B.")
-        _w_dadd, self.btn_delta_add = self._icon_btn(
-            f"{_icons_dir}/add_delta.png", "Add", _tt_add)
-        self.btn_delta_add.clicked.connect(self._run_delta_add)
-        _w_dsub, self.btn_delta_sub = self._icon_btn(
-            f"{_icons_dir}/sub_delta.png", "Sub", _tt_sub)
-        self.btn_delta_sub.clicked.connect(self._run_delta_sub)
-        _w_dswap, self.btn_delta_swap = self._icon_btn(
-            f"{_icons_dir}/transfert_delta.png", "Transfer Delta", _tt_xfer)
-        self.btn_delta_swap.clicked.connect(self._run_delta_swap)
-
-        row_delta_combine = QtWidgets.QHBoxLayout()
-        row_delta_combine.setSpacing(4)
-        row_delta_combine.addWidget(_w_dadd)
-        row_delta_combine.addWidget(_w_dsub)
-        row_delta_combine.addWidget(_w_dswap)
-        lay_mod.addLayout(row_delta_combine)
-        lay_mod.addSpacing(4)
-        lay_mod.addWidget(_hsep())
-        lay_mod.addSpacing(4)
-
-        # ── Normal Push ───────────────────────────────────────────────────────
+        # Normal Push
         self.field_push_factor = _make_factor_field("0.20")
         self.field_push_factor.setToolTip("Push magnitude relative to existing delta length.")
         self.field_push_factor.setMaximumWidth(16777215)
@@ -3913,32 +3898,113 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         push_outer.addWidget(push_left_w)
         push_outer.addWidget(btn_push, 1)
 
-        lay_mod.addLayout(push_outer)
-        lay_mod.addSpacing(4)
-        lay_mod.addWidget(_hsep())
-        lay_mod.addSpacing(4)
+        lay_scalar.addLayout(push_outer)
+        lay_mod.addWidget(grp_scalar)
 
-        # ── Smooth / Relax ────────────────────────────────────────────────────
+        # ── Between 2 Targets ─────────────────────────────────────────────────
+        grp_2tgt = QtWidgets.QGroupBox("Deltas Exchange")
+        grp_2tgt.setStyleSheet(_GRP_STYLE)
+        lay_2tgt = QtWidgets.QVBoxLayout(grp_2tgt)
+        lay_2tgt.setContentsMargins(*_GRP_MARGINS)
+        lay_2tgt.setSpacing(4)
+
+        _tt_add = (
+            "Add — Adds donor deltas onto the receiver target.\n"
+            "Select target A first, then add select the other targets.\n"
+            "Vertex selection: restricts the operation to selected verts.\n"
+            "No vertex selection: operates on the full target.")
+        _tt_sub = (
+            "Sub — Subtracts donor deltas from the receiver target.\n"
+            "Select target A first, then add select the other targets.\n"
+            "Vertex selection: restricts the operation to selected verts.\n"
+            "No vertex selection: operates on the full target.")
+        _tt_xfer = (
+            "Transfer — Moves deltas from B to A (adds to A, zeros B).\n"
+            "Select target A first, then add select target B.\n"
+            "Vertex selection: transfers only selected verts.\n"
+            "No vertex selection: transfers all delta verts on B.")
+        _tt_swap = (
+            "Swap — Replaces A's deltas with B's and B's with A's (A \u2194 B).\n"
+            "Select target A first, then add select target B.\n"
+            "Vertex selection: swaps only selected verts.\n"
+            "No vertex selection: swaps full delta sets (confirmation required).")
+        _tt_repl = (
+            "Replace — Copies B's deltas onto A, overwriting A. B is left intact.\n"
+            "Select target A first, then add select target B.\n"
+            "Vertex selection: replaces only selected verts on A.\n"
+            "No vertex selection: replaces full delta set of A with B's.")
+        _tt_mult_sh = (
+            "Mult A\u00d7B — Multiplies A's deltas component-wise by B's.\n"
+            "A[vi] = (Ax*Bx, Ay*By, Az*Bz). Verts in A not in B are zeroed.\n"
+            "Select target A first, then add select target B.")
+
+        _w_add,  self.btn_delta_add         = self._icon_btn(f"{_icons_dir}/add_delta.png",      "Add",      _tt_add)
+        _w_sub,  self.btn_delta_sub         = self._icon_btn(f"{_icons_dir}/sub_delta.png",      "Sub",      _tt_sub)
+        _w_msh,  self.btn_delta_mult_shapes = self._icon_btn(f"{_icons_dir}/mult_delta.png",     "Mult",     _tt_mult_sh)
+        _w_xfer, self.btn_delta_swap        = self._icon_btn(f"{_icons_dir}/transfer_delta.png", "Transfer", _tt_xfer)
+        _w_swap, self.btn_delta_swap_pure   = self._icon_btn(f"{_icons_dir}/swap_delta.png",     "Swap",     _tt_swap)
+        _w_repl, self.btn_delta_replace     = self._icon_btn(f"{_icons_dir}/replace_delta.png",  "Replace",  _tt_repl)
+        self.btn_delta_add.clicked.connect(self._run_delta_add)
+        self.btn_delta_sub.clicked.connect(self._run_delta_sub)
+        self.btn_delta_mult_shapes.clicked.connect(self._run_delta_mult_shapes)
+        self.btn_delta_swap.clicked.connect(self._run_delta_swap)
+        self.btn_delta_swap_pure.clicked.connect(self._run_delta_swap_pure)
+        self.btn_delta_replace.clicked.connect(self._run_delta_replace)
+
+        grid_2tgt = QtWidgets.QGridLayout()
+        grid_2tgt.setSpacing(4)
+        grid_2tgt.addWidget(_w_add,  0, 0)
+        grid_2tgt.addWidget(_w_sub,  0, 1)
+        grid_2tgt.addWidget(_w_msh,  0, 2)
+        grid_2tgt.addWidget(_w_xfer, 1, 0)
+        grid_2tgt.addWidget(_w_swap, 1, 1)
+        grid_2tgt.addWidget(_w_repl, 1, 2)
+        grid_2tgt.setColumnStretch(0, 1)
+        grid_2tgt.setColumnStretch(1, 1)
+        grid_2tgt.setColumnStretch(2, 1)
+        lay_2tgt.addLayout(grid_2tgt)
+        lay_mod.addWidget(grp_2tgt)
+
+        # ── Smooth & Relax ────────────────────────────────────────────────────
+        grp_smooth = QtWidgets.QGroupBox("Smooth & Average")
+        grp_smooth.setStyleSheet(_GRP_STYLE)
+        lay_smooth = QtWidgets.QVBoxLayout(grp_smooth)
+        lay_smooth.setContentsMargins(*_GRP_MARGINS)
+        lay_smooth.setSpacing(4)
+
         row_opacity = QtWidgets.QHBoxLayout()
         row_opacity.setSpacing(4)
         lbl_opacity = QtWidgets.QLabel("Opacity")
         lbl_opacity.setFixedWidth(52)
         self.slider_smooth_opacity = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider_smooth_opacity.setRange(1, 100)
-        self.slider_smooth_opacity.setValue(50)
+        self.slider_smooth_opacity.setValue(100)
         self.slider_smooth_opacity.setToolTip(
             "Strength for Smooth, Relax, Hammer and Average.\n"
             "Smooth / Relax: maps to 1–10 iterative passes.\n"
             "Hammer: maps to 1–20 iterative passes (50% = 10, default).\n"
             "Average: blend weight between original and averaged value.")
-        self.lbl_smooth_opacity_val = QtWidgets.QLabel("0.50")
+        self.lbl_smooth_opacity_val = QtWidgets.QLabel("1.00")
         self.lbl_smooth_opacity_val.setFixedWidth(30)
         self.slider_smooth_opacity.valueChanged.connect(
             lambda v: self.lbl_smooth_opacity_val.setText(f"{v/100:.2f}"))
+        lbl_lap = QtWidgets.QLabel("Lap")
+        lbl_lap.setToolTip("Number of topological Laplacian smoothing passes\n"
+                           "applied after the Hammer iterations.\n"
+                           "0 = no smoothing.")
+        self.spin_hammer_lap = QtWidgets.QSpinBox()
+        self.spin_hammer_lap.setRange(0, 10)
+        self.spin_hammer_lap.setValue(1)
+        self.spin_hammer_lap.setFixedWidth(36)
+        self.spin_hammer_lap.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        self.spin_hammer_lap.setToolTip(lbl_lap.toolTip())
         row_opacity.addWidget(lbl_opacity)
         row_opacity.addWidget(self.slider_smooth_opacity)
         row_opacity.addWidget(self.lbl_smooth_opacity_val)
-        lay_mod.addLayout(row_opacity)
+        row_opacity.addSpacing(6)
+        row_opacity.addWidget(lbl_lap)
+        row_opacity.addWidget(self.spin_hammer_lap)
+        lay_smooth.addLayout(row_opacity)
 
         row_sr = QtWidgets.QHBoxLayout()
         row_sr.setSpacing(2)
@@ -3958,7 +4024,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.btn_relax.clicked.connect(self._run_relax_deltas)
         row_sr.addWidget(_w_smt)
         row_sr.addWidget(_w_rlx)
-        lay_mod.addLayout(row_sr)
+        lay_smooth.addLayout(row_sr)
 
         row_ha = QtWidgets.QHBoxLayout()
         row_ha.setSpacing(2)
@@ -3978,14 +4044,15 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.btn_average.clicked.connect(self._run_average_deltas)
         row_ha.addWidget(_w_hammer)
         row_ha.addWidget(_w_average)
-        lay_mod.addLayout(row_ha)
-        lay_mod.addSpacing(4)
-        lay_mod.addWidget(_hsep())
-        lay_mod.addSpacing(4)
+        lay_smooth.addLayout(row_ha)
+        lay_mod.addWidget(grp_smooth)
 
-        # ── Copy / Paste — utility row ──────────────────────────────────────
-        row_cps = QtWidgets.QHBoxLayout()
-        row_cps.setSpacing(2)
+        # ── Selection ─────────────────────────────────────────────────────────
+        grp_sel = QtWidgets.QGroupBox("Deltas Clipboard")
+        grp_sel.setStyleSheet(_GRP_STYLE)
+        lay_sel = QtWidgets.QVBoxLayout(grp_sel)
+        lay_sel.setContentsMargins(*_GRP_MARGINS)
+        lay_sel.setSpacing(4)
 
         _w_copy_delta, self.btn_copy_delta = self._icon_btn(
             f"{_icons_dir}/copy_delta.png", "Copy Delta",
@@ -4000,24 +4067,6 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.btn_paste_delta.setEnabled(False)
         self.btn_paste_delta.clicked.connect(self._run_paste_delta)
 
-        _w_sel_delta, self.btn_sel_delta = self._icon_btn(
-            f"{_icons_dir}/select_delta.png", "Select Delta Verts",
-            "Selects all vertices that have non-zero deltas on the active target.")
-        self.btn_sel_delta.clicked.connect(self._run_select_delta_vertices)
-
-        row_cps.addWidget(_w_copy_delta)
-        row_cps.addWidget(_w_paste_delta)
-        row_cps.addWidget(_w_sel_delta)
-        row_cps.addStretch()
-        lay_mod.addLayout(row_cps)
-        lay_mod.addSpacing(4)
-        lay_mod.addWidget(_hsep())
-        lay_mod.addSpacing(4)
-
-        # ── Prune Small Deltas ────────────────────────────────────────────────
-        row_prune = QtWidgets.QHBoxLayout()
-        row_prune.setSpacing(4)
-
         _w_prune, self.btn_prune = self._icon_btn(
             f"{_icons_dir}/prune_delta.png", "Prune Small Deltas",
             "Zeros out deltas whose magnitude is below the tolerance threshold.")
@@ -4028,18 +4077,72 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.spin_prune_tol.setValue(0.001)
         self.spin_prune_tol.setSingleStep(0.001)
         self.spin_prune_tol.setDecimals(3)
-        self.spin_prune_tol.setFixedWidth(75)
+        self.spin_prune_tol.setFixedWidth(
+            self.spin_prune_tol.fontMetrics().horizontalAdvance("0.0001") + 12)
         self.spin_prune_tol.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self.spin_prune_tol.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
         self.spin_prune_tol.setToolTip("Tolerance — deltas with magnitude below this value are zeroed out.")
 
-        row_prune.addWidget(_w_prune, 1)
-        row_prune.addWidget(self.spin_prune_tol)
-        lay_mod.addLayout(row_prune)
-        lay_mod.addSpacing(4)
-        lay_mod.addWidget(_hsep())
-        lay_mod.addSpacing(4)
+        _w_sel_delta, self.btn_sel_delta = self._icon_btn(
+            f"{_icons_dir}/select_delta.png", "Select Delta Vrtx",
+            "Selects all vertices that have non-zero deltas on the active target.")
+        self.btn_sel_delta.clicked.connect(self._run_select_delta_vertices)
 
-        # ── Neutral + Multi checkboxes (shared by Delta Cluster and Delta Joint) ──
+        row_prune_top = QtWidgets.QHBoxLayout()
+        row_prune_top.setSpacing(4)
+        row_prune_top.addWidget(_w_prune, 1)
+        row_prune_top.addWidget(self.spin_prune_tol)
+
+        grid_cps = QtWidgets.QGridLayout()
+        grid_cps.setSpacing(4)
+        grid_cps.addWidget(_w_copy_delta,  0, 0)
+        grid_cps.addLayout(row_prune_top,  0, 1)
+        grid_cps.addWidget(_w_paste_delta, 1, 0)
+        grid_cps.addWidget(_w_sel_delta,   1, 1)
+        grid_cps.setColumnStretch(0, 1)
+        grid_cps.setColumnStretch(1, 1)
+        lay_sel.addLayout(grid_cps)
+        lay_mod.addWidget(grp_sel)
+
+        # ── Import / Bake ─────────────────────────────────────────────────────
+        grp_bake = QtWidgets.QGroupBox("Deltas Bake")
+        grp_bake.setStyleSheet(_GRP_STYLE)
+        lay_bake = QtWidgets.QVBoxLayout(grp_bake)
+        lay_bake.setContentsMargins(*_GRP_MARGINS)
+        lay_bake.setSpacing(4)
+
+        _w_apply, self.btn_apply_moves = self._icon_btn(
+            f"{_icons_dir}/paste_delta.png", "Apply Moves",
+            "Transfers vertex tweaks (pnts[]) from the mesh to the selected target.\n"
+            "Use when you sculpted the mesh directly without entering edit mode first.\n"
+            "The vertex moves are added to the target's existing deltas,\n"
+            "then zeroed out on the mesh.\n"
+            "Works on 1 selected target only.")
+        self.btn_apply_moves.clicked.connect(self._run_apply_moves)
+        lay_bake.addWidget(_w_apply)
+
+        _w_bake, self.btn_bake_deformers = self._icon_btn(
+            f"{_icons_dir}/wrap_extract.png", "Bake Deformers",
+            "Bakes the contribution of all deformers stacked above the blendShape into the\n"
+            "selected targets. For each target the tool activates it at weight 1.0, samples\n"
+            "the mesh with all deformers evaluated, and stores the result as the new delta set.\n\n"
+            "Typical workflow:\n"
+            "  1. Add a Delta Mush (or any deformer) on the base mesh and adjust it.\n"
+            "  2. Select the targets to improve in the Shape Editor.\n"
+            "  3. Click Bake Deformers.\n"
+            "  4. Delete the deformer.\n\n"
+            "Works on all targets selected in the Shape Editor.")
+        self.btn_bake_deformers.clicked.connect(self._run_bake_deformers)
+        lay_bake.addWidget(_w_bake)
+        lay_mod.addWidget(grp_bake)
+
+        # ── Rig Extraction ────────────────────────────────────────────────────
+        grp_rig = QtWidgets.QGroupBox("Deltas to Rig")
+        grp_rig.setStyleSheet(_GRP_STYLE)
+        lay_rig = QtWidgets.QVBoxLayout(grp_rig)
+        lay_rig.setContentsMargins(*_GRP_MARGINS)
+        lay_rig.setSpacing(4)
+
         row_delta_opts = QtWidgets.QHBoxLayout()
         self.chk_delta_neutral = QtWidgets.QCheckBox("Neutral")
         self.chk_delta_neutral.setChecked(True)
@@ -4057,9 +4160,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_delta_opts.addWidget(self.chk_delta_neutral)
         row_delta_opts.addWidget(self.chk_delta_multi)
         row_delta_opts.addStretch()
-        lay_mod.addLayout(row_delta_opts)
+        lay_rig.addLayout(row_delta_opts)
 
-        # ── Create Delta Cluster — button ──────────────────────────
         _w_dc, self.btn_delta_cluster = self._icon_btn(
             f"{_icons_dir}/delta_cluster.png", "Create Delta Cluster",
             "Duplicates the target as a posed mesh and creates a cluster\n"
@@ -4067,9 +4169,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Cluster handle is placed at the bbox center of delta vertices.\n"
             "Enable 'Neutral' to use the rest-pose mesh instead.")
         self.btn_delta_cluster.clicked.connect(self._run_delta_cluster)
-        lay_mod.addWidget(_w_dc)
+        lay_rig.addWidget(_w_dc)
 
-        # ── Create Delta Joint — button ──────────────────────────
         _w_dj, self.btn_delta_joint = self._icon_btn(
             f"{_icons_dir}/delta_joint.png", "Create Delta Joint",
             "Duplicates the target as a posed mesh and binds two joints:\n"
@@ -4078,72 +4179,36 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Everything is grouped under {target}_deltaJoint_grp.\n"
             "Enable 'Neutral' to use the rest-pose mesh instead.")
         self.btn_delta_joint.clicked.connect(self._run_delta_joint)
-        lay_mod.addWidget(_w_dj)
+        lay_rig.addWidget(_w_dj)
+        lay_mod.addWidget(grp_rig)
 
-        lay_mod.addSpacing(6)
-        lay_mod.addWidget(_hsep())
-        lay_mod.addSpacing(2)
-
-        _w_apply, self.btn_apply_moves = self._icon_btn(
-            f"{_icons_dir}/paste_delta.png", "Apply Moves",
-            "Transfers vertex tweaks (pnts[]) from the mesh to the selected target.\n"
-            "Use when you sculpted the mesh directly without entering edit mode first.\n"
-            "The vertex moves are added to the target's existing deltas,\n"
-            "then zeroed out on the mesh.\n"
-            "Works on 1 selected target only.")
-        self.btn_apply_moves.clicked.connect(self._run_apply_moves)
-        lay_mod.addWidget(_w_apply)
-
-        _w_bake, self.btn_bake_deformers = self._icon_btn(
-            f"{_icons_dir}/wrap_extract.png", "Bake Deformers",
-            "Bakes the contribution of all deformers stacked above the blendShape into the\n"
-            "selected targets. For each target the tool activates it at weight 1.0, samples\n"
-            "the mesh with all deformers evaluated, and stores the result as the new delta set.\n\n"
-            "Typical workflow:\n"
-            "  1. Add a Delta Mush (or any deformer) on the base mesh and adjust it.\n"
-            "  2. Select the targets to improve in the Shape Editor.\n"
-            "  3. Click Bake Deformers.\n"
-            "  4. Delete the deformer.\n\n"
-            "Works on all targets selected in the Shape Editor.")
-        self.btn_bake_deformers.clicked.connect(self._run_bake_deformers)
-        lay_mod.addWidget(_w_bake)
-
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/multiply.png",      "Multiply Deltas",       self._run_multiply)
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/nullify_delta.png",  "Nullify",               self._run_nullify)
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/add_delta.png",     "Add",                   self._run_delta_add)
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/sub_delta.png",     "Sub",                   self._run_delta_sub)
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/transfert_delta.png", "Transfer Delta",       self._run_delta_swap)
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/normal_push.png",   "Normal Push",           self._run_push_normals)
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/smooth_delta.png",  "Smooth Deltas",         self._run_smooth_deltas)
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/smooth_delta.png",  "Relax Deltas",          self._run_relax_deltas)
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/hammer_delta.png",   "Hammer Deltas",         self._run_hammer_deltas)
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/average_delta.png", "Average Deltas",        self._run_average_deltas)
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/copy_delta.png",    "Copy Delta",            self._run_copy_delta)
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/paste_delta.png",   "Paste Delta",           self._run_paste_delta)
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/select_delta.png",  "Select Delta Verts",    self._run_select_delta_vertices)
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/prune_delta.png",   "Prune Small Deltas",    self._run_prune_deltas)
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/paste_delta.png",      "Apply Moves",             self._run_apply_moves)
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/wrap_extract.png",     "Bake Deformers",          self._run_bake_deformers)
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/delta_cluster.png",    "Create Delta Cluster",    self._run_delta_cluster)
-        grp_mod.add_compact_action(
-            f"{_icons_dir}/delta_joint.png",      "Create Delta Joint",      self._run_delta_joint)
+        # Row 0 — Deltas Scale + Smooth & Average (8)
+        grp_mod.add_compact_action(f"{_icons_dir}/multiply_delta.png", "Multiply Deltas",      self._run_multiply)
+        grp_mod.add_compact_action(f"{_icons_dir}/invert_delta.png",   "Invert Deltas",        self._run_invert_deltas)
+        grp_mod.add_compact_action(f"{_icons_dir}/nullify_delta.png",  "Nullify",              self._run_nullify)
+        grp_mod.add_compact_action(f"{_icons_dir}/normal_push.png",    "Normal Push",          self._run_push_normals)
+        grp_mod.add_compact_action(f"{_icons_dir}/smooth_delta.png",   "Smooth Deltas",        self._run_smooth_deltas)
+        grp_mod.add_compact_action(f"{_icons_dir}/smooth_delta.png",   "Relax Deltas",         self._run_relax_deltas)
+        grp_mod.add_compact_action(f"{_icons_dir}/hammer_delta.png",   "Hammer Deltas",        self._run_hammer_deltas)
+        grp_mod.add_compact_action(f"{_icons_dir}/average_delta.png",  "Average Deltas",       self._run_average_deltas)
+        grp_mod.add_compact_row_break()
+        # Row 1 — Deltas Exchange (6)
+        grp_mod.add_compact_action(f"{_icons_dir}/add_delta.png",      "Add",                  self._run_delta_add)
+        grp_mod.add_compact_action(f"{_icons_dir}/sub_delta.png",      "Sub",                  self._run_delta_sub)
+        grp_mod.add_compact_action(f"{_icons_dir}/mult_delta.png",     "Mult",                 self._run_delta_mult_shapes)
+        grp_mod.add_compact_action(f"{_icons_dir}/transfer_delta.png", "Transfer",             self._run_delta_swap)
+        grp_mod.add_compact_action(f"{_icons_dir}/swap_delta.png",     "Swap",                 self._run_delta_swap_pure)
+        grp_mod.add_compact_action(f"{_icons_dir}/replace_delta.png",  "Replace",              self._run_delta_replace)
+        grp_mod.add_compact_row_break()
+        # Row 2 — Deltas Clipboard + Bake + Rig (8)
+        grp_mod.add_compact_action(f"{_icons_dir}/copy_delta.png",     "Copy Delta",           self._run_copy_delta)
+        grp_mod.add_compact_action(f"{_icons_dir}/paste_delta.png",    "Paste Delta",          self._run_paste_delta)
+        grp_mod.add_compact_action(f"{_icons_dir}/select_delta.png",   "Select Delta Vrtx",    self._run_select_delta_vertices)
+        grp_mod.add_compact_action(f"{_icons_dir}/prune_delta.png",    "Prune Small Deltas",   self._run_prune_deltas)
+        grp_mod.add_compact_action(f"{_icons_dir}/paste_delta.png",    "Apply Moves",          self._run_apply_moves)
+        grp_mod.add_compact_action(f"{_icons_dir}/wrap_extract.png",   "Bake Deformers",       self._run_bake_deformers)
+        grp_mod.add_compact_action(f"{_icons_dir}/delta_cluster.png",  "Create Delta Cluster", self._run_delta_cluster)
+        grp_mod.add_compact_action(f"{_icons_dir}/delta_joint.png",    "Create Delta Joint",   self._run_delta_joint)
         grp_mod.finalize_compact()
         root.addWidget(grp_mod)
 
@@ -5822,7 +5887,73 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             n = transfer_target_deltas(bs_node_a, idx_a, bs_node_b, idx_b,
                                        vtx_indices=vtx_indices)
             scope = "all delta verts" if vtx_indices is None else f"{len(vtx_indices)} vtx"
-            self._set_status(f"✓ Swap {name_b} \u2192 {name_a}  ({scope}, {n} verts)")
+            self._set_status(f"✓ Transfer {name_b} \u2192 {name_a}  ({scope}, {n} verts)")
+        except Exception as e:
+            traceback.print_exc()
+            self._set_status(f"✗ {e}", error=True)
+
+    @undo_chunk
+    def _run_delta_swap_pure(self):
+        targets = self._get_targets_or_warn()
+        if not targets:
+            return
+        if len(targets) < 2:
+            self._set_status("✗ Swap: select A then B", error=True)
+            return
+
+        raw_sel     = cmds.ls(sl=True, flatten=True) or []
+        vtx_sel     = [s for s in raw_sel if ".vtx[" in s]
+        vtx_indices = None if not vtx_sel else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
+
+        bs_node_a, idx_a, name_a = targets[0]
+        bs_node_b, idx_b, name_b = targets[1]
+
+        if vtx_indices is None:
+            msg = QtWidgets.QMessageBox(self)
+            msg.setIcon(QtWidgets.QMessageBox.Warning)
+            msg.setWindowTitle("Swap — No vertex selection")
+            msg.setText(f"No vertices selected.\n\nThis will swap ALL deltas between:\n"
+                        f"  {name_a}  \u2194  {name_b}\n\nContinue?")
+            btn_ok  = msg.addButton("Continue", QtWidgets.QMessageBox.AcceptRole)
+            btn_no  = msg.addButton("Cancel",   QtWidgets.QMessageBox.RejectRole)
+            msg.setDefaultButton(btn_no)
+            msg.adjustSize()
+            c = self.geometry().center()
+            msg.move(c.x() - msg.width() // 2, c.y() - msg.height() // 2)
+            msg.exec_()
+            if msg.clickedButton() is not btn_ok:
+                return
+
+        try:
+            n = swap_target_deltas(bs_node_a, idx_a, bs_node_b, idx_b,
+                                   vtx_indices=vtx_indices)
+            scope = "all delta verts" if vtx_indices is None else f"{len(vtx_indices)} vtx"
+            self._set_status(f"✓ Swap {name_a} \u2194 {name_b}  ({scope}, {n} verts)")
+        except Exception as e:
+            traceback.print_exc()
+            self._set_status(f"✗ {e}", error=True)
+
+    @undo_chunk
+    def _run_delta_replace(self):
+        targets = self._get_targets_or_warn()
+        if not targets:
+            return
+        if len(targets) < 2:
+            self._set_status("✗ Replace: select A (receiver) then B (source)", error=True)
+            return
+
+        raw_sel     = cmds.ls(sl=True, flatten=True) or []
+        vtx_sel     = [s for s in raw_sel if ".vtx[" in s]
+        vtx_indices = None if not vtx_sel else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
+
+        bs_node_a, idx_a, name_a = targets[0]
+        bs_node_b, idx_b, name_b = targets[1]
+
+        try:
+            n = replace_target_deltas(bs_node_a, idx_a, bs_node_b, idx_b,
+                                      vtx_indices=vtx_indices)
+            scope = "all delta verts" if vtx_indices is None else f"{len(vtx_indices)} vtx"
+            self._set_status(f"✓ Replace {name_a} \u2190 {name_b}  ({scope}, {n} verts)")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
@@ -5893,6 +6024,35 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             if msg.clickedButton() is not btn_continue:
                 return
         self._run_multiply_factors(0.0, 0.0, 0.0)
+
+    @undo_chunk
+    def _run_invert_deltas(self):
+        self._run_multiply_factors(-1.0, -1.0, -1.0)
+
+    @undo_chunk
+    def _run_delta_mult_shapes(self):
+        targets = self._get_targets_or_warn()
+        if not targets:
+            return
+        if len(targets) < 2:
+            self._set_status("✗ Mult: select A (receiver) then B (source)", error=True)
+            return
+
+        raw_sel     = cmds.ls(sl=True, flatten=True) or []
+        vtx_sel     = [s for s in raw_sel if ".vtx[" in s]
+        vtx_indices = None if not vtx_sel else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
+
+        bs_node_a, idx_a, name_a = targets[0]
+        bs_node_b, idx_b, name_b = targets[1]
+
+        try:
+            n = multiply_shapes_deltas(bs_node_a, idx_a, bs_node_b, idx_b,
+                                       vtx_indices=vtx_indices)
+            scope = "all delta verts" if vtx_indices is None else f"{len(vtx_indices)} vtx"
+            self._set_status(f"✓ Mult {name_a} \u00d7 {name_b}  ({scope}, {n} verts)")
+        except Exception as e:
+            traceback.print_exc()
+            self._set_status(f"✗ {e}", error=True)
 
     @undo_chunk
     def _run_push_normals(self):
@@ -6008,8 +6168,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             self._progress_begin(n_passes)
             def _cb(p, total, status):
                 self._progress_step(p, status)
+            n_laplacian = self.spin_hammer_lap.value()
             hammer_target_deltas(bs_node, logical_index, vtx_indices,
-                                 n_passes=n_passes, progress_cb=_cb)
+                                 n_passes=n_passes, progress_cb=_cb,
+                                 n_laplacian=n_laplacian)
             self._set_status(f"✓ Hammer Deltas  {len(vtx_indices)} vtx  ({n_passes} passes)")
         except Exception as e:
             traceback.print_exc()
