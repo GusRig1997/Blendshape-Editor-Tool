@@ -1650,6 +1650,24 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progr
                 if total_w > 0:
                     current[vi] = (sx / total_w, sy / total_w, sz / total_w)
 
+        # Topological Laplacian pass to smooth the resulting delta field
+        base_mesh = get_base_mesh(bs_node)
+        adj       = _build_adjacency(base_mesh)
+        snapshot  = dict(current)
+        for vi in vtx_set:
+            nbrs = adj.get(vi, [])
+            if not nbrs:
+                continue
+            sx = sy = sz = 0.0
+            for nb in nbrs:
+                d = snapshot.get(nb, (0.0, 0.0, 0.0))
+                sx += d[0]; sy += d[1]; sz += d[2]
+            n  = len(nbrs)
+            ox, oy, oz = current.get(vi, (0.0, 0.0, 0.0))
+            current[vi] = (ox + (sx / n - ox) * 0.5,
+                           oy + (sy / n - oy) * 0.5,
+                           oz + (sz / n - oz) * 0.5)
+
         # Write back only changed verts
         for vi in vtx_set:
             nx, ny, nz = current.get(vi, (0.0, 0.0, 0.0))
