@@ -1522,77 +1522,125 @@ def relax_target_deltas(bs_node, logical_index, opacity, vtx_indices=None):
 
 def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progress_cb=None):
     """
-    Volumetric Laplacian hammer applied to blendShape deltas.
+    Spatial Laplacian hammer applied to blendShape deltas.
 
     Dirichlet boundary conditions:
-      - Selected vertices are the unknowns — update each pass.
-      - Non-selected vertices are frozen anchors — never change.
+      - Selected vertices are the unknowns — updated each pass.
+      - Non-selected vertices are frozen anchors — always contribute their
+        original delta (0 if no delta), never mutated.
 
-    Connectivity is SPATIAL (Euclidean k-nearest, not topological edges),
-    so influence travels through volume rather than along the mesh surface.
-    Each pass: selected_vert = IDW(1/dist²) average of k nearest neighbors.
+    Connectivity is SPATIAL (Euclidean k-nearest) in NEUTRAL pose space.
+    Neutral positions are derived from the regen mesh as:
+        neutral[vi] = regen_pos[vi] - pnts[vi]
+    This is critical: using deformed positions would yield wrong neighbors
+    (e.g. open-mouth corners appear close while center lip verts are far apart,
+    whereas in neutral pose all lip-seam verts should be equidistant).
 
-    Uses a single regen mesh (read + write) — single Ctrl+Z.
+    A spatial hash grid replaces the previous O(n²) brute-force, giving
+    roughly O(n) precompute regardless of mesh density.
+
+    Each pass: selected_delta[vi] = IDW(1/dist²) average over k nearest
+    neighbors (selected or not). Interior selected verts converge toward
+    their own delta; boundary selected verts converge toward 0.
 
     vtx_indices : list of ints — must be non-empty (selection required).
-    n_passes    : number of Laplacian iterations (default 10).
+    n_passes    : number of Laplacian iterations.
     """
     if not vtx_indices:
         return
 
+    import math
     from maya.api import OpenMaya as om
 
     vtx_set = set(vtx_indices)
 
-    # Get rest-pose positions from the base mesh (read-only, no undo impact)
-    base_mesh = get_base_mesh(bs_node)
-    shapes    = cmds.listRelatives(base_mesh, shapes=True, type="mesh") or [base_mesh]
-    om_sel    = om.MSelectionList()
-    om_sel.add(shapes[0])
-    fn_mesh   = om.MFnMesh(om_sel.getDagPath(0))
-    all_pts   = fn_mesh.getPoints(om.MSpace.kObject)
-    n_verts   = len(all_pts)
-
-    # Precompute k-nearest spatial neighbors for each selected vertex
-    # k scales with mesh density; capped at 32 for performance
-    k = min(max(8, n_verts // 50), 32)
-    spatial_neighbors = {}
-    for vi in vtx_indices:
-        px, py, pz = all_pts[vi].x, all_pts[vi].y, all_pts[vi].z
-        dists = []
-        for vj in range(n_verts):
-            if vj == vi:
-                continue
-            qx, qy, qz = all_pts[vj].x, all_pts[vj].y, all_pts[vj].z
-            d2 = (px - qx) ** 2 + (py - qy) ** 2 + (pz - qz) ** 2
-            dists.append((d2, vj))
-        dists.sort()
-        spatial_neighbors[vi] = [(vj, d2) for d2, vj in dists[:k]]
-
-    # Single regen mesh — read pnts[], compute, write pnts[], delete (one undo step)
     saved = _save_shape_editor_selection()
     try:
         mesh_shape, tgt_transform, was_live = _get_regen_mesh(bs_node, logical_index)
 
-        n_mesh = cmds.polyEvaluate(mesh_shape, vertex=True)
+        n_verts = cmds.polyEvaluate(mesh_shape, vertex=True)
+
+        # Read deltas from pnts[]
         deltas = {}
-        for i in range(n_mesh):
+        for i in range(n_verts):
             dx = cmds.getAttr(f"{mesh_shape}.pnts[{i}].pntx")
             dy = cmds.getAttr(f"{mesh_shape}.pnts[{i}].pnty")
             dz = cmds.getAttr(f"{mesh_shape}.pnts[{i}].pntz")
             if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
                 deltas[i] = (dx, dy, dz)
 
-        current = dict(deltas)
+        # Derive NEUTRAL positions: regen_pos - delta
+        # (avoids reading the base mesh DAG which may return deformed positions)
+        om_sel    = om.MSelectionList()
+        om_sel.add(mesh_shape)
+        regen_pts = om.MFnMesh(om_sel.getDagPath(0)).getPoints(om.MSpace.kObject)
 
+        neutral = []
+        for i in range(n_verts):
+            p = regen_pts[i]
+            d = deltas.get(i, (0.0, 0.0, 0.0))
+            neutral.append((p.x - d[0], p.y - d[1], p.z - d[2]))
+
+        # Build spatial hash grid from neutral positions
+        # Target ~40 verts/cell so a radius-1 search (27 cells) gives ~1000 candidates
+        xs = [p[0] for p in neutral]
+        ys = [p[1] for p in neutral]
+        zs = [p[2] for p in neutral]
+        bbox_diag = math.sqrt(
+            (max(xs) - min(xs)) ** 2 +
+            (max(ys) - min(ys)) ** 2 +
+            (max(zs) - min(zs)) ** 2
+        ) or 1.0
+        n_cells   = max(n_verts // 40, 8)
+        cell_size = bbox_diag / max(n_cells ** (1.0 / 3.0), 1.0)
+
+        grid = {}
+        for vi, (x, y, z) in enumerate(neutral):
+            c = (math.floor(x / cell_size),
+                 math.floor(y / cell_size),
+                 math.floor(z / cell_size))
+            grid.setdefault(c, []).append(vi)
+
+        # k-nearest neighbors in neutral space via grid lookup
+        k = min(max(8, n_verts // 50), 32)
+        spatial_neighbors = {}
+        for vi in vtx_indices:
+            x, y, z = neutral[vi]
+            cx = math.floor(x / cell_size)
+            cy = math.floor(y / cell_size)
+            cz = math.floor(z / cell_size)
+
+            # Expand search radius until enough candidates found (usually radius=1 suffices)
+            candidates = set()
+            for radius in range(1, 6):
+                for dx in range(-radius, radius + 1):
+                    for dy in range(-radius, radius + 1):
+                        for dz in range(-radius, radius + 1):
+                            c = (cx + dx, cy + dy, cz + dz)
+                            if c in grid:
+                                candidates.update(grid[c])
+                if len(candidates) >= k + 1:
+                    break
+
+            dists = []
+            for vj in candidates:
+                if vj == vi:
+                    continue
+                qx, qy, qz = neutral[vj]
+                d2 = (x - qx) ** 2 + (y - qy) ** 2 + (z - qz) ** 2
+                dists.append((d2, vj))
+            dists.sort()
+            spatial_neighbors[vi] = [(vj, d2) for d2, vj in dists[:k]]
+
+        # Iterative IDW averaging — non-selected verts frozen at original delta (0 if none)
+        current = dict(deltas)
         for _pass in range(n_passes):
             if progress_cb:
                 progress_cb(_pass, n_passes, f"Hammer pass {_pass + 1} / {n_passes}…")
             snapshot = dict(current)
             for vi in vtx_set:
-                nbrs = spatial_neighbors[vi]
                 sx = sy = sz = total_w = 0.0
-                for vj, dist2 in nbrs:
+                for vj, dist2 in spatial_neighbors[vi]:
                     if dist2 < 1e-12:
                         continue
                     w = 1.0 / dist2
@@ -1602,6 +1650,7 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progr
                 if total_w > 0:
                     current[vi] = (sx / total_w, sy / total_w, sz / total_w)
 
+        # Write back only changed verts
         for vi in vtx_set:
             nx, ny, nz = current.get(vi, (0.0, 0.0, 0.0))
             ox, oy, oz = deltas.get(vi, (0.0, 0.0, 0.0))
@@ -1615,7 +1664,7 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progr
     finally:
         _restore_shape_editor_selection(saved)
 
-    print(f"  Hammer Deltas (vol): {n_passes} passes, {len(vtx_indices)} vtx, k={k}")
+    print(f"  Hammer Deltas: {n_passes} passes, {len(vtx_indices)} vtx, k={k}, cell={cell_size:.4f}")
 
 
 def average_target_deltas(bs_node, logical_index, vtx_indices, opacity=1.0):
