@@ -1650,7 +1650,7 @@ def relax_target_deltas(bs_node, logical_index, opacity, vtx_indices=None):
     print(f"  Relax Deltas: opacity={opacity:.2f}  ({scope})")
 
 
-def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progress_cb=None, n_laplacian=1):
+def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progress_cb=None, n_laplacian=1, use_volume=False):
     """
     Spatial Laplacian hammer applied to blendShape deltas.
 
@@ -1699,8 +1699,10 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progr
             if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
                 deltas[i] = (dx, dy, dz)
 
-        # Derive NEUTRAL positions: regen_pos - delta
-        # (avoids reading the base mesh DAG which may return deformed positions)
+        # Derive positions used for neighbor lookup:
+        #   Surface (default): neutral pose = regen_pos - delta
+        #     (avoids reading the base mesh DAG which may return deformed positions)
+        #   Volume: deformed pose = regen_pos as-is (target at weight=1)
         om_sel    = om.MSelectionList()
         om_sel.add(mesh_shape)
         regen_pts = om.MFnMesh(om_sel.getDagPath(0)).getPoints(om.MSpace.kObject)
@@ -1708,10 +1710,13 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progr
         neutral = []
         for i in range(n_verts):
             p = regen_pts[i]
-            d = deltas.get(i, (0.0, 0.0, 0.0))
-            neutral.append((p.x - d[0], p.y - d[1], p.z - d[2]))
+            if use_volume:
+                neutral.append((p.x, p.y, p.z))
+            else:
+                d = deltas.get(i, (0.0, 0.0, 0.0))
+                neutral.append((p.x - d[0], p.y - d[1], p.z - d[2]))
 
-        # Build spatial hash grid from neutral positions
+        # Build spatial hash grid from lookup positions
         # Target ~40 verts/cell so a radius-1 search (27 cells) gives ~1000 candidates
         xs = [p[0] for p in neutral]
         ys = [p[1] for p in neutral]
@@ -1817,7 +1822,8 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progr
     finally:
         _restore_shape_editor_selection(saved)
 
-    print(f"  Hammer Deltas: {n_passes} passes, {len(vtx_indices)} vtx, k={k}, cell={cell_size:.4f}")
+    mode = "deformed" if use_volume else "neutral"
+    print(f"  Hammer Deltas: {n_passes} passes, {len(vtx_indices)} vtx, k={k}, cell={cell_size:.4f}, neighbors={mode}")
 
 
 def average_target_deltas(bs_node, logical_index, vtx_indices, opacity=1.0):

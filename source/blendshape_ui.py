@@ -690,10 +690,11 @@ class CheckShapesDialog(QtWidgets.QDialog):
         _mb_font = menu_bar.font()
         _mb_font.setPointSize(8)
         menu_bar.setFont(_mb_font)
+        _ico_dir  = cmds.internalVar(userAppDir=True) + "prefs/icons"
         menu_file = menu_bar.addMenu("File")
-        act_load  = menu_file.addAction("Load…")
+        act_load  = menu_file.addAction(QtGui.QIcon(f"{_ico_dir}/path.png"),  "Load…")
         act_load.setToolTip("Load a JSON shapes list from disk")
-        act_save  = menu_file.addAction("Save…")
+        act_save  = menu_file.addAction(QtGui.QIcon(f"{_ico_dir}/save.png"),  "Save…")
         act_save.setToolTip("Save the current list to a JSON file")
         menu_file.addSeparator()
         act_reset = menu_file.addAction("Reset to Default")
@@ -2694,7 +2695,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
 class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     TOOL_NAME = "BlendshapeEditorUI"
-    VERSION   = "v.05.15"
+    VERSION   = "v.05.16"
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -3805,7 +3806,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                         "Equivalent to Multiply Deltas with all factors set to 0.\n"
                         "Works on selected vertices or the full target.")
 
-        # X/Y/Z labels + fields — indented to align with button text (after icon)
+        # X/Y/Z labels + fields
         row_xyz = QtWidgets.QHBoxLayout()
         row_xyz.setSpacing(4)
         _lbl_xyz_ico = QtWidgets.QLabel()
@@ -3823,14 +3824,19 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             row_xyz.addWidget(_fld, 1)
         lay_scalar.addLayout(row_xyz)
 
-        # Multiply / Invert / Nullify — full-width buttons
-        for _ico_file, _label, _tt, _handler in (
-                ("multiply_delta.png", "Multiply", _tt_multiply, self._run_multiply),
-                ("invert_delta.png",   "Invert",   _tt_invert,   self._run_invert_deltas),
-                ("nullify_delta.png",  "Nullify",  _tt_nullify,  self._run_nullify)):
-            _w, _b = self._icon_btn(f"{_icons_dir}/{_ico_file}", _label, _tt)
-            _b.clicked.connect(_handler)
-            lay_scalar.addWidget(_w)
+        # Multiply — full-width; Invert + Nullify — side by side below
+        _w_mult, _b_mult = self._icon_btn(f"{_icons_dir}/multiply_delta.png", "Multiply", _tt_multiply)
+        _b_mult.clicked.connect(self._run_multiply)
+        _w_inv,  _b_inv  = self._icon_btn(f"{_icons_dir}/invert_delta.png",   "Invert",   _tt_invert)
+        _b_inv.clicked.connect(self._run_invert_deltas)
+        _w_nul,  _b_nul  = self._icon_btn(f"{_icons_dir}/nullify_delta.png",  "Nullify",  _tt_nullify)
+        _b_nul.clicked.connect(self._run_nullify)
+        lay_scalar.addWidget(_w_mult)
+        row_inv_nul = QtWidgets.QHBoxLayout()
+        row_inv_nul.setSpacing(4)
+        row_inv_nul.addWidget(_w_inv)
+        row_inv_nul.addWidget(_w_nul)
+        lay_scalar.addLayout(row_inv_nul)
 
         lay_scalar.addSpacing(8)
 
@@ -3988,22 +3994,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.lbl_smooth_opacity_val.setFixedWidth(30)
         self.slider_smooth_opacity.valueChanged.connect(
             lambda v: self.lbl_smooth_opacity_val.setText(f"{v/100:.2f}"))
-        lbl_lap = QtWidgets.QLabel("Lap")
-        lbl_lap.setToolTip("Number of topological Laplacian smoothing passes\n"
-                           "applied after the Hammer iterations.\n"
-                           "0 = no smoothing.")
-        self.spin_hammer_lap = QtWidgets.QSpinBox()
-        self.spin_hammer_lap.setRange(0, 10)
-        self.spin_hammer_lap.setValue(1)
-        self.spin_hammer_lap.setFixedWidth(36)
-        self.spin_hammer_lap.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
-        self.spin_hammer_lap.setToolTip(lbl_lap.toolTip())
         row_opacity.addWidget(lbl_opacity)
         row_opacity.addWidget(self.slider_smooth_opacity)
         row_opacity.addWidget(self.lbl_smooth_opacity_val)
-        row_opacity.addSpacing(6)
-        row_opacity.addWidget(lbl_lap)
-        row_opacity.addWidget(self.spin_hammer_lap)
         lay_smooth.addLayout(row_opacity)
 
         row_sr = QtWidgets.QHBoxLayout()
@@ -4016,7 +4009,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Opacity maps to 1–10 iterative passes.")
         self.btn_smooth.clicked.connect(self._run_smooth_deltas)
         _w_rlx, self.btn_relax = self._icon_btn(
-            f"{_icons_dir}/smooth_delta.png", "Relax Deltas",
+            f"{_icons_dir}/relax_delta.png", "Relax Deltas",
             "Relaxes the delta field by averaging 3D positions in deformed space.\n"
             "Like a mesh relax, but applied only to the blendShape target.\n"
             "Works on vertex selection or full target (no selection).\n"
@@ -4045,6 +4038,42 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_ha.addWidget(_w_hammer)
         row_ha.addWidget(_w_average)
         lay_smooth.addLayout(row_ha)
+
+        row_neighbors = QtWidgets.QHBoxLayout()
+        row_neighbors.setSpacing(4)
+        lbl_smooth_neighbors = QtWidgets.QLabel("Space")
+        lbl_smooth_neighbors.setFixedWidth(40)
+        self.combo_smooth_falloff = QtWidgets.QComboBox()
+        self.combo_smooth_falloff.addItem("Neutral",  "neutral")
+        self.combo_smooth_falloff.addItem("Deformed", "deformed")
+        self.combo_smooth_falloff.setCurrentIndex(0)
+        self.combo_smooth_falloff.setToolTip(
+            "Space in which neighbor distances are computed (Hammer only).\n"
+            "\n"
+            "Neutral  — distances on the rest mesh (no deltas applied).\n"
+            "Deformed — distances on the mesh with deltas applied.\n"
+            "\n"
+            "Example — open mouth shape:\n"
+            "  Neutral : upper and lower lip vertices are close at rest,\n"
+            "            so the hammer may blend deltas across the gap.\n"
+            "  Deformed: lips are spread apart, each lip is hammered\n"
+            "            independently without cross-influence.")
+        lbl_lap = QtWidgets.QLabel("Laplacian")
+        lbl_lap.setToolTip("Number of topological Laplacian smoothing passes\n"
+                           "applied after the Hammer iterations.\n"
+                           "0 = no smoothing.")
+        self.spin_hammer_lap = QtWidgets.QSpinBox()
+        self.spin_hammer_lap.setRange(0, 10)
+        self.spin_hammer_lap.setValue(1)
+        self.spin_hammer_lap.setFixedWidth(36)
+        self.spin_hammer_lap.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        self.spin_hammer_lap.setToolTip(lbl_lap.toolTip())
+        row_neighbors.addWidget(lbl_smooth_neighbors)
+        row_neighbors.addWidget(self.combo_smooth_falloff)
+        row_neighbors.addStretch()
+        row_neighbors.addWidget(lbl_lap)
+        row_neighbors.addWidget(self.spin_hammer_lap)
+        lay_smooth.addLayout(row_neighbors)
         lay_mod.addWidget(grp_smooth)
 
         # ── Selection ─────────────────────────────────────────────────────────
@@ -4112,7 +4141,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_bake.setSpacing(4)
 
         _w_apply, self.btn_apply_moves = self._icon_btn(
-            f"{_icons_dir}/paste_delta.png", "Apply Moves",
+            f"{_icons_dir}/bake_moves.png", "Bake Moves",
             "Transfers vertex tweaks (pnts[]) from the mesh to the selected target.\n"
             "Use when you sculpted the mesh directly without entering edit mode first.\n"
             "The vertex moves are added to the target's existing deltas,\n"
@@ -4122,7 +4151,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_bake.addWidget(_w_apply)
 
         _w_bake, self.btn_bake_deformers = self._icon_btn(
-            f"{_icons_dir}/wrap_extract.png", "Bake Deformers",
+            f"{_icons_dir}/bake_deformer.png", "Bake Deformers",
             "Bakes the contribution of all deformers stacked above the blendShape into the\n"
             "selected targets. For each target the tool activates it at weight 1.0, samples\n"
             "the mesh with all deformers evaluated, and stores the result as the new delta set.\n\n"
@@ -4188,7 +4217,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         grp_mod.add_compact_action(f"{_icons_dir}/nullify_delta.png",  "Nullify",              self._run_nullify)
         grp_mod.add_compact_action(f"{_icons_dir}/normal_push.png",    "Normal Push",          self._run_push_normals)
         grp_mod.add_compact_action(f"{_icons_dir}/smooth_delta.png",   "Smooth Deltas",        self._run_smooth_deltas)
-        grp_mod.add_compact_action(f"{_icons_dir}/smooth_delta.png",   "Relax Deltas",         self._run_relax_deltas)
+        grp_mod.add_compact_action(f"{_icons_dir}/relax_delta.png",    "Relax Deltas",         self._run_relax_deltas)
         grp_mod.add_compact_action(f"{_icons_dir}/hammer_delta.png",   "Hammer Deltas",        self._run_hammer_deltas)
         grp_mod.add_compact_action(f"{_icons_dir}/average_delta.png",  "Average Deltas",       self._run_average_deltas)
         grp_mod.add_compact_row_break()
@@ -4205,8 +4234,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         grp_mod.add_compact_action(f"{_icons_dir}/paste_delta.png",    "Paste Delta",          self._run_paste_delta)
         grp_mod.add_compact_action(f"{_icons_dir}/select_delta.png",   "Select Delta Vrtx",    self._run_select_delta_vertices)
         grp_mod.add_compact_action(f"{_icons_dir}/prune_delta.png",    "Prune Small Deltas",   self._run_prune_deltas)
-        grp_mod.add_compact_action(f"{_icons_dir}/paste_delta.png",    "Apply Moves",          self._run_apply_moves)
-        grp_mod.add_compact_action(f"{_icons_dir}/wrap_extract.png",   "Bake Deformers",       self._run_bake_deformers)
+        grp_mod.add_compact_action(f"{_icons_dir}/bake_moves.png",    "Bake Moves",          self._run_apply_moves)
+        grp_mod.add_compact_action(f"{_icons_dir}/bake_deformer.png",   "Bake Deformers",       self._run_bake_deformers)
         grp_mod.add_compact_action(f"{_icons_dir}/delta_cluster.png",  "Create Delta Cluster", self._run_delta_cluster)
         grp_mod.add_compact_action(f"{_icons_dir}/delta_joint.png",    "Create Delta Joint",   self._run_delta_joint)
         grp_mod.finalize_compact()
@@ -6163,6 +6192,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         opacity = self.slider_smooth_opacity.value() / 100.0
         n_passes = max(1, int(round(opacity * 20)))
         vtx_indices = [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
+        use_volume = self.combo_smooth_falloff.currentData() == "deformed"
         try:
             bs_node, logical_index, target_name = targets[0]
             self._progress_begin(n_passes)
@@ -6171,7 +6201,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             n_laplacian = self.spin_hammer_lap.value()
             hammer_target_deltas(bs_node, logical_index, vtx_indices,
                                  n_passes=n_passes, progress_cb=_cb,
-                                 n_laplacian=n_laplacian)
+                                 n_laplacian=n_laplacian, use_volume=use_volume)
             self._set_status(f"✓ Hammer Deltas  {len(vtx_indices)} vtx  ({n_passes} passes)")
         except Exception as e:
             traceback.print_exc()
@@ -6195,7 +6225,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         vtx_indices = [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
         try:
             bs_node, logical_index, target_name = targets[0]
-            average_target_deltas(bs_node, logical_index, vtx_indices, opacity=opacity)
+            average_target_deltas(bs_node, logical_index, vtx_indices,
+                                  opacity=opacity)
             self._set_status(f"✓ Average Deltas  {len(vtx_indices)} vtx  (opacity {opacity:.2f})")
         except Exception as e:
             traceback.print_exc()
@@ -6291,15 +6322,15 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 self._set_status("Select exactly one target in the Shape Editor.", error=True)
                 return
             if len(targets) > 1:
-                self._set_status("Apply Moves works on 1 target only — select a single target.", error=True)
+                self._set_status("Bake Moves works on 1 target only — select a single target.", error=True)
                 return
             bs_node, logical_index, target_name = targets[0]
             base_mesh = get_base_mesh(bs_node)
             n = apply_mesh_moves_to_target(bs_node, base_mesh, logical_index)
-            self._set_status(f"✓ Apply Moves: {n} vertex move(s) added to '{target_name}'")
+            self._set_status(f"✓ Bake Moves: {n} vertex move(s) added to '{target_name}'")
         except Exception as e:
             traceback.print_exc()
-            self._set_status(f"✗ Apply Moves: {e}", error=True)
+            self._set_status(f"✗ Bake Moves: {e}", error=True)
 
     @undo_chunk
     def _run_bake_deformers(self):
