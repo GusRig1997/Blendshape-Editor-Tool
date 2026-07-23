@@ -13,8 +13,8 @@ expand it to the full layout.
 
 ----
 
-Multiply / Nullify
-------------------
+Multiply / Invert / Nullify
+---------------------------
 
 **Multiply Deltas**
 
@@ -30,7 +30,7 @@ Scales the X, Y, and/or Z components of every delta vector individually.
      - Click a field to edit that axis. The value is mirrored to all other
        fields that are also selected (Shift-click to multi-select).
    * - **Multiply Deltas** button
-     - Applies the per-axis scale.
+     - Applies the per-axis scale (full-width button above Invert/Nullify).
 
 Common use cases:
 
@@ -39,11 +39,20 @@ Common use cases:
 - ``-1.0`` — invert the axis
 - ``1.2`` — amplify by 20 %
 
+**Invert**
+
+Multiplies all delta components by ``-1`` (hardcoded — ignores the X/Y/Z
+fields). Equivalent to flipping the entire shape.
+
 **Nullify**
 
 Sets all vertex deltas to zero — equivalent to sculpting everything back to
-rest pose. Use with caution: this clears the entire target irreversibly
-(though the operation is wrapped in an undo chunk).
+rest pose. Hardcoded to ``×0`` (ignores the X/Y/Z fields).
+Use with caution: a confirmation dialog is shown before clearing the target.
+
+.. note::
+   If you need a precise negative or zero value on a single axis, type it
+   directly into the X, Y, or Z fields and use **Multiply Deltas** instead.
 
 ----
 
@@ -142,20 +151,61 @@ blendShape target.
 Hammer Deltas
 -------------
 
-A high-pass smoothing operation: each vertex's delta is replaced by the
-average of its neighbours. Unlike Smooth, Hammer uses more passes
-per-opacity-unit (up to 20 at full opacity), making it suitable for
-aggressively evening out irregular sculpts.
+Replaces each selected vertex's delta with the IDW-weighted average of its
+spatial neighbours' deltas. Useful for aggressively evening out irregular
+sculpts while preserving the overall shape envelope.
+
+Unlike Smooth, Hammer uses up to **20 passes** at full opacity (vs. 10 for
+Smooth), making it more effective on heavily noisy regions.
+
+A **vertex selection is required** — Hammer does not operate on the full
+target.
+
+**Space**
+
+Controls the coordinate space used to compute neighbour distances:
+
+.. list-table::
+   :widths: 20 80
+   :header-rows: 1
+
+   * - Option
+     - Behaviour
+   * - **Neutral** *(default)*
+     - Distances are measured on the rest mesh (no deltas applied).
+       Vertices that are close at rest influence each other, regardless of
+       the current deformation.
+   * - **Deformed**
+     - Distances are measured on the mesh with deltas applied.
+       Neighbours are determined by proximity in the deformed pose.
+
+*Example — open mouth shape:*
+
+- **Neutral** — upper and lower lip vertices are geometrically close at
+  rest, so the hammer may blend deltas across the mouth gap.
+- **Deformed** — lips are spread apart in the open-mouth pose; each lip is
+  hammered independently without cross-influence.
+
+**Laplacian**
+
+Number of additional topological Laplacian smoothing passes applied
+*after* the Hammer iterations (0–10, default 1). Acts as a post-process
+to clean up residual high-frequency noise left by the spatial pass.
+Set to ``0`` to skip.
 
 ----
 
 Average Deltas
 --------------
 
-Blends each vertex's current delta toward the average of its topological
-neighbours, controlled by the Opacity lerp factor.
-At opacity 100 each vertex is set exactly to its neighbourhood average;
+Blends each vertex's current delta toward the arithmetic mean of *all
+selected vertices'* deltas, controlled by the Opacity lerp factor.
+At opacity 100 each vertex is set exactly to the group average;
 at opacity 1 only a 1 % blend is applied.
+
+Useful for levelling a cluster of vertices to a common displacement value.
+
+A **vertex selection is required**.
 
 ----
 
@@ -204,13 +254,17 @@ threshold. Removes noise from accidental micro-sculpts.
 
 ----
 
-Apply Moves
------------
+Bake Moves
+----------
 
-Bakes the current **move-tool** transformation of the selected vertices
-directly into the blendShape target deltas, then resets the pivot to the
-origin. Use this to incorporate vertex moves made with the standard Move
-tool into the delta channel when not in sculpt mode.
+Bakes the current vertex tweaks (``pnts[]`` offsets) from the mesh into the
+selected blendShape target's deltas, then zeroes them out on the mesh.
+
+Use this when you sculpted or moved vertices directly on the mesh (outside
+of sculpt/edit mode) and want those moves to become part of the target.
+
+- Works on **1 selected target** only.
+- The moves are *added* to the existing deltas (non-destructive).
 
 ----
 
