@@ -3532,6 +3532,25 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
     pending_limits = {}  # ctrl → {attr_name: (lim_min, lim_max)}
     pending_conds  = {}  # ctrl → [cond_name, ...]
 
+    # ── Phase 0: wipe custom attrs on involved controllers ────────────────────
+    # Delete every user-defined attr (except hasLimits) so the build starts from
+    # a clean state: no stale locks, no leftover attrs from old mappings.
+    _native_attrs = set(_RC_LIMIT_INFO) | _SCALE_ATTRS
+    _ctrls_in_build = {r.get("controller", "").strip() for r in rows
+                       if r.get("controller", "").strip()}
+    for _ctrl in _ctrls_in_build:
+        if not cmds.objExists(_ctrl):
+            continue
+        for _attr in (cmds.listAttr(_ctrl, userDefined=True) or []):
+            if _attr == "hasLimits" or _attr in _native_attrs:
+                continue
+            _full = f"{_ctrl}.{_attr}"
+            if cmds.objExists(_full):
+                try:
+                    cmds.deleteAttr(_full)
+                except Exception:
+                    pass
+
     # ── Phase 1: validation + custom attr creation ───────────────────────────
     valid_rows = []
     for row in rows:
@@ -3557,27 +3576,47 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
 
         ctrl_attr_full = f"{ctrl}.{resolved_attr}"
         if not cmds.objExists(ctrl_attr_full):
-            # Attr doesn't exist → create as custom float attr, no min/max
+            # Attr doesn't exist → create as custom float attr (min/max applied later)
             try:
                 cmds.addAttr(ctrl, longName=resolved_attr, attributeType="float",
                              defaultValue=0.0, keyable=True)
             except Exception:
                 results.append({"shape": shape, "status": "no_attr"})
                 continue
-        elif resolved_attr not in _RC_LIMIT_INFO and resolved_attr not in _SCALE_ATTRS:
-            # Custom attr already exists: strip any hard limits (from a previous build)
-            # so the clamp node can drive blendshape weight beyond 1 when hasLimits=OFF
-            try:
-                cmds.addAttr(ctrl_attr_full, edit=True, hasMinValue=False, hasMaxValue=False)
-            except Exception:
-                pass
-
         valid_rows.append({
             "shape": shape, "idx": idx, "ctrl": ctrl,
             "ctrl_attr": ctrl_attr_full, "resolved_attr": resolved_attr,
             "in_min": in_min, "in_max": in_max,
             "gate": gate,
         })
+
+    # ── Apply physical slider limits to custom attrs ───────────────────────────
+    # Aggregate in_min/in_max across all shapes sharing the same custom attr so
+    # the slider stops at the activation range — matching transformLimits behaviour
+    # for native attrs when hasLimits=ON.
+    _custom_ranges = {}  # (ctrl, attr) → [lo, hi]
+    for vr in valid_rows:
+        ra = vr["resolved_attr"]
+        if ra in _RC_LIMIT_INFO or ra in _SCALE_ATTRS:
+            continue
+        key = (vr["ctrl"], ra)
+        lo = min(0.0, vr["in_min"], vr["in_max"])
+        hi = max(0.0, vr["in_min"], vr["in_max"])
+        if key not in _custom_ranges:
+            _custom_ranges[key] = [lo, hi]
+        else:
+            _custom_ranges[key][0] = min(_custom_ranges[key][0], lo)
+            _custom_ranges[key][1] = max(_custom_ranges[key][1], hi)
+
+    for (ctrl_k, ra_k), (lo_k, hi_k) in _custom_ranges.items():
+        full_k = f"{ctrl_k}.{ra_k}"
+        if cmds.objExists(full_k):
+            try:
+                cmds.addAttr(full_k, edit=True,
+                             hasMinValue=True, minValue=lo_k,
+                             hasMaxValue=True, maxValue=hi_k)
+            except Exception:
+                pass
 
     # ── Soft blend lookup ─────────────────────────────────────────────────────
     _soft_pair_map = {}   # shape → partner_shape
