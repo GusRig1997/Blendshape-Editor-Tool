@@ -3469,8 +3469,35 @@ _RC_LIMIT_INFO = {
 _SCALE_ATTRS = {"sx", "sy", "sz"}
 
 
+def _soft_blend_keys(in_max, partner_in_max):
+    """
+    Returns 5 (driver_value, weight_value, tangent_type) tuples for a soft blend
+    animCurveUU.  The slight undershoot near 0 is a natural consequence of the
+    smooth/auto tangents — no explicit negative key needed.
+
+    in_max         : this shape's activation maximum (e.g.  2.0 for mouth_lft)
+    partner_in_max : opposite shape's in_max           (e.g. -2.0 for mouth_rgt)
+    """
+    if in_max >= 0:
+        return [
+            (partner_in_max,        0.0, "linear"),  # opposite full extent, shape=0
+            (partner_in_max / 2.0,  0.0, "linear"),  # opposite half extent, dead zone
+            (0.0,                   0.0, "smooth"),   # neutral — smooth tangent → soft dip
+            (in_max / 2.0,          0.5, "auto"),     # midpoint
+            (in_max,                1.0, "linear"),   # full activation
+        ]
+    else:
+        return [
+            (in_max,                1.0, "linear"),   # full activation (negative)
+            (in_max / 2.0,          0.5, "smooth"),   # midpoint — smooth for soft ease-out
+            (0.0,                   0.0, "smooth"),   # neutral
+            (partner_in_max / 2.0,  0.0, "linear"),  # positive half extent, dead zone
+            (partner_in_max,        0.0, "linear"),  # positive full extent, shape=0
+        ]
+
+
 @undo_chunk
-def build_and_connect_rig(bs_node, rows):
+def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve=None):
     """
     Per shape, builds the following network:
       offset_{shape}_{i}  (addDoubleLinear, if in_min≠0) : subtracts in_min
@@ -3501,10 +3528,9 @@ def build_and_connect_rig(bs_node, rows):
         if m:
             target_map[alias] = int(m.group(1))
 
-    results               = []
-    pending_limits        = {}  # ctrl → {attr_name: (lim_min, lim_max)}
-    pending_conds         = {}  # ctrl → [cond_name, ...]
-    pending_custom_clamps = {}  # ctrl_attr_full → (c_min, c_max)
+    results        = []
+    pending_limits = {}  # ctrl → {attr_name: (lim_min, lim_max)}
+    pending_conds  = {}  # ctrl → [cond_name, ...]
 
     # ── Phase 1: validation + custom attr creation ───────────────────────────
     valid_rows = []
@@ -3531,13 +3557,20 @@ def build_and_connect_rig(bs_node, rows):
 
         ctrl_attr_full = f"{ctrl}.{resolved_attr}"
         if not cmds.objExists(ctrl_attr_full):
-            # Attr doesn't exist → create as custom float attr (no min/max yet, set in post-loop)
+            # Attr doesn't exist → create as custom float attr, no min/max
             try:
                 cmds.addAttr(ctrl, longName=resolved_attr, attributeType="float",
                              defaultValue=0.0, keyable=True)
             except Exception:
                 results.append({"shape": shape, "status": "no_attr"})
                 continue
+        elif resolved_attr not in _RC_LIMIT_INFO and resolved_attr not in _SCALE_ATTRS:
+            # Custom attr already exists: strip any hard limits (from a previous build)
+            # so the clamp node can drive blendshape weight beyond 1 when hasLimits=OFF
+            try:
+                cmds.addAttr(ctrl_attr_full, edit=True, hasMinValue=False, hasMaxValue=False)
+            except Exception:
+                pass
 
         valid_rows.append({
             "shape": shape, "idx": idx, "ctrl": ctrl,
@@ -3545,6 +3578,14 @@ def build_and_connect_rig(bs_node, rows):
             "in_min": in_min, "in_max": in_max,
             "gate": gate,
         })
+
+    # ── Soft blend lookup ─────────────────────────────────────────────────────
+    _soft_pair_map = {}   # shape → partner_shape
+    if soft_blend_pairs:
+        for _a, _b in soft_blend_pairs:
+            _soft_pair_map[_a] = _b
+            _soft_pair_map[_b] = _a
+    _shape_in_max = {vr["shape"]: vr["in_max"] for vr in valid_rows}
 
     # ── Phase 2: group by shape ───────────────────────────────────────────────
     shape_groups = defaultdict(list)
@@ -3555,15 +3596,60 @@ def build_and_connect_rig(bs_node, rows):
     for shape, group in shape_groups.items():
         bs_weight_attr = f"{bs_node}.w[{group[0]['idx']}]"
         try:
-            # Remove old nodes (deterministic names)
+            # Remove old nodes (deterministic names, including sdk_ for soft blend)
             old = (cmds.ls(f"offset_{shape}_*", f"norm_{shape}_*",
                            f"gate_{shape}_*", f"rev_{shape}_*") or [])
-            old += [n for n in (f"sum_{shape}", f"clamp_{shape}",
-                                f"cond_{shape}", f"rmv_{shape}", f"gate_{shape}")
+            old += [n for n in (f"sum_{shape}", f"clamp_{shape}", f"cond_{shape}",
+                                f"rmv_{shape}", f"gate_{shape}", f"sdk_{shape}")
                     if cmds.objExists(n)]
             if old:
                 cmds.delete(old)
             # No explicit disconnectAttr: force=True on the final connection is sufficient
+
+            # ── Soft blend path (animCurveUU, direct to bs weight) ────────────
+            if shape in _soft_pair_map:
+                partner_in_max = _shape_in_max.get(_soft_pair_map[shape])
+                if partner_in_max is not None:
+                    vr0           = group[0]
+                    ctrl          = vr0["ctrl"]
+                    ctrl_attr     = vr0["ctrl_attr"]
+                    resolved_attr = vr0["resolved_attr"]
+                    in_max        = vr0["in_max"]
+
+                    curve = cmds.createNode("animCurveUU", name=f"sdk_{shape}")
+                    cmds.setAttr(f"{curve}.preInfinity",  1)  # linear extrapolation
+                    cmds.setAttr(f"{curve}.postInfinity", 1)
+
+                    # Use custom normalized curve if provided; else fall back to defaults.
+                    # Mapping: u_actual = u_norm * in_max  (works for ± shapes)
+                    if soft_blend_curve:
+                        keys = [(k["u"] * in_max, k["v"], k.get("tangent", "auto"))
+                                for k in soft_blend_curve]
+                    else:
+                        keys = _soft_blend_keys(in_max, partner_in_max)
+                    for t, v, _ in keys:
+                        cmds.setKeyframe(curve, float=t, value=v)
+                    for i, (_, _, tang) in enumerate(keys):
+                        cmds.keyTangent(curve, index=(i, i),
+                                        inTangentType=tang, outTangentType=tang)
+
+                    cmds.connectAttr(ctrl_attr,         f"{curve}.input",  force=True)
+                    cmds.connectAttr(f"{curve}.output", bs_weight_attr,    force=True)
+
+                    # transformLimits: cover the full symmetric range
+                    if resolved_attr in _RC_LIMIT_INFO:
+                        lim_min = min(0.0, in_max, partner_in_max)
+                        lim_max = max(0.0, in_max, partner_in_max)
+                        prev = pending_limits.setdefault(ctrl, {}).get(
+                            resolved_attr, (0.0, 0.0))
+                        pending_limits[ctrl][resolved_attr] = (
+                            min(prev[0], lim_min), max(prev[1], lim_max))
+                    # Register ctrl so hasLimits attr is still created
+                    pending_conds.setdefault(ctrl, [])
+
+                    for _ in group:
+                        results.append({"shape": shape, "status": "ok"})
+                    continue  # skip standard norm/clamp/cond path
 
             # ── Norm nodes (one per driver) ───────────────────────────────────
             norm_outputs = []
@@ -3582,7 +3668,7 @@ def build_and_connect_rig(bs_node, rows):
 
                 # Offset: subtracts in_min from the signal (always -in_min)
                 if abs(in_min) > 1e-9:
-                    adl = cmds.createNode("addDoubleLinear", name=f"offset_{shape}_{i}")
+                    adl = cmds.createNode("addDL", name=f"offset_{shape}_{i}")
                     cmds.connectAttr(vr["ctrl_attr"], f"{adl}.input1", force=True)
                     cmds.setAttr(f"{adl}.input2", -in_min)
                     norm_src = f"{adl}.output"
@@ -3654,7 +3740,7 @@ def build_and_connect_rig(bs_node, rows):
                 else:
                     gate_plug = raw_plug
 
-                gate_node = cmds.createNode("multDoubleLinear", name=f"gate_{shape}_{gi}")
+                gate_node = cmds.createNode("multDL", name=f"gate_{shape}_{gi}")
                 cmds.disconnectAttr(current_src, bs_weight_attr)
                 cmds.connectAttr(current_src,  f"{gate_node}.input1", force=True)
                 cmds.connectAttr(gate_plug,    f"{gate_node}.input2", force=True)
@@ -3682,13 +3768,6 @@ def build_and_connect_rig(bs_node, rows):
                     prev = pending_limits.setdefault(ctrl, {}).get(resolved_attr, (0.0, 0.0))
                     pending_limits[ctrl][resolved_attr] = (min(prev[0], lim_min),
                                                            max(prev[1], lim_max))
-                elif resolved_attr not in _SCALE_ATTRS:
-                    # Custom attr: accumulate min/max range
-                    c_min = min(0.0, in_min, in_max)
-                    c_max = max(0.0, in_min, in_max)
-                    prev = pending_custom_clamps.get(vr["ctrl_attr"], (0.0, 0.0))
-                    pending_custom_clamps[vr["ctrl_attr"]] = (min(prev[0], c_min),
-                                                              max(prev[1], c_max))
                 # Each ctrl has its own hasLimits → register it
                 if ctrl != primary_ctrl:
                     pending_conds.setdefault(ctrl, [])  # force creation without cond
@@ -3756,13 +3835,6 @@ def build_and_connect_rig(bs_node, rows):
                 if not cmds.isConnected(f"{ctrl}.hasLimits", f"{cond_name}.firstTerm"):
                     cmds.connectAttr(f"{ctrl}.hasLimits", f"{cond_name}.firstTerm", force=True)
 
-    # Clamp custom attrs (set min/max on the attribute itself)
-    for ctrl_attr_full, (c_min, c_max) in pending_custom_clamps.items():
-        try:
-            cmds.addAttr(ctrl_attr_full, edit=True, minValue=c_min, maxValue=c_max)
-        except Exception:
-            pass
-
     return results
 
 
@@ -3788,7 +3860,8 @@ def disconnect_rig_shapes(bs_node, shape_names):
         # Supprimer les utility nodes
         old = (cmds.ls(f"offset_{shape}_*", f"norm_{shape}_*",
                        f"gate_{shape}_*", f"rev_{shape}_*") or [])
-        old += [n for n in (f"sum_{shape}", f"clamp_{shape}", f"cond_{shape}", f"gate_{shape}")
+        old += [n for n in (f"sum_{shape}", f"clamp_{shape}", f"cond_{shape}",
+                            f"gate_{shape}", f"sdk_{shape}")
                 if cmds.objExists(n)]
         if old:
             cmds.delete(old)
