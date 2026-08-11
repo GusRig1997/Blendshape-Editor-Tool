@@ -6620,15 +6620,14 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         if self.btn_push_in.isChecked():
             factor = -factor
 
-        vtx_indices        = None if all_verts else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
-        targets_to_process = targets if all_verts else [targets[0]]
+        vtx_indices = None if all_verts else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
 
         try:
-            for bs_node, logical_index, target_name in targets_to_process:
+            for bs_node, logical_index, target_name in targets:
                 push_normals_deltas(bs_node, logical_index, factor,
                                     vtx_indices=vtx_indices)
-            scope     = "all verts" if all_verts else f"{len(vtx_indices)} vtx"
-            n_t       = len(targets_to_process)
+            scope = "all verts" if all_verts else f"{len(vtx_indices)} vtx"
+            n_t   = len(targets)
             direction = "inward" if factor < 0 else "outward"
             self._set_status(
                 f"Normal Push {n_t} target{'s' if n_t > 1 else ''}"
