@@ -1112,6 +1112,305 @@ class CheckShapesDialog(QtWidgets.QDialog):
 
 
 
+class _SoftBlendGraphWidget(QtWidgets.QWidget):
+    """
+    Mini graph editor for the global soft blend activation curve.
+    Normalized space: U ∈ [-1, 1] (driver), V ∈ [-1, 1] (weight).
+    Mapping at build time: u_actual = u_norm × in_max  (works for ± shapes).
+
+    Key roles:
+      idx 0  (-1,  0, linear) — fixed: partner full extent, dead zone
+      idx 1  (-0.5, 0, linear) — fixed: partner half extent, dead zone
+      idx 2  ( 0,  0, smooth) — U/V locked, tangent editable → controls undershoot
+      idx 3  ( 0.5, 0.5, auto) — fully editable: the "midpoint" key
+      idx 4  ( 1,  1, linear) — fixed: full activation endpoint
+    """
+
+    keys_changed = QtCore.Signal()
+
+    _KEY_R  = 5
+    _MARGIN = 20
+    # Visible viewport range (data space) — keys outside are drawn clipped
+    _U_MIN, _U_MAX = -0.5, 1.0
+    _V_MIN, _V_MAX = -0.5, 1.0
+
+    DEFAULT_KEYS = [
+        {"u": -1.0, "v": 0.0, "tangent": "linear"},
+        {"u": -0.5, "v": 0.0, "tangent": "linear"},
+        {"u":  0.0, "v": 0.0, "tangent": "smooth"},
+        {"u":  0.5, "v": 0.5, "tangent": "auto"},
+        {"u":  1.0, "v": 1.0, "tangent": "linear"},
+    ]
+
+    _U_LOCKED       = {0, 1, 2, 4}   # only midpoint (idx 3) can move horizontally
+    _V_LOCKED       = {0, 1, 2, 4}   # only midpoint can move vertically
+    _TANGENT_LOCKED = {0, 1, 4}      # indices 2 and 3 have editable tangents
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setMinimumSize(200, 150)
+        self.setFixedHeight(155)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
+                           QtWidgets.QSizePolicy.Fixed)
+        self.setFocusPolicy(QtCore.Qt.ClickFocus)
+        import copy
+        self._keys = copy.deepcopy(self.DEFAULT_KEYS)
+        self._sel  = None   # selected key index
+        self._drag = None   # key index being dragged
+
+    # ── Public API ─────────────────────────────────────────────────────────────
+
+    def set_keys(self, keys):
+        import copy
+        self._keys = copy.deepcopy(keys)
+        self._sel  = None
+        self.update()
+        self.keys_changed.emit()
+
+    def get_keys(self):
+        import copy
+        return copy.deepcopy(self._keys)
+
+    def selected_index(self):
+        return self._sel
+
+    def selected_key(self):
+        return dict(self._keys[self._sel]) if self._sel is not None else None
+
+    def set_selected_u(self, u):
+        if self._sel is None or self._sel in self._U_LOCKED:
+            return
+        keys = self._keys
+        lo = keys[self._sel - 1]["u"] if self._sel > 0 else -1.0
+        hi = keys[self._sel + 1]["u"] if self._sel < len(keys) - 1 else 1.0
+        keys[self._sel]["u"] = max(lo + 0.001, min(hi - 0.001, round(u, 3)))
+        self.update()
+        self.keys_changed.emit()
+
+    def set_selected_v(self, v):
+        if self._sel is None or self._sel in self._V_LOCKED:
+            return
+        self._keys[self._sel]["v"] = max(-1.0, min(1.0, round(v, 3)))
+        self.update()
+        self.keys_changed.emit()
+
+    def set_selected_tangent(self, tangent):
+        if self._sel is None or self._sel in self._TANGENT_LOCKED:
+            return
+        self._keys[self._sel]["tangent"] = tangent
+        self.update()
+        self.keys_changed.emit()
+
+    # ── Coordinate helpers ────────────────────────────────────────────────────
+
+    def _u2x(self, u):
+        m = self._MARGIN
+        w = self.width() - 2 * m
+        return m + (u - self._U_MIN) / (self._U_MAX - self._U_MIN) * w
+
+    def _v2y(self, v):
+        m = self._MARGIN
+        h = self.height() - 2 * m
+        return m + (self._V_MAX - v) / (self._V_MAX - self._V_MIN) * h
+
+    def _x2u(self, x):
+        m = self._MARGIN
+        w = max(self.width() - 2 * m, 1)
+        return self._U_MIN + (x - m) / w * (self._U_MAX - self._U_MIN)
+
+    def _y2v(self, y):
+        m = self._MARGIN
+        h = max(self.height() - 2 * m, 1)
+        return self._V_MAX - (y - m) / h * (self._V_MAX - self._V_MIN)
+
+    # ── Tangent slope (Catmull-Rom for smooth/auto) ───────────────────────────
+
+    def _slope(self, idx, direction):
+        keys = self._keys
+        k    = keys[idx]
+        tang = k["tangent"]
+        if tang == "linear":
+            if direction == "out" and idx < len(keys) - 1:
+                nk = keys[idx + 1]
+                du = nk["u"] - k["u"]
+                return (nk["v"] - k["v"]) / du if abs(du) > 1e-9 else 0.0
+            if direction == "in"  and idx > 0:
+                pk = keys[idx - 1]
+                du = k["u"] - pk["u"]
+                return (k["v"] - pk["v"]) / du if abs(du) > 1e-9 else 0.0
+            return 0.0
+        # smooth / auto → Catmull-Rom
+        if 0 < idx < len(keys) - 1:
+            pk = keys[idx - 1]; nk = keys[idx + 1]
+            du = nk["u"] - pk["u"]
+            return (nk["v"] - pk["v"]) / du if abs(du) > 1e-9 else 0.0
+        if idx == 0 and len(keys) > 1:
+            nk = keys[1]; du = nk["u"] - k["u"]
+            return (nk["v"] - k["v"]) / du if abs(du) > 1e-9 else 0.0
+        if idx == len(keys) - 1 and len(keys) > 1:
+            pk = keys[-2]; du = k["u"] - pk["u"]
+            return (k["v"] - pk["v"]) / du if abs(du) > 1e-9 else 0.0
+        return 0.0
+
+    # ── Paint ─────────────────────────────────────────────────────────────────
+
+    def paintEvent(self, event):
+        p = QtGui.QPainter(self)
+        p.setRenderHint(QtGui.QPainter.Antialiasing)
+        p.fillRect(self.rect(), QtGui.QColor(38, 38, 38))
+
+        m = self._MARGIN
+        grid_pen = QtGui.QPen(QtGui.QColor(60, 60, 60), 1, QtCore.Qt.DotLine)
+        axis_pen = QtGui.QPen(QtGui.QColor(85, 85, 85), 1)
+        font     = QtGui.QFont("Arial", 7)
+        p.setFont(font)
+        fm       = QtGui.QFontMetrics(font)
+
+        # Grid + labels (only values inside the viewport range)
+        lbl_col = QtGui.QPen(QtGui.QColor(100, 100, 100))
+        for val in (-0.5, 0.0, 0.5, 1.0):
+            lbl = f"{val:g}"
+            lbl_w = fm.horizontalAdvance(lbl)
+            # horizontal grid line (V axis)
+            if self._V_MIN <= val <= self._V_MAX:
+                p.setPen(grid_pen)
+                y = int(self._v2y(val))
+                p.drawLine(m, y, self.width() - m, y)
+                p.setPen(lbl_col)
+                p.drawText(2, y + fm.ascent() // 2, lbl)
+            # vertical grid line (U axis)
+            if self._U_MIN <= val <= self._U_MAX:
+                p.setPen(grid_pen)
+                x = int(self._u2x(val))
+                p.drawLine(x, m, x, self.height() - m)
+                p.setPen(lbl_col)
+                p.drawText(x - lbl_w // 2, self.height() - 3, lbl)
+
+        # Axes at 0
+        p.setPen(axis_pen)
+        y0 = int(self._v2y(0.0)); x0 = int(self._u2x(0.0))
+        p.drawLine(m, y0, self.width() - m, y0)
+        p.drawLine(x0, m, x0, self.height() - m)
+
+        # Curve
+        self._paint_curve(p)
+
+        # Key dots
+        for i, k in enumerate(self._keys):
+            x = int(self._u2x(k["u"]))
+            y = int(self._v2y(k["v"]))
+            r = self._KEY_R
+            fixed = i in self._U_LOCKED and i in self._V_LOCKED
+            col = QtGui.QColor(110, 110, 110) if fixed else QtGui.QColor(220, 160, 40)
+            p.setPen(QtGui.QPen(QtGui.QColor(255, 255, 255) if i == self._sel
+                                else col.darker(160), 2 if i == self._sel else 1))
+            p.setBrush(col)
+            p.drawEllipse(QtCore.QPoint(x, y), r, r)
+
+        p.end()
+
+    def _paint_curve(self, painter):
+        if len(self._keys) < 2:
+            return
+        painter.setPen(QtGui.QPen(QtGui.QColor(80, 180, 255), 1.5))
+        path  = QtGui.QPainterPath()
+        first = True
+        for i in range(len(self._keys) - 1):
+            k0 = self._keys[i]; k1 = self._keys[i + 1]
+            x0 = self._u2x(k0["u"]); y0 = self._v2y(k0["v"])
+            x1 = self._u2x(k1["u"]); y1 = self._v2y(k1["v"])
+            if first:
+                path.moveTo(x0, y0)
+                first = False
+            if k0["tangent"] == "linear" and k1["tangent"] == "linear":
+                path.lineTo(x1, y1)
+            else:
+                s0 = self._slope(i,     "out")
+                s1 = self._slope(i + 1, "in")
+                du = k1["u"] - k0["u"]
+                path.cubicTo(
+                    self._u2x(k0["u"] + du / 3.0), self._v2y(k0["v"] + s0 * du / 3.0),
+                    self._u2x(k1["u"] - du / 3.0), self._v2y(k1["v"] - s1 * du / 3.0),
+                    x1, y1)
+        painter.drawPath(path)
+
+    # ── Mouse ─────────────────────────────────────────────────────────────────
+
+    def _key_at(self, pos):
+        for i, k in enumerate(self._keys):
+            dx = pos.x() - self._u2x(k["u"])
+            dy = pos.y() - self._v2y(k["v"])
+            if dx * dx + dy * dy <= (self._KEY_R + 3) ** 2:
+                return i
+        return None
+
+    def mousePressEvent(self, event):
+        if event.button() != QtCore.Qt.LeftButton:
+            return
+        prev  = self._sel
+        idx   = self._key_at(event.pos())
+        self._sel = idx
+        if idx is not None:
+            movable = idx not in self._U_LOCKED or idx not in self._V_LOCKED
+            if movable:
+                self._drag = idx
+        self.update()
+        if self._sel != prev:
+            self.keys_changed.emit()
+
+    def mouseMoveEvent(self, event):
+        if self._drag is None:
+            return
+        k    = self._keys[self._drag]
+        keys = self._keys
+        if self._drag not in self._U_LOCKED:
+            u  = self._x2u(event.pos().x())
+            lo = keys[self._drag - 1]["u"] if self._drag > 0 else -1.0
+            hi = keys[self._drag + 1]["u"] if self._drag < len(keys) - 1 else 1.0
+            k["u"] = round(max(lo + 0.001, min(hi - 0.001, u)), 3)
+        if self._drag not in self._V_LOCKED:
+            v  = self._y2v(event.pos().y())
+            k["v"] = round(max(-1.0, min(1.0, v)), 3)
+        self.update()
+        self.keys_changed.emit()
+
+    def mouseReleaseEvent(self, event):
+        self._drag = None
+
+
+class _AddSoftBlendPairDialog(QtWidgets.QDialog):
+    """Small dialog to pick two shapes and define a soft blend pair."""
+
+    def __init__(self, shapes, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Add Soft Blend Pair")
+        self.setFixedWidth(380)
+        lay = QtWidgets.QVBoxLayout(self)
+        lay.setSpacing(8)
+
+        row = QtWidgets.QHBoxLayout()
+        row.setSpacing(6)
+        self._cb_a = QtWidgets.QComboBox()
+        self._cb_a.setEditable(True)
+        self._cb_a.addItems(shapes)
+        self._cb_b = QtWidgets.QComboBox()
+        self._cb_b.setEditable(True)
+        self._cb_b.addItems(shapes)
+        row.addWidget(self._cb_a)
+        row.addWidget(QtWidgets.QLabel("↔"))
+        row.addWidget(self._cb_b)
+        lay.addLayout(row)
+
+        btns = QtWidgets.QDialogButtonBox(
+            QtWidgets.QDialogButtonBox.Ok | QtWidgets.QDialogButtonBox.Cancel)
+        btns.accepted.connect(self.accept)
+        btns.rejected.connect(self.reject)
+        lay.addWidget(btns)
+
+    def get_pair(self):
+        return self._cb_a.currentText().strip(), self._cb_b.currentText().strip()
+
+
 class RigConnectorDialog(QtWidgets.QDialog):
     """
     Maps FK rig controllers to blendShape targets.
@@ -1312,6 +1611,116 @@ class RigConnectorDialog(QtWidgets.QDialog):
         stagger_box.addLayout(stagger_row2)
 
         outer.addLayout(stagger_box)
+
+        # ── Soft Blend Pairs (collapsible, closed by default) ─────────────────
+        _HDR_STYLE = (
+            "QPushButton { background-color: rgba(255,255,255,28); border: none;"
+            " border-radius: 2px; font-weight: bold; text-align: left;"
+            " padding-left: 6px; }"
+            "QPushButton:hover { background-color: rgba(255,255,255,38); }"
+        )
+        sb_header = QtWidgets.QPushButton()
+        sb_header.setStyleSheet(_HDR_STYLE)
+        sb_header.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
+                                QtWidgets.QSizePolicy.Fixed)
+        sb_header.setFixedHeight(22)
+
+        sb_body = QtWidgets.QWidget()
+        sb_body.setVisible(False)           # closed by default
+        lay_sb = QtWidgets.QVBoxLayout(sb_body)
+        lay_sb.setContentsMargins(4, 4, 4, 4)
+        lay_sb.setSpacing(3)
+
+        _sb_open = [False]
+
+        def _toggle_sb():
+            _sb_open[0] = not _sb_open[0]
+            sb_body.setVisible(_sb_open[0])
+            sb_header.setText(("▼  Soft Blend Pairs") if _sb_open[0]
+                               else ("▶  Soft Blend Pairs"))
+
+        sb_header.setText("▶  Soft Blend Pairs")
+        sb_header.clicked.connect(_toggle_sb)
+
+        outer.addWidget(sb_header)
+        outer.addWidget(sb_body)
+
+        # ── Table (left) + Graph (right) side by side ────────────────────────
+        tbl_graph_row = QtWidgets.QHBoxLayout()
+        tbl_graph_row.setSpacing(6)
+
+        self._tbl_pairs = QtWidgets.QTableWidget(0, 3)
+        self._tbl_pairs.setHorizontalHeaderLabels(["Shape A", "Shape B", ""])
+        self._tbl_pairs.verticalHeader().setVisible(False)
+        self._tbl_pairs.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
+        self._tbl_pairs.setAlternatingRowColors(True)
+        self._tbl_pairs.verticalHeader().setDefaultSectionSize(22)
+        hh_sb = self._tbl_pairs.horizontalHeader()
+        hh_sb.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        hh_sb.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
+        hh_sb.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
+        self._tbl_pairs.setColumnWidth(2, 24)
+        tbl_graph_row.addWidget(self._tbl_pairs, stretch=7)
+
+        self._graph = _SoftBlendGraphWidget()
+        self._graph.keys_changed.connect(self._on_graph_keys_changed)
+        tbl_graph_row.addWidget(self._graph, stretch=3)
+
+        lay_sb.addLayout(tbl_graph_row)
+
+        # ── Bottom row: Add Pair | Reset Curve | U | V | Tangent ─────────────
+        bottom_row = QtWidgets.QHBoxLayout()
+        bottom_row.setSpacing(4)
+
+        btn_add_pair = QtWidgets.QPushButton("+ Add Pair")
+        btn_add_pair.setFixedWidth(80)
+        btn_add_pair.setToolTip(
+            "Define a Soft Blend pair: two opposite shapes (e.g. mouth_lft / mouth_rgt)\n"
+            "will be driven by an animCurveUU with smooth tangents at neutral\n"
+            "instead of the standard linear norm/clamp network.")
+        btn_add_pair.clicked.connect(self._add_soft_blend_pair)
+        bottom_row.addWidget(btn_add_pair)
+
+        bottom_row.addStretch()
+
+        btn_reset_curve = QtWidgets.QPushButton("Reset Curve")
+        btn_reset_curve.setFixedWidth(80)
+        btn_reset_curve.setToolTip("Reset the soft blend curve to the default 5-key preset.")
+        btn_reset_curve.clicked.connect(self._reset_soft_blend_curve)
+        bottom_row.addWidget(btn_reset_curve)
+
+        bottom_row.addSpacing(8)
+        bottom_row.addWidget(QtWidgets.QLabel("U:"))
+        self._sb_key_u = QtWidgets.QDoubleSpinBox()
+        self._sb_key_u.setRange(-1.0, 1.0)
+        self._sb_key_u.setDecimals(3)
+        self._sb_key_u.setSingleStep(0.01)
+        self._sb_key_u.setFixedWidth(65)
+        self._sb_key_u.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self._sb_key_u.valueChanged.connect(self._on_key_u_changed)
+        bottom_row.addWidget(self._sb_key_u)
+
+        bottom_row.addWidget(QtWidgets.QLabel("V:"))
+        self._sb_key_v = QtWidgets.QDoubleSpinBox()
+        self._sb_key_v.setRange(-1.0, 1.0)
+        self._sb_key_v.setDecimals(3)
+        self._sb_key_v.setSingleStep(0.01)
+        self._sb_key_v.setFixedWidth(65)
+        self._sb_key_v.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self._sb_key_v.valueChanged.connect(self._on_key_v_changed)
+        bottom_row.addWidget(self._sb_key_v)
+
+        bottom_row.addWidget(QtWidgets.QLabel("Tangent:"))
+        self._combo_key_tang = QtWidgets.QComboBox()
+        self._combo_key_tang.addItems(["smooth", "auto", "linear"])
+        self._combo_key_tang.setFixedWidth(76)
+        self._combo_key_tang.currentTextChanged.connect(self._on_key_tangent_changed)
+        bottom_row.addWidget(self._combo_key_tang)
+
+        lay_sb.addLayout(bottom_row)
+
+        self._updating_controls = False
+        self._refresh_key_controls()
 
         # ── Button bar ────────────────────────────────────────────────────────
         btn_bar = QtWidgets.QHBoxLayout()
@@ -1871,16 +2280,107 @@ class RigConnectorDialog(QtWidgets.QDialog):
             })
         return rows
 
+    # ── Soft Blend Pairs ──────────────────────────────────────────────────────
+
+    def _collect_soft_blend_pairs(self):
+        pairs = []
+        for r in range(self._tbl_pairs.rowCount()):
+            a = self._tbl_pairs.item(r, 0)
+            b = self._tbl_pairs.item(r, 1)
+            if a and b and a.text() and b.text():
+                pairs.append([a.text(), b.text()])
+        return pairs
+
+    def _insert_pair_row(self, shape_a, shape_b):
+        r = self._tbl_pairs.rowCount()
+        self._tbl_pairs.insertRow(r)
+        self._tbl_pairs.setItem(r, 0, QtWidgets.QTableWidgetItem(shape_a))
+        self._tbl_pairs.setItem(r, 1, QtWidgets.QTableWidgetItem(shape_b))
+        btn_rm = QtWidgets.QPushButton("\u00d7")
+        btn_rm.setFixedWidth(22)
+        btn_rm.clicked.connect(lambda checked=False, b=btn_rm: self._remove_pair_row(b))
+        self._tbl_pairs.setCellWidget(r, 2, btn_rm)
+
+    def _remove_pair_row(self, btn):
+        for r in range(self._tbl_pairs.rowCount()):
+            if self._tbl_pairs.cellWidget(r, 2) is btn:
+                self._tbl_pairs.removeRow(r)
+                break
+
+    def _add_soft_blend_pair(self):
+        shapes = []
+        for r in range(self._table.rowCount()):
+            item = self._table.item(r, self._COL_SHAPE)
+            if item and item.text():
+                shapes.append(item.text())
+        dlg = _AddSoftBlendPairDialog(shapes, self)
+        if dlg.exec_() == QtWidgets.QDialog.Accepted:
+            a, b = dlg.get_pair()
+            if a and b and a != b:
+                self._insert_pair_row(a, b)
+
+    def _reset_soft_blend_curve(self):
+        import copy
+        self._graph.set_keys(copy.deepcopy(_SoftBlendGraphWidget.DEFAULT_KEYS))
+        self._refresh_key_controls()
+
+    # ── Graph / key controls ──────────────────────────────────────────────────
+
+    def _refresh_key_controls(self):
+        """Sync U/V spinboxes and tangent combo to the currently selected graph key."""
+        self._updating_controls = True
+        k   = self._graph.selected_key()
+        idx = self._graph.selected_index()
+        if k is None:
+            self._sb_key_u.setValue(0.0)
+            self._sb_key_v.setValue(0.0)
+            self._combo_key_tang.setCurrentText("smooth")
+            self._sb_key_u.setEnabled(False)
+            self._sb_key_v.setEnabled(False)
+            self._combo_key_tang.setEnabled(False)
+        else:
+            self._sb_key_u.setValue(k["u"])
+            self._sb_key_v.setValue(k["v"])
+            self._combo_key_tang.setCurrentText(k.get("tangent", "smooth"))
+            self._sb_key_u.setEnabled(idx not in _SoftBlendGraphWidget._U_LOCKED)
+            self._sb_key_v.setEnabled(idx not in _SoftBlendGraphWidget._V_LOCKED)
+            self._combo_key_tang.setEnabled(
+                idx not in _SoftBlendGraphWidget._TANGENT_LOCKED)
+        self._updating_controls = False
+
+    def _on_graph_keys_changed(self):
+        if not self._updating_controls:
+            self._refresh_key_controls()
+
+    def _on_key_u_changed(self, val):
+        if self._updating_controls:
+            return
+        self._graph.set_selected_u(val)
+
+    def _on_key_v_changed(self, val):
+        if self._updating_controls:
+            return
+        self._graph.set_selected_v(val)
+
+    def _on_key_tangent_changed(self, text):
+        if self._updating_controls:
+            return
+        self._graph.set_selected_tangent(text)
+
     def _save_mapping(self):
         default = _rig_mapping_prefs_path()
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, "Save Mapping", default, "JSON files (*.json)")
         if not path:
             return
-        rows = self._collect_rows()
+        data = {
+            "connections":       self._collect_rows(),
+            "soft_blend_pairs":  self._collect_soft_blend_pairs(),
+            "soft_blend_curve":  self._graph.get_keys(),
+        }
         try:
             with open(path, "w") as f:
-                json.dump(rows, f, indent=2)
+                json.dump(data, f, indent=2)
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Save Error", str(e))
 
@@ -1896,6 +2396,12 @@ class RigConnectorDialog(QtWidgets.QDialog):
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Load Error", str(e))
             return
+
+        # Support both old format (list) and new format (dict with "connections" key)
+        soft_blend_pairs = []
+        if isinstance(data, dict):
+            soft_blend_pairs = data.get("soft_blend_pairs", [])
+            data = data.get("connections", [])
 
         # Split primary and proxy rows
         primary_data = [rd for rd in data if isinstance(rd, dict) and not rd.get("proxy", False)]
@@ -2007,6 +2513,20 @@ class RigConnectorDialog(QtWidgets.QDialog):
             new_row = last_row + 1
             _apply_row_data(new_row, rd)
 
+        # ── Soft blend pairs ──────────────────────────────────────────────────
+        self._tbl_pairs.setRowCount(0)
+        for pair in soft_blend_pairs:
+            if len(pair) == 2:
+                self._insert_pair_row(pair[0], pair[1])
+
+        # ── Soft blend curve ──────────────────────────────────────────────────
+        import copy
+        curve = data.get("soft_blend_curve") if isinstance(raw, dict) else None
+        if curve:
+            self._graph.set_keys(curve)
+        else:
+            self._graph.set_keys(copy.deepcopy(_SoftBlendGraphWidget.DEFAULT_KEYS))
+        self._refresh_key_controls()
 
     # ── Search / filter ───────────────────────────────────────────────────────
 
@@ -2243,8 +2763,11 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 self, "Build & Connect", "No valid blendShape node set.\nUse 'Get' to pick one.")
             return
 
-        rows = self._collect_rows()
-        results = build_and_connect_rig(bs_node, rows)
+        rows   = self._collect_rows()
+        pairs  = self._collect_soft_blend_pairs()
+        curve  = self._graph.get_keys()
+        results = build_and_connect_rig(
+            bs_node, rows, soft_blend_pairs=pairs, soft_blend_curve=curve)
 
         # Build shape → table row lookup
         row_by_shape = {}
@@ -6124,13 +6647,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             return
 
         opacity = self.slider_smooth_opacity.value() / 100.0
-        vtx_indices        = None if all_verts else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
-        targets_to_process = targets if all_verts else [targets[0]]
-        n_t = len(targets_to_process)
+        vtx_indices = None if all_verts else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
+        n_t = len(targets)
 
         try:
             self._progress_begin(n_t)
-            for i, (bs_node, logical_index, target_name) in enumerate(targets_to_process):
+            for i, (bs_node, logical_index, target_name) in enumerate(targets):
                 self._progress_step(i, f"Smoothing {target_name}…")
                 smooth_target_deltas(bs_node, logical_index, opacity,
                                      vtx_indices=vtx_indices)
@@ -6156,13 +6678,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             return
 
         opacity = self.slider_smooth_opacity.value() / 100.0
-        vtx_indices        = None if all_verts else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
-        targets_to_process = targets if all_verts else [targets[0]]
-        n_t = len(targets_to_process)
+        vtx_indices = None if all_verts else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
+        n_t = len(targets)
 
         try:
             self._progress_begin(n_t)
-            for i, (bs_node, logical_index, target_name) in enumerate(targets_to_process):
+            for i, (bs_node, logical_index, target_name) in enumerate(targets):
                 self._progress_step(i, f"Relaxing {target_name}…")
                 relax_target_deltas(bs_node, logical_index, opacity,
                                     vtx_indices=vtx_indices)
@@ -6193,16 +6714,19 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         n_passes = max(1, int(round(opacity * 20)))
         vtx_indices = [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
         use_volume = self.combo_smooth_falloff.currentData() == "deformed"
+        n_laplacian = self.spin_hammer_lap.value()
+        n_t = len(targets)
         try:
-            bs_node, logical_index, target_name = targets[0]
-            self._progress_begin(n_passes)
-            def _cb(p, total, status):
-                self._progress_step(p, status)
-            n_laplacian = self.spin_hammer_lap.value()
-            hammer_target_deltas(bs_node, logical_index, vtx_indices,
-                                 n_passes=n_passes, progress_cb=_cb,
-                                 n_laplacian=n_laplacian, use_volume=use_volume)
-            self._set_status(f"✓ Hammer Deltas  {len(vtx_indices)} vtx  ({n_passes} passes)")
+            self._progress_begin(n_t)
+            for i, (bs_node, logical_index, target_name) in enumerate(targets):
+                self._progress_step(i, f"Hammering {target_name}…")
+                hammer_target_deltas(bs_node, logical_index, vtx_indices,
+                                     n_passes=n_passes, progress_cb=None,
+                                     n_laplacian=n_laplacian, use_volume=use_volume)
+            scope = f"{len(vtx_indices)} vtx"
+            self._set_status(
+                f"Hammer Deltas {n_t} target{'s' if n_t > 1 else ''}"
+                f"  {scope}  ({n_passes} passes)")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
