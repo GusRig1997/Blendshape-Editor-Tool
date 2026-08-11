@@ -3294,6 +3294,57 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         layout.addWidget(btn, 1)
         return container, btn
 
+    def _align_label_icon_btns(self, containers):
+        """Set all text labels inside _label_icon_btn containers to the same width (widest)
+        so their icon buttons align vertically within a section."""
+        labels = [c.layout().itemAt(0).widget() for c in containers]
+        fm = labels[0].fontMetrics()
+        max_w = max(fm.horizontalAdvance(lbl.text()) for lbl in labels)
+        for lbl in labels:
+            lbl.setFixedWidth(max_w + 6)
+
+    def _label_icon_btn(self, icon_path, label, tooltip=""):
+        """
+        Inverted icon+button: QLabel text on the left (expanding), QToolButton icon on the right (shelf-style).
+        Same return signature as _icon_btn: (container, btn).
+        """
+        BTN_HEIGHT = 34
+        ICON_SIZE  = 32
+
+        container = QtWidgets.QWidget()
+        container.setFixedHeight(BTN_HEIGHT)
+        layout = QtWidgets.QHBoxLayout(container)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+
+        lbl = QtWidgets.QLabel(label)
+        lbl.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
+        layout.addWidget(lbl)
+
+        btn = QtWidgets.QToolButton()
+        btn.setFixedSize(BTN_HEIGHT + 2, BTN_HEIGHT)
+        btn.setIconSize(QtCore.QSize(ICON_SIZE, ICON_SIZE))
+        btn.setAutoRaise(True)
+        btn.setStyleSheet("""
+            QToolButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 3px;
+                padding: 1px;
+            }
+            QToolButton:hover   { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """)
+        pix = QtGui.QPixmap(icon_path)
+        if not pix.isNull():
+            btn.setIcon(QtGui.QIcon(pix))
+        if tooltip:
+            btn.setToolTip(tooltip)
+
+        layout.addWidget(btn)
+        layout.addStretch()
+        return container, btn
+
     def _collapsible_section(self, title, expanded=True, two_state=False, initial_state=None, compact_rows=1):
         """
         3-state collapsible section:
@@ -3917,7 +3968,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_rename.addLayout(ren_grid)
 
         # ── Swap Target Names ─────────────────────────────────────────────
-        _w_swap, self.btn_swap_names = self._icon_btn(
+        _w_swap, self.btn_swap_names = self._label_icon_btn(
             f"{_icons_dir}/swap_names.png", "Swap Target Names",
             "Swaps the names of exactly 2 selected targets in the Shape Editor.\n"
             "Select 2 targets, then click — their names are exchanged instantly.")
@@ -4182,20 +4233,21 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_split.addWidget(grp_falloff)
 
         # Split Target button
-        _w_split, self.btn_split = self._icon_btn(
+        _w_split, self.btn_split = self._label_icon_btn(
             f"{_icons_dir}/split.png", "Split Target",
             "Creates split targets in the blendShape node")
         self.btn_split.clicked.connect(self._run_split)
-        lay_split.addWidget(_w_split)
 
         # ── Edge Loop Split button ────────────────────────────────────────
-        _w_els, self.btn_edge_loop_split = self._icon_btn(
+        _w_els, self.btn_edge_loop_split = self._label_icon_btn(
             f"{_icons_dir}/edge_split.png", "Edge Loop Split",
             "Splits selected targets along the stored edge loop.\n"
             "Set Vertices and Edgeloop via the Setup section below.\n"
             "The Radius setting controls the falloff blend at the seam (default: 1).\n"
             "Enable Radius and increase the value for a softer transition.")
         self.btn_edge_loop_split.clicked.connect(self._run_edge_loop_split)
+        self._align_label_icon_btns([_w_split, _w_els])
+        lay_split.addWidget(_w_split)
         lay_split.addWidget(_w_els)
 
         # ── Edge Loop Split setup — collapsible ───────────────────────────
@@ -4232,7 +4284,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             setattr(self, edit_attr, edit)
             return row
 
-        lbl_edges = QtWidgets.QLabel("Edgeloop")
+        lbl_edges = QtWidgets.QLabel("Edge Loop")
         lbl_seeds = QtWidgets.QLabel("Vertices")
         _lbl_w = max(lbl_edges.sizeHint().width(), lbl_seeds.sizeHint().width())
         lbl_edges.setFixedWidth(_lbl_w)
@@ -4249,7 +4301,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_edges = QtWidgets.QHBoxLayout()
         row_edges.addWidget(lbl_edges)
         row_edges.addLayout(_els_field(
-            "edit_els_edges", "split edgeloop", self._els_get_edges))
+            "edit_els_edges", "split edge loop", self._els_get_edges))
         els_setup_lay.addLayout(row_edges)
 
         lay_split.addWidget(els_setup_widget)
@@ -4332,14 +4384,30 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # X/Y/Z labels + fields
         row_xyz = QtWidgets.QHBoxLayout()
         row_xyz.setSpacing(4)
-        _lbl_xyz_ico = QtWidgets.QLabel()
-        _px_xyz = QtGui.QPixmap(f"{_icons_dir}/transformXYZ.png")
-        if not _px_xyz.isNull():
-            _lbl_xyz_ico.setPixmap(_px_xyz.scaled(32, 32, QtCore.Qt.KeepAspectRatio,
-                                                   QtCore.Qt.SmoothTransformation))
-        _lbl_xyz_ico.setFixedSize(40, 34)
-        _lbl_xyz_ico.setAlignment(QtCore.Qt.AlignCenter)
-        row_xyz.addWidget(_lbl_xyz_ico)
+        self._mult_sign = 1.0
+        self.btn_mult_sign = QtWidgets.QToolButton()
+        self.btn_mult_sign.setFixedSize(40, 34)
+        self.btn_mult_sign.setIconSize(QtCore.QSize(34, 34))
+        self.btn_mult_sign.setAutoRaise(True)
+        self.btn_mult_sign.setStyleSheet("""
+            QToolButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 3px;
+                padding: 2px;
+            }
+            QToolButton:hover   { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """)
+        self.btn_mult_sign.setToolTip("Toggle sign: click to switch between + and −.\n− negates all X/Y/Z factors before applying.")
+        _ico_plus  = QtGui.QIcon(f"{_icons_dir}/plus.png")
+        _ico_minus = QtGui.QIcon(f"{_icons_dir}/minus.png")
+        self.btn_mult_sign.setIcon(_ico_plus)
+        def _on_mult_sign_clicked():
+            self._mult_sign *= -1.0
+            self.btn_mult_sign.setIcon(_ico_minus if self._mult_sign < 0 else _ico_plus)
+        self.btn_mult_sign.clicked.connect(_on_mult_sign_clicked)
+        row_xyz.addWidget(self.btn_mult_sign)
         for _lbl, _fld in zip(self._mult_labels, self._mult_fields):
             _fld.setFixedWidth(16777215)
             _fld.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
@@ -4347,87 +4415,86 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             row_xyz.addWidget(_fld, 1)
         lay_scalar.addLayout(row_xyz)
 
-        # Multiply — full-width; Invert + Nullify — side by side below
-        _w_mult, _b_mult = self._icon_btn(f"{_icons_dir}/multiply_delta.png", "Multiply", _tt_multiply)
+        _w_mult, _b_mult = self._label_icon_btn(f"{_icons_dir}/multiply_delta.png", "Multiply", _tt_multiply)
         _b_mult.clicked.connect(self._run_multiply)
-        _w_inv,  _b_inv  = self._icon_btn(f"{_icons_dir}/invert_delta.png",   "Invert",   _tt_invert)
+        _w_inv,  _b_inv  = self._label_icon_btn(f"{_icons_dir}/invert_delta.png",   "Invert",   _tt_invert)
         _b_inv.clicked.connect(self._run_invert_deltas)
-        _w_nul,  _b_nul  = self._icon_btn(f"{_icons_dir}/nullify_delta.png",  "Nullify",  _tt_nullify)
+        _w_nul,  _b_nul  = self._label_icon_btn(f"{_icons_dir}/nullify_delta.png",  "Nullify",  _tt_nullify)
         _b_nul.clicked.connect(self._run_nullify)
-        lay_scalar.addWidget(_w_mult)
-        row_inv_nul = QtWidgets.QHBoxLayout()
-        row_inv_nul.setSpacing(4)
-        row_inv_nul.addWidget(_w_inv)
-        row_inv_nul.addWidget(_w_nul)
-        lay_scalar.addLayout(row_inv_nul)
+        self._align_label_icon_btns([_w_mult, _w_inv, _w_nul])
+        row_min = QtWidgets.QHBoxLayout()
+        row_min.setSpacing(4)
+        row_min.addWidget(_w_mult)
+        row_min.addWidget(_w_inv)
+        row_min.addWidget(_w_nul)
+        lay_scalar.addLayout(row_min)
 
         lay_scalar.addSpacing(8)
 
         # Normal Push
         self.field_push_factor = _make_factor_field("0.20")
         self.field_push_factor.setToolTip("Push magnitude relative to existing delta length.")
-        self.field_push_factor.setMaximumWidth(16777215)
-        self.field_push_factor.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
-                                             QtWidgets.QSizePolicy.Fixed)
 
-        self.btn_push_out = QtWidgets.QPushButton("+")
-        self.btn_push_out.setCheckable(True)
-        self.btn_push_out.setChecked(True)
-        self.btn_push_out.setFixedHeight(22)
-        self.btn_push_out.setToolTip("Outward — push along positive normal")
+        self._push_sign = 1.0
+        _ico_push_plus  = QtGui.QIcon(f"{_icons_dir}/plus.png")
+        _ico_push_minus = QtGui.QIcon(f"{_icons_dir}/minus.png")
+        self.btn_push_sign = QtWidgets.QToolButton()
+        self.btn_push_sign.setFixedSize(40, 34)
+        self.btn_push_sign.setIconSize(QtCore.QSize(34, 34))
+        self.btn_push_sign.setAutoRaise(True)
+        self.btn_push_sign.setStyleSheet("""
+            QToolButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 3px;
+                padding: 2px;
+            }
+            QToolButton:hover   { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """)
+        self.btn_push_sign.setIcon(_ico_push_plus)
+        self.btn_push_sign.setToolTip("Toggle direction: + pushes outward, − pushes inward.")
+        def _on_push_sign_clicked():
+            self._push_sign *= -1.0
+            self.btn_push_sign.setIcon(_ico_push_minus if self._push_sign < 0 else _ico_push_plus)
+        self.btn_push_sign.clicked.connect(_on_push_sign_clicked)
 
-        self.btn_push_in = QtWidgets.QPushButton("\u2212")
-        self.btn_push_in.setCheckable(True)
-        self.btn_push_in.setFixedHeight(22)
-        self.btn_push_in.setToolTip("Inward — push along negative normal")
-
-        self._push_dir_group = QtWidgets.QButtonGroup(self)
-        self._push_dir_group.addButton(self.btn_push_out)
-        self._push_dir_group.addButton(self.btn_push_in)
-        self._push_dir_group.setExclusive(True)
-
-        push_icon = QtWidgets.QLabel()
-        _px = QtGui.QPixmap(f"{_icons_dir}/normal_push.png")
-        if not _px.isNull():
-            push_icon.setPixmap(_px.scaled(32, 32, QtCore.Qt.KeepAspectRatio,
-                                           QtCore.Qt.SmoothTransformation))
-        push_icon.setFixedWidth(40)
-        push_icon.setAlignment(QtCore.Qt.AlignCenter)
-
-        btn_push = QtWidgets.QPushButton("Normal Push")
+        btn_push = QtWidgets.QToolButton()
+        btn_push.setFixedSize(36, 34)
+        btn_push.setIconSize(QtCore.QSize(32, 32))
+        btn_push.setAutoRaise(True)
+        btn_push.setStyleSheet("""
+            QToolButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 3px;
+                padding: 1px;
+            }
+            QToolButton:hover   { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """)
+        _px_push = QtGui.QPixmap(f"{_icons_dir}/normal_push.png")
+        if not _px_push.isNull():
+            btn_push.setIcon(QtGui.QIcon(_px_push))
         btn_push.setToolTip("Add displacement along vertex normals,\n"
                             "weighted by existing delta magnitude.\n"
                             "Only vertices with existing deltas are affected.")
         btn_push.clicked.connect(self._run_push_normals)
-        btn_push.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
-                               QtWidgets.QSizePolicy.Expanding)
 
-        row_pm = QtWidgets.QHBoxLayout()
-        row_pm.setSpacing(4)
-        row_pm.setContentsMargins(0, 0, 0, 0)
-        row_pm.addWidget(self.btn_push_out)
-        row_pm.addWidget(self.btn_push_in)
+        row_push = QtWidgets.QHBoxLayout()
+        row_push.setSpacing(4)
+        row_push.setContentsMargins(0, 0, 0, 0)
+        _push_sign_field = QtWidgets.QHBoxLayout()
+        _push_sign_field.setSpacing(1)
+        _push_sign_field.setContentsMargins(0, 0, 0, 0)
+        _push_sign_field.addWidget(self.btn_push_sign)
+        _push_sign_field.addWidget(self.field_push_factor)
+        row_push.addWidget(QtWidgets.QLabel("Normal Push"))
+        row_push.addLayout(_push_sign_field)
+        row_push.addWidget(btn_push)
+        row_push.addStretch()
 
-        push_left = QtWidgets.QVBoxLayout()
-        push_left.setSpacing(4)
-        push_left.setContentsMargins(0, 0, 0, 0)
-        push_left.addWidget(self.field_push_factor)
-        push_left.addLayout(row_pm)
-
-        push_left_w = QtWidgets.QWidget()
-        push_left_w.setLayout(push_left)
-        push_left_w.setFixedWidth(60)
-        push_left_w.setSizePolicy(QtWidgets.QSizePolicy.Fixed,
-                                  QtWidgets.QSizePolicy.Expanding)
-
-        push_outer = QtWidgets.QHBoxLayout()
-        push_outer.setSpacing(4)
-        push_outer.setContentsMargins(0, 0, 0, 0)
-        push_outer.addWidget(push_icon)
-        push_outer.addWidget(push_left_w)
-        push_outer.addWidget(btn_push, 1)
-
-        lay_scalar.addLayout(push_outer)
+        lay_scalar.addLayout(row_push)
         lay_mod.addWidget(grp_scalar)
 
         # ── Between 2 Targets ─────────────────────────────────────────────────
@@ -4467,12 +4534,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "A[vi] = (Ax*Bx, Ay*By, Az*Bz). Verts in A not in B are zeroed.\n"
             "Select target A first, then add select target B.")
 
-        _w_add,  self.btn_delta_add         = self._icon_btn(f"{_icons_dir}/add_delta.png",      "Add",      _tt_add)
-        _w_sub,  self.btn_delta_sub         = self._icon_btn(f"{_icons_dir}/sub_delta.png",      "Sub",      _tt_sub)
-        _w_msh,  self.btn_delta_mult_shapes = self._icon_btn(f"{_icons_dir}/mult_delta.png",     "Mult",     _tt_mult_sh)
-        _w_xfer, self.btn_delta_swap        = self._icon_btn(f"{_icons_dir}/transfer_delta.png", "Transfer", _tt_xfer)
-        _w_swap, self.btn_delta_swap_pure   = self._icon_btn(f"{_icons_dir}/swap_delta.png",     "Swap",     _tt_swap)
-        _w_repl, self.btn_delta_replace     = self._icon_btn(f"{_icons_dir}/replace_delta.png",  "Replace",  _tt_repl)
+        _w_add,  self.btn_delta_add         = self._label_icon_btn(f"{_icons_dir}/add_delta.png",      "Add",      _tt_add)
+        _w_sub,  self.btn_delta_sub         = self._label_icon_btn(f"{_icons_dir}/sub_delta.png",      "Sub",      _tt_sub)
+        _w_msh,  self.btn_delta_mult_shapes = self._label_icon_btn(f"{_icons_dir}/mult_delta.png",     "Mult",     _tt_mult_sh)
+        _w_xfer, self.btn_delta_swap        = self._label_icon_btn(f"{_icons_dir}/transfer_delta.png", "Transfer", _tt_xfer)
+        _w_swap, self.btn_delta_swap_pure   = self._label_icon_btn(f"{_icons_dir}/swap_delta.png",     "Swap",     _tt_swap)
+        _w_repl, self.btn_delta_replace     = self._label_icon_btn(f"{_icons_dir}/replace_delta.png",  "Replace",  _tt_repl)
         self.btn_delta_add.clicked.connect(self._run_delta_add)
         self.btn_delta_sub.clicked.connect(self._run_delta_sub)
         self.btn_delta_mult_shapes.clicked.connect(self._run_delta_mult_shapes)
@@ -4488,6 +4555,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         grid_2tgt.addWidget(_w_xfer, 1, 0)
         grid_2tgt.addWidget(_w_swap, 1, 1)
         grid_2tgt.addWidget(_w_repl, 1, 2)
+        self._align_label_icon_btns([_w_add, _w_sub, _w_msh, _w_xfer, _w_swap, _w_repl])
         grid_2tgt.setColumnStretch(0, 1)
         grid_2tgt.setColumnStretch(1, 1)
         grid_2tgt.setColumnStretch(2, 1)
@@ -4524,14 +4592,14 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         row_sr = QtWidgets.QHBoxLayout()
         row_sr.setSpacing(2)
-        _w_smt, self.btn_smooth = self._icon_btn(
+        _w_smt, self.btn_smooth = self._label_icon_btn(
             f"{_icons_dir}/smooth_delta.png", "Smooth Deltas",
             "Laplacian smoothing of the delta field.\n"
             "Each vertex is replaced by the average of its neighbors' deltas.\n"
             "Works on vertex selection or full target (no selection).\n"
             "Opacity maps to 1–10 iterative passes.")
         self.btn_smooth.clicked.connect(self._run_smooth_deltas)
-        _w_rlx, self.btn_relax = self._icon_btn(
+        _w_rlx, self.btn_relax = self._label_icon_btn(
             f"{_icons_dir}/relax_delta.png", "Relax Deltas",
             "Relaxes the delta field by averaging 3D positions in deformed space.\n"
             "Like a mesh relax, but applied only to the blendShape target.\n"
@@ -4544,20 +4612,21 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         row_ha = QtWidgets.QHBoxLayout()
         row_ha.setSpacing(2)
-        _w_hammer, self.btn_hammer = self._icon_btn(
+        _w_hammer, self.btn_hammer = self._label_icon_btn(
             f"{_icons_dir}/hammer_delta.png", "Hammer Deltas",
             "Replaces each selected vertex's delta with the IDW-weighted average\n"
             "of its topological neighbors' deltas (1-ring, Euclidean distance).\n"
             "Like Maya's Hammer Weights — selection required.\n"
             "Opacity maps to 1–20 iterative passes (50% = 10, default).")
         self.btn_hammer.clicked.connect(self._run_hammer_deltas)
-        _w_average, self.btn_average = self._icon_btn(
+        _w_average, self.btn_average = self._label_icon_btn(
             f"{_icons_dir}/average_delta.png", "Average Deltas",
             "Replaces all selected vertices' deltas with their arithmetic mean.\n"
             "Levels a cluster to a common displacement value.\n"
             "Selection required.\n"
             "Opacity blends between the original delta and the averaged value.")
         self.btn_average.clicked.connect(self._run_average_deltas)
+        self._align_label_icon_btns([_w_smt, _w_rlx, _w_hammer, _w_average])
         row_ha.addWidget(_w_hammer)
         row_ha.addWidget(_w_average)
         lay_smooth.addLayout(row_ha)
@@ -4585,11 +4654,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lbl_lap.setToolTip("Number of topological Laplacian smoothing passes\n"
                            "applied after the Hammer iterations.\n"
                            "0 = no smoothing.")
-        self.spin_hammer_lap = QtWidgets.QSpinBox()
-        self.spin_hammer_lap.setRange(0, 10)
-        self.spin_hammer_lap.setValue(1)
+        self.spin_hammer_lap = QtWidgets.QLineEdit("1")
         self.spin_hammer_lap.setFixedWidth(36)
-        self.spin_hammer_lap.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        self.spin_hammer_lap.setAlignment(QtCore.Qt.AlignCenter)
+        self.spin_hammer_lap.setValidator(QtGui.QIntValidator(0, 10, self.spin_hammer_lap))
         self.spin_hammer_lap.setToolTip(lbl_lap.toolTip())
         row_neighbors.addWidget(lbl_smooth_neighbors)
         row_neighbors.addWidget(self.combo_smooth_falloff)
@@ -4606,51 +4674,63 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_sel.setContentsMargins(*_GRP_MARGINS)
         lay_sel.setSpacing(4)
 
-        _w_copy_delta, self.btn_copy_delta = self._icon_btn(
+        _w_copy_delta, self.btn_copy_delta = self._label_icon_btn(
             f"{_icons_dir}/copy_delta.png", "Copy Delta",
             "Copies the delta of the single selected vertex on the active target.\n"
             "The value is stored until a new Copy or tool restart.")
         self.btn_copy_delta.clicked.connect(self._run_copy_delta)
 
-        _w_paste_delta, self.btn_paste_delta = self._icon_btn(
+        _w_paste_delta, self.btn_paste_delta = self._label_icon_btn(
             f"{_icons_dir}/paste_delta.png", "Paste Delta",
             "Pastes the copied delta onto all selected vertices on the active target.\n"
             "Undoable.")
         self.btn_paste_delta.setEnabled(False)
         self.btn_paste_delta.clicked.connect(self._run_paste_delta)
 
-        _w_prune, self.btn_prune = self._icon_btn(
-            f"{_icons_dir}/prune_delta.png", "Prune Small Deltas",
-            "Zeros out deltas whose magnitude is below the tolerance threshold.")
-        self.btn_prune.clicked.connect(self._run_prune_deltas)
-
-        self.spin_prune_tol = QtWidgets.QDoubleSpinBox()
-        self.spin_prune_tol.setRange(0.001, 10.0)
-        self.spin_prune_tol.setValue(0.001)
-        self.spin_prune_tol.setSingleStep(0.001)
-        self.spin_prune_tol.setDecimals(3)
-        self.spin_prune_tol.setFixedWidth(
-            self.spin_prune_tol.fontMetrics().horizontalAdvance("0.0001") + 12)
-        self.spin_prune_tol.setLocale(QtCore.QLocale(QtCore.QLocale.English))
-        self.spin_prune_tol.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
+        self.spin_prune_tol = QtWidgets.QLineEdit("0.001")
+        self.spin_prune_tol.setFixedWidth(52)
+        self.spin_prune_tol.setAlignment(QtCore.Qt.AlignCenter)
+        self.spin_prune_tol.setValidator(QtGui.QRegularExpressionValidator(
+            QtCore.QRegularExpression(r"\d*\.?\d*"), self.spin_prune_tol))
         self.spin_prune_tol.setToolTip("Tolerance — deltas with magnitude below this value are zeroed out.")
 
-        _w_sel_delta, self.btn_sel_delta = self._icon_btn(
+        _prune_style = """
+            QToolButton {
+                background-color: transparent; border: none;
+                border-radius: 3px; padding: 1px;
+            }
+            QToolButton:hover   { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """
+        self.btn_prune = QtWidgets.QToolButton()
+        self.btn_prune.setFixedSize(34, 34)
+        self.btn_prune.setIconSize(QtCore.QSize(32, 32))
+        self.btn_prune.setAutoRaise(True)
+        self.btn_prune.setStyleSheet(_prune_style)
+        _px_prune = QtGui.QPixmap(f"{_icons_dir}/prune_delta.png")
+        if not _px_prune.isNull():
+            self.btn_prune.setIcon(QtGui.QIcon(_px_prune))
+        self.btn_prune.setToolTip("Zeros out deltas whose magnitude is below the tolerance threshold.")
+        self.btn_prune.clicked.connect(self._run_prune_deltas)
+
+        row_prune = QtWidgets.QHBoxLayout()
+        row_prune.setSpacing(4)
+        row_prune.addWidget(QtWidgets.QLabel("Prune Small Deltas"))
+        row_prune.addWidget(self.spin_prune_tol)
+        row_prune.addWidget(self.btn_prune)
+
+        _w_sel_delta, self.btn_sel_delta = self._label_icon_btn(
             f"{_icons_dir}/select_delta.png", "Select Delta Vrtx",
             "Selects all vertices that have non-zero deltas on the active target.")
         self.btn_sel_delta.clicked.connect(self._run_select_delta_vertices)
 
-        row_prune_top = QtWidgets.QHBoxLayout()
-        row_prune_top.setSpacing(4)
-        row_prune_top.addWidget(_w_prune, 1)
-        row_prune_top.addWidget(self.spin_prune_tol)
-
         grid_cps = QtWidgets.QGridLayout()
         grid_cps.setSpacing(4)
         grid_cps.addWidget(_w_copy_delta,  0, 0)
-        grid_cps.addLayout(row_prune_top,  0, 1)
+        grid_cps.addLayout(row_prune,      0, 1)
         grid_cps.addWidget(_w_paste_delta, 1, 0)
         grid_cps.addWidget(_w_sel_delta,   1, 1)
+        self._align_label_icon_btns([_w_copy_delta, _w_paste_delta, _w_sel_delta])
         grid_cps.setColumnStretch(0, 1)
         grid_cps.setColumnStretch(1, 1)
         lay_sel.addLayout(grid_cps)
@@ -4663,7 +4743,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_bake.setContentsMargins(*_GRP_MARGINS)
         lay_bake.setSpacing(4)
 
-        _w_apply, self.btn_apply_moves = self._icon_btn(
+        _w_apply, self.btn_apply_moves = self._label_icon_btn(
             f"{_icons_dir}/bake_moves.png", "Bake Moves",
             "Transfers vertex tweaks (pnts[]) from the mesh to the selected target.\n"
             "Use when you sculpted the mesh directly without entering edit mode first.\n"
@@ -4671,9 +4751,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "then zeroed out on the mesh.\n"
             "Works on 1 selected target only.")
         self.btn_apply_moves.clicked.connect(self._run_apply_moves)
-        lay_bake.addWidget(_w_apply)
 
-        _w_bake, self.btn_bake_deformers = self._icon_btn(
+        _w_bake, self.btn_bake_deformers = self._label_icon_btn(
             f"{_icons_dir}/bake_deformer.png", "Bake Deformers",
             "Bakes the contribution of all deformers stacked above the blendShape into the\n"
             "selected targets. For each target the tool activates it at weight 1.0, samples\n"
@@ -4685,9 +4764,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "  4. Delete the deformer.\n\n"
             "Works on all targets selected in the Shape Editor.")
         self.btn_bake_deformers.clicked.connect(self._run_bake_deformers)
+        self._align_label_icon_btns([_w_apply, _w_bake])
+        lay_bake.addWidget(_w_apply)
         lay_bake.addWidget(_w_bake)
-        lay_mod.addWidget(grp_bake)
-
         # ── Rig Extraction ────────────────────────────────────────────────────
         grp_rig = QtWidgets.QGroupBox("Deltas to Rig")
         grp_rig.setStyleSheet(_GRP_STYLE)
@@ -4714,16 +4793,15 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_delta_opts.addStretch()
         lay_rig.addLayout(row_delta_opts)
 
-        _w_dc, self.btn_delta_cluster = self._icon_btn(
+        _w_dc, self.btn_delta_cluster = self._label_icon_btn(
             f"{_icons_dir}/delta_cluster.png", "Create Delta Cluster",
             "Duplicates the target as a posed mesh and creates a cluster\n"
             "with weights matching the delta magnitudes of the shape.\n"
             "Cluster handle is placed at the bbox center of delta vertices.\n"
             "Enable 'Neutral' to use the rest-pose mesh instead.")
         self.btn_delta_cluster.clicked.connect(self._run_delta_cluster)
-        lay_rig.addWidget(_w_dc)
 
-        _w_dj, self.btn_delta_joint = self._icon_btn(
+        _w_dj, self.btn_delta_joint = self._label_icon_btn(
             f"{_icons_dir}/delta_joint.png", "Create Delta Joint",
             "Duplicates the target as a posed mesh and binds two joints:\n"
             "  - {target}_jnt       : weights = normalized delta magnitudes\n"
@@ -4731,8 +4809,14 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Everything is grouped under {target}_deltaJoint_grp.\n"
             "Enable 'Neutral' to use the rest-pose mesh instead.")
         self.btn_delta_joint.clicked.connect(self._run_delta_joint)
+        self._align_label_icon_btns([_w_dc, _w_dj])
+        lay_rig.addWidget(_w_dc)
         lay_rig.addWidget(_w_dj)
-        lay_mod.addWidget(grp_rig)
+        row_bake_rig = QtWidgets.QHBoxLayout()
+        row_bake_rig.setSpacing(4)
+        row_bake_rig.addWidget(grp_bake)
+        row_bake_rig.addWidget(grp_rig)
+        lay_mod.addLayout(row_bake_rig)
 
         # Row 0 — Deltas Scale + Smooth & Average (8)
         grp_mod.add_compact_action(f"{_icons_dir}/multiply_delta.png", "Multiply Deltas",      self._run_multiply)
@@ -5349,9 +5433,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.slider_smooth_opacity.blockSignals(False)
         self.lbl_smooth_opacity_val.setText("0.50")
 
-        self.spin_prune_tol.blockSignals(True)
-        self.spin_prune_tol.setValue(0.001)
-        self.spin_prune_tol.blockSignals(False)
+        self.spin_prune_tol.setText("0.001")
 
         for lbl, fld in zip(self._mult_labels, self._mult_fields):
             lbl.setChecked(False)
@@ -6541,9 +6623,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     @undo_chunk
     def _run_multiply(self):
-        fx = self._parse_factor(self._mult_fields[0])
-        fy = self._parse_factor(self._mult_fields[1])
-        fz = self._parse_factor(self._mult_fields[2])
+        fx = self._mult_sign * self._parse_factor(self._mult_fields[0])
+        fy = self._mult_sign * self._parse_factor(self._mult_fields[1])
+        fz = self._mult_sign * self._parse_factor(self._mult_fields[2])
         self._run_multiply_factors(fx, fy, fz)
 
     @undo_chunk
@@ -6616,9 +6698,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         if not targets:
             return
 
-        factor      = self._parse_factor(self.field_push_factor)
-        if self.btn_push_in.isChecked():
-            factor = -factor
+        factor = self._push_sign * self._parse_factor(self.field_push_factor)
 
         vtx_indices = None if all_verts else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
 
@@ -6713,7 +6793,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         n_passes = max(1, int(round(opacity * 20)))
         vtx_indices = [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
         use_volume = self.combo_smooth_falloff.currentData() == "deformed"
-        n_laplacian = self.spin_hammer_lap.value()
+        n_laplacian = int(self.spin_hammer_lap.text() or "0")
         n_t = len(targets)
         try:
             self._progress_begin(n_t)
@@ -7265,7 +7345,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         targets = self._get_targets_or_warn()
         if not targets:
             return
-        tolerance = self.spin_prune_tol.value()
+        tolerance = float(self.spin_prune_tol.text() or "0.001")
         try:
             total = 0
             for bs_node, logical_index, target_name in targets:
