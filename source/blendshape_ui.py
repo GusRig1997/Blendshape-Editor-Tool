@@ -6746,11 +6746,14 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         opacity = self.slider_smooth_opacity.value() / 100.0
         vtx_indices = [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
+        n_t = len(targets)
         try:
-            bs_node, logical_index, target_name = targets[0]
-            average_target_deltas(bs_node, logical_index, vtx_indices,
-                                  opacity=opacity)
-            self._set_status(f"✓ Average Deltas  {len(vtx_indices)} vtx  (opacity {opacity:.2f})")
+            for bs_node, logical_index, target_name in targets:
+                average_target_deltas(bs_node, logical_index, vtx_indices,
+                                      opacity=opacity)
+            self._set_status(
+                f"Average Deltas {n_t} target{'s' if n_t > 1 else ''}"
+                f"  {len(vtx_indices)} vtx  (opacity {opacity:.2f})")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
