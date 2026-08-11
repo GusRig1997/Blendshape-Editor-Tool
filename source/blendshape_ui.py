@@ -6647,13 +6647,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             return
 
         opacity = self.slider_smooth_opacity.value() / 100.0
-        vtx_indices        = None if all_verts else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
-        targets_to_process = targets if all_verts else [targets[0]]
-        n_t = len(targets_to_process)
+        vtx_indices = None if all_verts else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
+        n_t = len(targets)
 
         try:
             self._progress_begin(n_t)
-            for i, (bs_node, logical_index, target_name) in enumerate(targets_to_process):
+            for i, (bs_node, logical_index, target_name) in enumerate(targets):
                 self._progress_step(i, f"Smoothing {target_name}…")
                 smooth_target_deltas(bs_node, logical_index, opacity,
                                      vtx_indices=vtx_indices)
@@ -6679,13 +6678,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             return
 
         opacity = self.slider_smooth_opacity.value() / 100.0
-        vtx_indices        = None if all_verts else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
-        targets_to_process = targets if all_verts else [targets[0]]
-        n_t = len(targets_to_process)
+        vtx_indices = None if all_verts else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
+        n_t = len(targets)
 
         try:
             self._progress_begin(n_t)
-            for i, (bs_node, logical_index, target_name) in enumerate(targets_to_process):
+            for i, (bs_node, logical_index, target_name) in enumerate(targets):
                 self._progress_step(i, f"Relaxing {target_name}…")
                 relax_target_deltas(bs_node, logical_index, opacity,
                                     vtx_indices=vtx_indices)
@@ -6716,16 +6714,19 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         n_passes = max(1, int(round(opacity * 20)))
         vtx_indices = [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
         use_volume = self.combo_smooth_falloff.currentData() == "deformed"
+        n_laplacian = self.spin_hammer_lap.value()
+        n_t = len(targets)
         try:
-            bs_node, logical_index, target_name = targets[0]
-            self._progress_begin(n_passes)
-            def _cb(p, total, status):
-                self._progress_step(p, status)
-            n_laplacian = self.spin_hammer_lap.value()
-            hammer_target_deltas(bs_node, logical_index, vtx_indices,
-                                 n_passes=n_passes, progress_cb=_cb,
-                                 n_laplacian=n_laplacian, use_volume=use_volume)
-            self._set_status(f"✓ Hammer Deltas  {len(vtx_indices)} vtx  ({n_passes} passes)")
+            self._progress_begin(n_t)
+            for i, (bs_node, logical_index, target_name) in enumerate(targets):
+                self._progress_step(i, f"Hammering {target_name}…")
+                hammer_target_deltas(bs_node, logical_index, vtx_indices,
+                                     n_passes=n_passes, progress_cb=None,
+                                     n_laplacian=n_laplacian, use_volume=use_volume)
+            scope = f"{len(vtx_indices)} vtx"
+            self._set_status(
+                f"Hammer Deltas {n_t} target{'s' if n_t > 1 else ''}"
+                f"  {scope}  ({n_passes} passes)")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
