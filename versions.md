@@ -1,6 +1,20 @@
 # Changelog — Blendshape Editor Tool
 
-## v.05.15
+## v.05.17
+
+**UI — Modify Deltas : layout refinements**
+
+- `btn_push_sign` (Normal Push) : remplacé par un `QToolButton` en mode texte affichant `+` / `−` (plus compact que les icônes)
+- Champ "Laplacian" renommé **Smooth Iterations** ; aligné en colonne droite sur la même ligne que Space/combo (split 50/50 avec la combo Space)
+- **Delta Clipboard** : positions de *Prune Small Deltas* et *Select Delta Vertices* échangées (Prune passe en bas, Select en haut)
+- *Select Delta Vrtx* renommé **Select Delta Vertices** (nom complet)
+- *Split Target* et *Edge Loop Split* : revertés en `_icon_btn` (icône fixe + texte QPushButton pleine largeur)
+- *Swap Target Names* : même revert vers `_icon_btn`
+- **Delta Bake / Deltas to Rig** : ratio horizontal 45/55 au lieu de 50/50
+
+---
+
+## v.05.16
 
 **UI — Modify Deltas : refonte complète**
 
