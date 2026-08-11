@@ -3836,12 +3836,14 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         _pix_browse = QtGui.QPixmap(f"{_icons_dir}/path.png")
         if not _pix_browse.isNull():
             btn_rig_browse.setIcon(QtGui.QIcon(_pix_browse))
-        btn_rig_browse.setFixedSize(24, 24)
+            btn_rig_browse.setIconSize(QtCore.QSize(28, 28))
+        btn_rig_browse.setFixedSize(32, 32)
         btn_rig_browse.setToolTip("Browse for a rig mapping JSON file")
         self.line_rig_json = QtWidgets.QLineEdit()
         self.line_rig_json.setReadOnly(True)
         self.line_rig_json.setPlaceholderText("C:/path/to/rig_mapping.json")
-        btn_rig_connect = QtWidgets.QToolButton()
+        self.btn_rig_connect = QtWidgets.QToolButton()
+        btn_rig_connect = self.btn_rig_connect
         btn_rig_connect.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         btn_rig_connect.setToolTip(
             "Build and connect the rig for all targets defined in the referenced JSON mapping file.\n"
@@ -3866,6 +3868,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         cff_row.addWidget(self.line_rig_json, 1)
         cff_row.addWidget(btn_rig_connect)
         shelf_wrapper_lay.addLayout(cff_row)
+        btn_rig_connect.setEnabled(False)
+        self.line_rig_json.textChanged.connect(
+            lambda text: self.btn_rig_connect.setEnabled(bool(text.strip())))
         btn_rig_browse.clicked.connect(self._browse_rig_json)
         btn_rig_connect.clicked.connect(self._run_connect_from_file)
 
@@ -3968,7 +3973,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_rename.addLayout(ren_grid)
 
         # ── Swap Target Names ─────────────────────────────────────────────
-        _w_swap, self.btn_swap_names = self._label_icon_btn(
+        _w_swap, self.btn_swap_names = self._icon_btn(
             f"{_icons_dir}/swap_names.png", "Swap Target Names",
             "Swaps the names of exactly 2 selected targets in the Shape Editor.\n"
             "Select 2 targets, then click — their names are exchanged instantly.")
@@ -4233,20 +4238,19 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_split.addWidget(grp_falloff)
 
         # Split Target button
-        _w_split, self.btn_split = self._label_icon_btn(
+        _w_split, self.btn_split = self._icon_btn(
             f"{_icons_dir}/split.png", "Split Target",
             "Creates split targets in the blendShape node")
         self.btn_split.clicked.connect(self._run_split)
 
         # ── Edge Loop Split button ────────────────────────────────────────
-        _w_els, self.btn_edge_loop_split = self._label_icon_btn(
+        _w_els, self.btn_edge_loop_split = self._icon_btn(
             f"{_icons_dir}/edge_split.png", "Edge Loop Split",
             "Splits selected targets along the stored edge loop.\n"
             "Set Vertices and Edgeloop via the Setup section below.\n"
             "The Radius setting controls the falloff blend at the seam (default: 1).\n"
             "Enable Radius and increase the value for a softer transition.")
         self.btn_edge_loop_split.clicked.connect(self._run_edge_loop_split)
-        self._align_label_icon_btns([_w_split, _w_els])
         lay_split.addWidget(_w_split)
         lay_split.addWidget(_w_els)
 
@@ -4436,27 +4440,27 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.field_push_factor.setToolTip("Push magnitude relative to existing delta length.")
 
         self._push_sign = 1.0
-        _ico_push_plus  = QtGui.QIcon(f"{_icons_dir}/plus.png")
-        _ico_push_minus = QtGui.QIcon(f"{_icons_dir}/minus.png")
         self.btn_push_sign = QtWidgets.QToolButton()
-        self.btn_push_sign.setFixedSize(40, 34)
-        self.btn_push_sign.setIconSize(QtCore.QSize(34, 34))
+        self.btn_push_sign.setFixedSize(26, 34)
+        self.btn_push_sign.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        self.btn_push_sign.setText("+")
         self.btn_push_sign.setAutoRaise(True)
         self.btn_push_sign.setStyleSheet("""
             QToolButton {
                 background-color: transparent;
                 border: none;
                 border-radius: 3px;
-                padding: 2px;
+                padding: 0px 0px 4px 0px;
+                font-size: 16px;
+                font-weight: bold;
             }
             QToolButton:hover   { background-color: rgba(255,255,255,30); }
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
         """)
-        self.btn_push_sign.setIcon(_ico_push_plus)
         self.btn_push_sign.setToolTip("Toggle direction: + pushes outward, − pushes inward.")
         def _on_push_sign_clicked():
             self._push_sign *= -1.0
-            self.btn_push_sign.setIcon(_ico_push_minus if self._push_sign < 0 else _ico_push_plus)
+            self.btn_push_sign.setText("−" if self._push_sign < 0 else "+")
         self.btn_push_sign.clicked.connect(_on_push_sign_clicked)
 
         btn_push = QtWidgets.QToolButton()
@@ -4632,7 +4636,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_smooth.addLayout(row_ha)
 
         row_neighbors = QtWidgets.QHBoxLayout()
-        row_neighbors.setSpacing(4)
+        row_neighbors.setSpacing(2)
         lbl_smooth_neighbors = QtWidgets.QLabel("Space")
         lbl_smooth_neighbors.setFixedWidth(40)
         self.combo_smooth_falloff = QtWidgets.QComboBox()
@@ -4650,7 +4654,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "            so the hammer may blend deltas across the gap.\n"
             "  Deformed: lips are spread apart, each lip is hammered\n"
             "            independently without cross-influence.")
-        lbl_lap = QtWidgets.QLabel("Laplacian")
+        lbl_lap = QtWidgets.QLabel("Smooth Iterations")
         lbl_lap.setToolTip("Number of topological Laplacian smoothing passes\n"
                            "applied after the Hammer iterations.\n"
                            "0 = no smoothing.")
@@ -4659,11 +4663,24 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.spin_hammer_lap.setAlignment(QtCore.Qt.AlignCenter)
         self.spin_hammer_lap.setValidator(QtGui.QIntValidator(0, 10, self.spin_hammer_lap))
         self.spin_hammer_lap.setToolTip(lbl_lap.toolTip())
-        row_neighbors.addWidget(lbl_smooth_neighbors)
-        row_neighbors.addWidget(self.combo_smooth_falloff)
-        row_neighbors.addStretch()
-        row_neighbors.addWidget(lbl_lap)
-        row_neighbors.addWidget(self.spin_hammer_lap)
+        # Left half: Space + combo — mirrors left column of row_ha
+        _w_nb_left = QtWidgets.QWidget()
+        _lay_nb_left = QtWidgets.QHBoxLayout(_w_nb_left)
+        _lay_nb_left.setContentsMargins(0, 0, 0, 0)
+        _lay_nb_left.setSpacing(4)
+        _lay_nb_left.addWidget(lbl_smooth_neighbors)
+        _lay_nb_left.addWidget(self.combo_smooth_falloff)
+        _lay_nb_left.addStretch()
+        # Right half: Smooth Iterations + field — aligned with Average/Relax column
+        _w_nb_right = QtWidgets.QWidget()
+        _lay_nb_right = QtWidgets.QHBoxLayout(_w_nb_right)
+        _lay_nb_right.setContentsMargins(0, 0, 0, 0)
+        _lay_nb_right.setSpacing(4)
+        _lay_nb_right.addWidget(lbl_lap)
+        _lay_nb_right.addWidget(self.spin_hammer_lap)
+        _lay_nb_right.addStretch()
+        row_neighbors.addWidget(_w_nb_left)
+        row_neighbors.addWidget(_w_nb_right)
         lay_smooth.addLayout(row_neighbors)
         lay_mod.addWidget(grp_smooth)
 
@@ -4720,17 +4737,17 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_prune.addWidget(self.btn_prune)
 
         _w_sel_delta, self.btn_sel_delta = self._label_icon_btn(
-            f"{_icons_dir}/select_delta.png", "Select Delta Vrtx",
+            f"{_icons_dir}/select_delta.png", "Select Delta Vertices",
             "Selects all vertices that have non-zero deltas on the active target.")
         self.btn_sel_delta.clicked.connect(self._run_select_delta_vertices)
 
         grid_cps = QtWidgets.QGridLayout()
         grid_cps.setSpacing(4)
         grid_cps.addWidget(_w_copy_delta,  0, 0)
-        grid_cps.addLayout(row_prune,      0, 1)
+        grid_cps.addWidget(_w_sel_delta,   0, 1)
         grid_cps.addWidget(_w_paste_delta, 1, 0)
-        grid_cps.addWidget(_w_sel_delta,   1, 1)
-        self._align_label_icon_btns([_w_copy_delta, _w_paste_delta, _w_sel_delta])
+        grid_cps.addLayout(row_prune,      1, 1)
+        self._align_label_icon_btns([_w_copy_delta, _w_paste_delta])
         grid_cps.setColumnStretch(0, 1)
         grid_cps.setColumnStretch(1, 1)
         lay_sel.addLayout(grid_cps)
@@ -4814,8 +4831,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_rig.addWidget(_w_dj)
         row_bake_rig = QtWidgets.QHBoxLayout()
         row_bake_rig.setSpacing(4)
-        row_bake_rig.addWidget(grp_bake)
-        row_bake_rig.addWidget(grp_rig)
+        row_bake_rig.addWidget(grp_bake, 9)
+        row_bake_rig.addWidget(grp_rig, 11)
         lay_mod.addLayout(row_bake_rig)
 
         # Row 0 — Deltas Scale + Smooth & Average (8)
@@ -4839,8 +4856,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # Row 2 — Deltas Clipboard + Bake + Rig (8)
         grp_mod.add_compact_action(f"{_icons_dir}/copy_delta.png",     "Copy Delta",           self._run_copy_delta)
         grp_mod.add_compact_action(f"{_icons_dir}/paste_delta.png",    "Paste Delta",          self._run_paste_delta)
-        grp_mod.add_compact_action(f"{_icons_dir}/select_delta.png",   "Select Delta Vrtx",    self._run_select_delta_vertices)
-        grp_mod.add_compact_action(f"{_icons_dir}/prune_delta.png",    "Prune Small Deltas",   self._run_prune_deltas)
+        grp_mod.add_compact_action(f"{_icons_dir}/prune_delta.png",    "Prune Small Deltas",      self._run_prune_deltas)
+        grp_mod.add_compact_action(f"{_icons_dir}/select_delta.png",   "Select Delta Vertices",   self._run_select_delta_vertices)
         grp_mod.add_compact_action(f"{_icons_dir}/bake_moves.png",    "Bake Moves",          self._run_apply_moves)
         grp_mod.add_compact_action(f"{_icons_dir}/bake_deformer.png",   "Bake Deformers",       self._run_bake_deformers)
         grp_mod.add_compact_action(f"{_icons_dir}/delta_cluster.png",  "Create Delta Cluster", self._run_delta_cluster)
