@@ -1650,7 +1650,7 @@ def relax_target_deltas(bs_node, logical_index, opacity, vtx_indices=None):
     print(f"  Relax Deltas: opacity={opacity:.2f}  ({scope})")
 
 
-def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progress_cb=None, n_laplacian=1, use_volume=False):
+def hammer_target_deltas(bs_node, logical_index, vtx_indices, opacity=1.0, progress_cb=None, n_laplacian=1, use_volume=False):
     """
     Spatial Laplacian hammer applied to blendShape deltas.
 
@@ -1673,8 +1673,12 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progr
     neighbors (selected or not). Interior selected verts converge toward
     their own delta; boundary selected verts converge toward 0.
 
+    The loop runs until convergence (max 200 passes, tol=1e-4) so one click
+    always gives a fully-resolved hammer result. `opacity` then blends
+    between the original deltas and the converged result.
+
     vtx_indices : list of ints — must be non-empty (selection required).
-    n_passes    : number of Laplacian iterations.
+    opacity     : 0.0–1.0  blend weight between original and converged result.
     """
     if not vtx_indices:
         return
@@ -1772,12 +1776,17 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progr
             dists.sort()
             spatial_neighbors[vi] = [(vj, d2) for d2, vj in dists[:k]]
 
-        # Iterative IDW averaging — non-selected verts frozen at original delta (0 if none)
+        # Iterative IDW averaging — runs until convergence, then blends by opacity
+        # Non-selected verts are frozen anchors at their original delta (0 if none).
+        _MAX_PASSES = 200
+        _TOL        = 1e-4
         current = dict(deltas)
-        for _pass in range(n_passes):
+        n_passes_run = _MAX_PASSES
+        for _pass in range(_MAX_PASSES):
             if progress_cb:
-                progress_cb(_pass, n_passes, f"Hammer pass {_pass + 1} / {n_passes}…")
-            snapshot = dict(current)
+                progress_cb(_pass, _MAX_PASSES, f"Hammer pass {_pass + 1}…")
+            snapshot   = dict(current)
+            max_change = 0.0
             for vi in vtx_set:
                 sx = sy = sz = total_w = 0.0
                 for vj, dist2 in spatial_neighbors[vi]:
@@ -1786,7 +1795,26 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progr
                     sx += w * d[0]; sy += w * d[1]; sz += w * d[2]
                     total_w += w
                 if total_w > 0:
-                    current[vi] = (sx / total_w, sy / total_w, sz / total_w)
+                    new_d = (sx / total_w, sy / total_w, sz / total_w)
+                    old_d = current.get(vi, (0.0, 0.0, 0.0))
+                    chg = abs(new_d[0] - old_d[0]) + abs(new_d[1] - old_d[1]) + abs(new_d[2] - old_d[2])
+                    if chg > max_change:
+                        max_change = chg
+                    current[vi] = new_d
+            if max_change < _TOL:
+                n_passes_run = _pass + 1
+                break
+
+        # Blend converged result with original by opacity
+        if opacity < 1.0:
+            for vi in vtx_set:
+                orig = deltas.get(vi, (0.0, 0.0, 0.0))
+                conv = current.get(vi, (0.0, 0.0, 0.0))
+                current[vi] = (
+                    orig[0] + (conv[0] - orig[0]) * opacity,
+                    orig[1] + (conv[1] - orig[1]) * opacity,
+                    orig[2] + (conv[2] - orig[2]) * opacity,
+                )
 
         # Topological Laplacian passes to smooth the resulting delta field
         if n_laplacian > 0:
@@ -1823,7 +1851,7 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, n_passes=10, progr
         _restore_shape_editor_selection(saved)
 
     mode = "deformed" if use_volume else "neutral"
-    print(f"  Hammer Deltas: {n_passes} passes, {len(vtx_indices)} vtx, k={k}, cell={cell_size:.4f}, neighbors={mode}")
+    print(f"  Hammer Deltas: {n_passes_run}/{_MAX_PASSES} passes, {len(vtx_indices)} vtx, k={k}, cell={cell_size:.4f}, opacity={opacity:.0%}, neighbors={mode}")
 
 
 def average_target_deltas(bs_node, logical_index, vtx_indices, opacity=1.0):

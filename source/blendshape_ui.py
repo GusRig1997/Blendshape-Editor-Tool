@@ -4583,7 +4583,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.slider_smooth_opacity.setToolTip(
             "Strength for Smooth, Relax, Hammer and Average.\n"
             "Smooth / Relax: maps to 1–10 iterative passes.\n"
-            "Hammer: maps to 1–20 iterative passes (50% = 10, default).\n"
+            "Hammer: blends between original and fully-converged result (100% = full hammer).\n"
             "Average: blend weight between original and averaged value.")
         self.lbl_smooth_opacity_val = QtWidgets.QLabel("1.00")
         self.lbl_smooth_opacity_val.setFixedWidth(30)
@@ -6807,7 +6807,6 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             return
 
         opacity = self.slider_smooth_opacity.value() / 100.0
-        n_passes = max(1, int(round(opacity * 20)))
         vtx_indices = [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
         use_volume = self.combo_smooth_falloff.currentData() == "deformed"
         n_laplacian = int(self.spin_hammer_lap.text() or "0")
@@ -6817,12 +6816,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             for i, (bs_node, logical_index, target_name) in enumerate(targets):
                 self._progress_step(i, f"Hammering {target_name}…")
                 hammer_target_deltas(bs_node, logical_index, vtx_indices,
-                                     n_passes=n_passes, progress_cb=None,
+                                     opacity=opacity, progress_cb=None,
                                      n_laplacian=n_laplacian, use_volume=use_volume)
             scope = f"{len(vtx_indices)} vtx"
             self._set_status(
                 f"Hammer Deltas {n_t} target{'s' if n_t > 1 else ''}"
-                f"  {scope}  ({n_passes} passes)")
+                f"  {scope}  ({opacity:.0%})")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
