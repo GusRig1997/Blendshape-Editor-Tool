@@ -1,5 +1,17 @@
 # Changelog — Blendshape Editor Tool
 
+## v.05.18
+
+**Hammer Deltas : convergence-based loop + opacity as blend factor**
+
+- La boucle IDW tourne jusqu'à convergence (max 200 passes, `tol=1e-4`) au lieu d'un nombre fixe de passes
+- Le slider **Opacity** contrôle désormais un blend entre les deltas originaux et le résultat pleinement convergé (100% = hammer complet en 1 clic)
+- Suppression du calcul `n_passes = max(1, round(opacity * 20))` côté UI
+- Status bar affiche le pourcentage d'opacity au lieu du nombre de passes
+- Print debug : `n_passes_run/200 passes` pour diagnostiquer la vitesse de convergence
+
+---
+
 ## v.05.17
 
 **UI — Modify Deltas : layout refinements**
