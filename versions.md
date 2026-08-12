@@ -14,53 +14,53 @@
 
 ## v.05.17
 
-**UI — Modify Deltas : layout refinements**
+**UI — Modify Deltas: layout refinements**
 
-- `btn_push_sign` (Normal Push) : remplacé par un `QToolButton` en mode texte affichant `+` / `−` (plus compact que les icônes)
-- Champ "Laplacian" renommé **Smooth Iterations** ; aligné en colonne droite sur la même ligne que Space/combo (split 50/50 avec la combo Space)
-- **Delta Clipboard** : positions de *Prune Small Deltas* et *Select Delta Vertices* échangées (Prune passe en bas, Select en haut)
-- *Select Delta Vrtx* renommé **Select Delta Vertices** (nom complet)
-- *Split Target* et *Edge Loop Split* : revertés en `_icon_btn` (icône fixe + texte QPushButton pleine largeur)
-- *Swap Target Names* : même revert vers `_icon_btn`
-- **Delta Bake / Deltas to Rig** : ratio horizontal 45/55 au lieu de 50/50
+- `btn_push_sign` (Normal Push): replaced by a text-only `QToolButton` displaying `+` / `−` (more compact than icons)
+- "Laplacian" field renamed **Smooth Iterations**; aligned in the right column on the same row as Space/combo (50/50 split with the Space combo)
+- **Delta Clipboard**: *Prune Small Deltas* and *Select Delta Vertices* positions swapped (Prune moves to bottom, Select to top)
+- *Select Delta Vrtx* renamed **Select Delta Vertices** (full name)
+- *Split Target* and *Edge Loop Split*: reverted to `_icon_btn` (fixed icon + full-width QPushButton text)
+- *Swap Target Names*: same revert to `_icon_btn`
+- **Delta Bake / Deltas to Rig**: horizontal ratio changed from 50/50 to 45/55
 
 ---
 
 ## v.05.16
 
-**UI — Modify Deltas : refonte complète**
+**UI — Modify Deltas: full redesign**
 
-- Section restructurée en 6 `QGroupBox` titrés (comme la section Split) :
+- Section restructured into 6 titled `QGroupBox` (matching the Split section style):
   - **Deltas Scale** — Multiply, Invert, Nullify, Normal Push
   - **Deltas Exchange** — Add, Sub, Mult, Transfer, Swap, Replace
-  - **Smooth & Average** — Smooth, Relax, Hammer, Average + slider Opacity
+  - **Smooth & Average** — Smooth, Relax, Hammer, Average + Opacity slider
   - **Deltas Clipboard** — Copy, Paste, Prune, Select Delta Vrtx
   - **Deltas Bake** — Apply Moves, Bake Deformers
   - **Deltas to Rig** — Create Delta Cluster, Create Delta Joint
 
 **Deltas Scale — layout**
 
-- Ligne X/Y/Z : icône `transformXYZ.png` (40 × 34 px) suivie de 3 labels + champs extensibles
-- Champs extensibles (`Expanding` + `stretch=1`) sur toute la largeur disponible
-- Boutons Multiply / Invert / Nullify pleine largeur (via `_icon_btn`)
-- Espacement 8 px entre Nullify et Normal Push pour signaler la séparation thématique
+- X/Y/Z row: `transformXYZ.png` icon (40 × 34 px) followed by 3 labels + expandable fields
+- Expandable fields (`Expanding` + `stretch=1`) filling all available width
+- Multiply / Invert / Nullify full-width buttons (via `_icon_btn`)
+- 8 px spacing between Nullify and Normal Push to signal thematic separation
 
 **Deltas Exchange — layout**
 
-- Grille 2 × 3 : Add / Sub / Mult (ligne 0), Transfer / Swap / Replace (ligne 1)
-- `setColumnStretch` appliqué sur les 3 colonnes pour une répartition uniforme
+- 2 × 3 grid: Add / Sub / Mult (row 0), Transfer / Swap / Replace (row 1)
+- `setColumnStretch` applied on all 3 columns for uniform distribution
 
 **Deltas Clipboard — layout**
 
-- Grille 2 × 2 : Copy (0,0) / Prune + spinbox (0,1) / Paste (1,0) / Select Delta Vrtx (1,1)
-- Largeur du spinbox calculée automatiquement : `fontMetrics().horizontalAdvance("0.0001") + 12`
+- 2 × 2 grid: Copy (0,0) / Prune + spinbox (0,1) / Paste (1,0) / Select Delta Vrtx (1,1)
+- Spinbox width computed automatically: `fontMetrics().horizontalAdvance("0.0001") + 12`
 
-**State compact — grille multi-lignes**
+**Compact state — multi-row grid**
 
-- `add_compact_row_break()` fonctionnel en mode grille via un sentinel `_ROW_BREAK`
-- `finalize_compact()` détecte le sentinel et incrémente la ligne courante
-- `setColumnStretch(max_col, 1)` : l'espace vide va dans la colonne virtuelle après le dernier bouton (évite l'espacement inter-boutons)
-- 3 lignes : Row 0 = Scale + Smooth & Average (8 boutons), Row 1 = Exchange (6 boutons), Row 2 = Clipboard + Bake + Rig (8 boutons)
+- `add_compact_row_break()` functional in grid mode via a `_ROW_BREAK` sentinel
+- `finalize_compact()` detects the sentinel and increments the current row
+- `setColumnStretch(max_col, 1)`: empty space goes into the virtual column after the last button (prevents inter-button stretching)
+- 3 rows: Row 0 = Scale + Smooth & Average (8 buttons), Row 1 = Exchange (6 buttons), Row 2 = Clipboard + Bake + Rig (8 buttons)
 
 ---
 
@@ -154,7 +154,7 @@
 **Modify Deltas — Opacity slider extended**
 
 - Slider now controls Hammer and Average operations in addition to Smooth/Relax
-- Hammer: `n_passes = max(1, int(round(opacity × 20)))` → 1–20 passes
+- Hammer: runs until convergence (max 200 passes), then blends by opacity — see v.05.18
 - Average: `opacity` used directly as lerp factor between original and averaged value
 
 **Tools Shelf — settings bar**
