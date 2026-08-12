@@ -2,13 +2,13 @@
 
 ## v.05.18
 
-**Hammer Deltas : convergence-based loop + opacity as blend factor**
+**Hammer Deltas: convergence-based loop + opacity as blend factor**
 
-- La boucle IDW tourne jusqu'à convergence (max 200 passes, `tol=1e-4`) au lieu d'un nombre fixe de passes
-- Le slider **Opacity** contrôle désormais un blend entre les deltas originaux et le résultat pleinement convergé (100% = hammer complet en 1 clic)
-- Suppression du calcul `n_passes = max(1, round(opacity * 20))` côté UI
-- Status bar affiche le pourcentage d'opacity au lieu du nombre de passes
-- Print debug : `n_passes_run/200 passes` pour diagnostiquer la vitesse de convergence
+- IDW loop now runs until convergence (max 200 passes, `tol=1e-4`) instead of a fixed pass count
+- **Opacity** slider now blends between original deltas and the fully-converged result — 100% always gives a complete hammer in a single click
+- Removed `n_passes = max(1, round(opacity * 20))` from the UI handler
+- Status bar shows opacity percentage instead of pass count
+- Debug print reports `n_passes_run/200 passes` to diagnose convergence speed
 
 ---
 
