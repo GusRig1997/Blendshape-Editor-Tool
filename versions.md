@@ -1,5 +1,55 @@
 # Changelog — Blendshape Editor Tool
 
+## v.05.19
+
+**UI — Modify Deltas: major layout and workflow overhaul**
+
+- **Deltas Exchange** expanded to a 2 × 3 grid: *Add / Subtract / Bake Moves* (row 0), *Transfer / Swap / Bake Defs* (row 1) — Bake Moves and Bake Defs moved from the former Deltas Bake sub-section into Deltas Exchange
+- *Bake Defs* (abbreviated label) prints "Bake Deformers" in the status bar
+- **Wrap Extract** sub-section now sits next to **Deltas to Rig** (replacing the old Deltas Bake block in that row); explanatory label removed from Wrap Extract (tooltip is sufficient)
+- **Modify Deltas** section opens in expanded state by default (`initial_state=2`)
+- Neutral/Multi-target toggles in *Deltas to Rig* moved below the Create Rig buttons; Neutral mode unchecked by default
+- *Select Delta Vertices* renamed **Select Vertices with Deltas**
+- *Sub* button renamed **Subtract**
+- **Transfer Deltas**: selection order inverted — first selected target is the donor (B), second is the receiver (A); status message and error text updated accordingly
+- `_run_delta_swap` renamed `_run_delta_transfer`; `btn_delta_swap` renamed `btn_delta_transfer`
+- Label alignment in Deltas Exchange split into two independent groups (exchange 4 + bake 2) to prevent label over-expansion
+- Hammer combo label: *Space* → **Mode**
+- *Smooth & Average* sub-section renamed **Deltas Distribution**
+
+**UI — Deltas Scale: Normal Push mode toggle**
+
+- New checkable `QToolButton` (icon: `normal_push.png`) in the XYZ row, right of the axis buttons
+- **Normal mode ON**: XYZ fields set to `0.20`, all three fields linked together, *Multiply* and *Invert* operate via `push_normals_deltas` (component/normal space)
+- **Normal mode OFF**: XYZ fields reset to `1.20`, object-space multiply/invert restored
+- XYZ fields are always linked by default (even in object mode)
+- `_run_push_normals` renamed `_run_push_normals_legacy` and removed from the compact state
+- XYZ axis buttons fixed to 22 × 22 px (square)
+- *Multiply / Invert / Nullify* row: Multiply pinned left, Invert floats centered (expandable spacing on both sides), Nullify pinned right
+
+**UI — Compact state (Modify Deltas)**
+
+- XYZ compact row prepended at top: sign button + value field + normal-mode toggle (no "XYZ" label)
+- *Bake Moves* and *Bake Defs* merged onto the same compact row as Add / Subtract / Transfer / Swap (one 6-button row)
+- **Split** section: compact state removed (`two_state=True`); opens expanded by default; *Tools* section closed by default
+
+**UI — Rig Connector: Soft Blend Pairs**
+
+- Blend Graph always visible, displayed to the right of the pairs table (70 / 30 width split); collapsible header removed
+- Opening the Soft Blend Pairs section releases the window minimum height constraint so the window can grow; closing it re-locks minimum height after 50 ms
+
+**UI — Delta Clipboard: Prune Small Deltas**
+
+- Wrapped in a `QWidget` container with a trailing `addStretch()` so the spinbox and button stay anchored to the label, regardless of window width
+- Label width is independent of the *Select Vertices with Deltas* label (no shared alignment)
+
+**Bug fix — `bake_deformers_to_targets` (core)**
+
+- `cmds.listRelatives` now called with `fullPath=True` for both the output shape and the intermediate shape
+- Fixes `RuntimeError: Object does not exist` in `om2.MSelectionList().add()` when a short shape name was ambiguous (multiple nodes sharing the same short name in the scene)
+
+---
+
 ## v.05.18
 
 **Hammer Deltas: convergence-based loop + opacity as blend factor**
