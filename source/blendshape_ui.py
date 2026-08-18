@@ -10,6 +10,28 @@ from blendshape_core import (_save_shape_editor_selection, _restore_shape_editor
 
 import json, os
 
+# Module-level slot called from the MEL wrapper of setSculptTargetIndex
+_sculpt_idx_callback = None
+
+def _on_sculpt_target_index_changed(bs_node, idx):
+    """Invoked by the MEL wrapper whenever setSculptTargetIndex fires."""
+    if _sculpt_idx_callback is not None:
+        _sculpt_idx_callback(bs_node, int(idx))
+
+
+def _get_vertex_selection():
+    """Return a list of selected vertex indices, or None if no vertices are selected."""
+    import re as _re
+    raw = cmds.filterExpand(cmds.ls(sl=True), selectionMask=31, expand=True) or []
+    if not raw:
+        return None
+    indices = []
+    for v in raw:
+        m = _re.search(r'\[(\d+)\]', v)
+        if m:
+            indices.append(int(m.group(1)))
+    return indices if indices else None
+
 
 class _DblClickFilter(QtCore.QObject):
     """Event filter that fires a callback on mouse double-click."""
@@ -1435,51 +1457,111 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self.setMinimumSize(900, 600)
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.Window)
         self._shapes = []   # list of shape name strings currently in table
+        self._min_h_locked = False
         self._build_ui()
         self._populate_from_default_json()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if not self._min_h_locked:
+            self._min_h_locked = True
+            QtCore.QTimer.singleShot(50, self._lock_min_height)
+
+    def _lock_min_height(self):
+        h = self.height()
+        if h > 0:
+            self.setMinimumHeight(h)
 
     # ── UI build ──────────────────────────────────────────────────────────────
 
     def _build_ui(self):
+        import maya.cmds as _cmds
+        _idir = _cmds.internalVar(userAppDir=True) + "prefs/icons"
+
         outer = QtWidgets.QVBoxLayout(self)
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(6)
 
-        # ── Toolbar ───────────────────────────────────────────────────────────
-        toolbar = QtWidgets.QHBoxLayout()
-        toolbar.setSpacing(4)
+        # ── Files Mapping ─────────────────────────────────────────────────────
+        grp_files = QtWidgets.QGroupBox("Files Mapping")
+        grp_files.setStyleSheet("QGroupBox { font-size: 11px; }")
+        _fm_ss = (
+            "QToolButton { background-color: transparent; border: none;"
+            " border-radius: 3px; padding: 2px; }"
+            "QToolButton:hover   { background-color: rgba(255,255,255,30); }"
+            "QToolButton:pressed { background-color: rgba(0,0,0,40); }"
+        )
+        files_row = QtWidgets.QHBoxLayout(grp_files)
+        files_row.setContentsMargins(8, 4, 8, 4)
+        files_row.setSpacing(4)
 
-        toolbar.addWidget(QtWidgets.QLabel("BS Node:"))
+        # Mapping json
+        files_row.addWidget(QtWidgets.QLabel("Mapping json"))
+        btn_load_map = QtWidgets.QToolButton()
+        btn_load_map.setAutoRaise(True)
+        btn_load_map.setStyleSheet(_fm_ss)
+        _pix_load_map = QtGui.QPixmap(f"{_idir}/path.png")
+        if not _pix_load_map.isNull():
+            btn_load_map.setIcon(QtGui.QIcon(_pix_load_map))
+            btn_load_map.setIconSize(QtCore.QSize(34, 34))
+        btn_load_map.setFixedSize(36, 36)
+        btn_load_map.setToolTip("Load a previously saved table mapping from a JSON file")
+        btn_load_map.clicked.connect(self._load_mapping)
+        files_row.addWidget(btn_load_map)
+        self._le_mapping_path = QtWidgets.QLineEdit()
+        self._le_mapping_path.setReadOnly(True)
+        self._le_mapping_path.setFixedWidth(180)
+        self._le_mapping_path.setPlaceholderText("C:/path/to/rig_mapping.json")
+        files_row.addWidget(self._le_mapping_path)
+
+        files_row.addStretch(1)
+
+        # BS Node
+        files_row.addWidget(QtWidgets.QLabel("BS Node"))
+        btn_get_bs = QtWidgets.QToolButton()
+        btn_get_bs.setAutoRaise(True)
+        btn_get_bs.setStyleSheet(_fm_ss)
+        _pix_get_bs = QtGui.QPixmap(f"{_idir}/get_bsnode.png")
+        if not _pix_get_bs.isNull():
+            btn_get_bs.setIcon(QtGui.QIcon(_pix_get_bs))
+            btn_get_bs.setIconSize(QtCore.QSize(34, 34))
+        btn_get_bs.setFixedSize(36, 36)
+        btn_get_bs.setToolTip("Grab the blendShape node from the current selection")
+        btn_get_bs.clicked.connect(self._get_bs_node)
+        files_row.addWidget(btn_get_bs)
         self._le_bs_node = QtWidgets.QLineEdit()
         self._le_bs_node.setReadOnly(True)
         self._le_bs_node.setFixedWidth(160)
         self._le_bs_node.setPlaceholderText("blendShape node")
-        toolbar.addWidget(self._le_bs_node)
-        btn_get_bs = QtWidgets.QPushButton("Get")
-        btn_get_bs.setFixedWidth(40)
-        btn_get_bs.setToolTip("Grab the blendShape node from the current selection")
-        btn_get_bs.clicked.connect(self._get_bs_node)
-        toolbar.addWidget(btn_get_bs)
+        files_row.addWidget(self._le_bs_node)
 
-        toolbar.addSpacing(16)
+        files_row.addStretch(1)
 
-        toolbar.addWidget(QtWidgets.QLabel("JSON:"))
+        # bs_autofill — right edge
+        btn_fill_bs = QtWidgets.QToolButton()
+        btn_fill_bs.setAutoRaise(True)
+        btn_fill_bs.setStyleSheet(_fm_ss)
+        _pix_bs_af = QtGui.QPixmap(f"{_idir}/json_autofill.png")
+        if not _pix_bs_af.isNull():
+            btn_fill_bs.setIcon(QtGui.QIcon(_pix_bs_af))
+            btn_fill_bs.setIconSize(QtCore.QSize(34, 34))
+        btn_fill_bs.setFixedSize(36, 36)
+        btn_fill_bs.setToolTip(
+            "Auto Fill from BS Node — populate the table with all targets\n"
+            "from the current BS node (auto-detects if none is set).")
+        btn_fill_bs.clicked.connect(self._fill_from_bs_node)
+        files_row.addWidget(btn_fill_bs)
+
+        # backing store for _load_json_file / _populate_from_default_json (not displayed)
         self._le_json = QtWidgets.QLineEdit()
         self._le_json.setReadOnly(True)
-        self._le_json.setPlaceholderText("shapes JSON path")
-        toolbar.addWidget(self._le_json)
-        btn_load_json = QtWidgets.QPushButton("Load")
-        btn_load_json.setFixedWidth(40)
-        btn_load_json.setToolTip("Load a JSON file to populate the Shape column")
-        btn_load_json.clicked.connect(self._load_json_file)
-        toolbar.addWidget(btn_load_json)
 
-        outer.addLayout(toolbar)
+        outer.addWidget(grp_files)
 
         # ── Search ────────────────────────────────────────────────────────────
         search_row = QtWidgets.QHBoxLayout()
         search_row.setSpacing(4)
-        search_row.addWidget(QtWidgets.QLabel("Filter:"))
+        search_row.addWidget(QtWidgets.QLabel("Filter"))
         self._le_search = QtWidgets.QLineEdit()
         self._le_search.setPlaceholderText("Search shapes…")
         self._le_search.setClearButtonEnabled(True)
@@ -1517,29 +1599,193 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._table.setColumnWidth(self._COL_GATE,  100)
         self._table.setColumnWidth(self._COL_STAT,  50)
 
-        outer.addWidget(self._table)
+        # ── Table + sidebar ────────────────────────────────────────────────────
+        _RC_BW = 28
+        _RC_SP = 2
+        _RC_W  = _RC_BW * 2 + _RC_SP   # 58 px — uniform column width
+        _rc_icon_ss = (
+            "QToolButton { background-color: transparent; border: none;"
+            " border-radius: 3px; padding: 2px; }"
+            "QToolButton:hover   { background-color: rgba(255,255,255,30); }"
+            "QToolButton:pressed { background-color: rgba(0,0,0,40); }"
+        )
+
+        def _rc_side_btn(label, tooltip, callback):
+            b = QtWidgets.QPushButton(label)
+            b.setFixedSize(40, 40)
+            b.setFocusPolicy(QtCore.Qt.NoFocus)
+            b.setStyleSheet("font-size: 14px; font-weight: bold;")
+            b.setToolTip(tooltip)
+            b.clicked.connect(callback)
+            return b
+
+        def _rc_icon_btn(icon_path, tooltip, callback, icon_size=34):
+            b = QtWidgets.QToolButton()
+            b.setFixedSize(40, 40)
+            b.setAutoRaise(True)
+            b.setStyleSheet(_rc_icon_ss)
+            b.setToolTip(tooltip)
+            px = QtGui.QPixmap(icon_path)
+            if not px.isNull():
+                b.setIcon(QtGui.QIcon(px))
+                b.setIconSize(QtCore.QSize(icon_size, icon_size))
+            b.clicked.connect(callback)
+            return b
+
+        btn_add = _rc_side_btn("+",
+            "Add one row per target selected in the Shape Editor.\n"
+            "Falls back to one empty row if nothing is selected.",
+            self._add_row)
+        btn_rm  = _rc_side_btn("−", "Delete the selected rows from the table",
+                               self._remove_rows)
+        btn_up  = _rc_side_btn("↑", "Move selected rows up by one position",
+                               self._move_up)
+        btn_dn  = _rc_side_btn("↓", "Move selected rows down by one position",
+                               self._move_down)
+
+        btn_opp = _rc_icon_btn(
+            f"{_idir}/opposite_row.png",
+            "Duplicate the selected row with opposite names:\n"
+            "swaps L/R (and other symmetric tokens) in the Shape and Controller fields.\n"
+            "The new row is inserted directly below the source row.",
+            self._create_opposite_row)
+
+        btn_connect_sel = _rc_icon_btn(
+            f"{_idir}/link_locs.png",
+            "Connect Selected — Build the rig network for the selected rows only.\n"
+            "Useful for testing a single setup without rebuilding the full rig.",
+            self._connect_selected_rows, icon_size=26)
+
+        btn_disc_sel = _rc_icon_btn(
+            f"{_idir}/unlink_locs.png",
+            "Disconnect Selected — Remove the rig network for the selected shapes\n"
+            "(utility nodes deleted, blendShape weight disconnected).",
+            self._disconnect_selected, icon_size=26)
+        btn_disc_all = _rc_icon_btn(
+            f"{_idir}/disconnect_all.png",
+            "Disconnect All — Remove the rig network for all shapes in the table\n"
+            "(utility nodes deleted, blendShape weights disconnected).",
+            self._disconnect_all)
+
+        _build_ss = (
+            "QToolButton { background-color: transparent; border: none;"
+            " border-radius: 3px; padding: 2px; }"
+            "QToolButton:hover   { background-color: rgba(255,255,255,30); }"
+            "QToolButton:pressed { background-color: rgba(0,0,0,40); }"
+        )
+        self._btn_build = QtWidgets.QToolButton()
+        self._btn_build.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        self._btn_build.setToolTip(
+            "Build the rig network for all valid rows:\n"
+            "  • Creates offset / normalize / clamp utility nodes per shape\n"
+            "  • Applies transform limits and locks unused axes on each controller\n"
+            "  • Optionally generates scale shapes (if Auto Scale Shapes is checked)")
+        self._btn_build.setStyleSheet(_build_ss)
+        _pix_connect = QtGui.QPixmap(f"{_idir}/connect_rig.png")
+        if not _pix_connect.isNull():
+            self._btn_build.setIcon(QtGui.QIcon(_pix_connect))
+            self._btn_build.setIconSize(QtCore.QSize(30, 30))
+        self._btn_build.setFixedSize(40, 40)
+        self._btn_build.clicked.connect(self._on_build_connect)
+
+        btn_save_map = QtWidgets.QToolButton()
+        btn_save_map.setAutoRaise(True)
+        btn_save_map.setStyleSheet(_rc_icon_ss)
+        _pix_save_map = QtGui.QPixmap(f"{_idir}/save.png")
+        if not _pix_save_map.isNull():
+            btn_save_map.setIcon(QtGui.QIcon(_pix_save_map.scaled(
+                34, 34, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
+            btn_save_map.setIconSize(QtCore.QSize(34, 34))
+        btn_save_map.setFixedSize(40, 40)
+        btn_save_map.setToolTip(
+            "Save the current table mapping.\n"
+            "If a path is already loaded, saves directly without dialog.")
+        btn_save_map.clicked.connect(self._save_mapping)
+
+        side_col = QtWidgets.QVBoxLayout()
+        side_col.setSpacing(0)
+        side_col.setContentsMargins(0, 0, 0, 0)
+        _side_btns = (btn_add, btn_rm, btn_up, btn_dn, btn_opp,
+                      btn_connect_sel, btn_disc_sel, btn_disc_all, self._btn_build)
+        for _b in _side_btns:
+            side_col.addWidget(_b, 0, QtCore.Qt.AlignHCenter)
+            if _b is not self._btn_build:
+                side_col.addItem(QtWidgets.QSpacerItem(
+                    0, _RC_SP,
+                    QtWidgets.QSizePolicy.Fixed,
+                    QtWidgets.QSizePolicy.Fixed))
+
+        _side_vlay = QtWidgets.QVBoxLayout()
+        _side_vlay.setSpacing(0)
+        _side_vlay.setContentsMargins(0, 0, 0, 0)
+        _side_vlay.addWidget(btn_save_map, 0, QtCore.Qt.AlignHCenter)
+        _side_vlay.addStretch(1)
+        _side_vlay.addLayout(side_col)
+
+        _side_widget = QtWidgets.QWidget()
+        _side_widget.setLayout(_side_vlay)
+        _side_widget.setFixedWidth(44)
+        _side_widget.setSizePolicy(QtWidgets.QSizePolicy.Fixed,
+                                   QtWidgets.QSizePolicy.Minimum)
+
+        _tbl_row = QtWidgets.QHBoxLayout()
+        _tbl_row.setSpacing(4)
+        _tbl_row.addWidget(self._table, 1)
+        _tbl_row.addWidget(_side_widget)
+        outer.addLayout(_tbl_row, 1)
 
         # ── Auto-stagger ──────────────────────────────────────────────────────
-        stagger_box = QtWidgets.QVBoxLayout()
-        stagger_box.setSpacing(3)
-
-        stagger_row1 = QtWidgets.QHBoxLayout()
-        stagger_row1.setSpacing(4)
-        stagger_row1.addWidget(QtWidgets.QLabel("Auto-stagger:"))
+        grp_stagger = QtWidgets.QGroupBox("Auto-stagger")
+        grp_stagger.setStyleSheet("QGroupBox { font-size: 11px; }")
+        stagger_row = QtWidgets.QHBoxLayout(grp_stagger)
+        stagger_row.setContentsMargins(8, 4, 8, 4)
+        stagger_row.setSpacing(4)
 
         self._le_stagger_ctrl = QtWidgets.QLineEdit()
         self._le_stagger_ctrl.setPlaceholderText("controller")
         self._le_stagger_ctrl.setFixedWidth(140)
-        stagger_row1.addWidget(self._le_stagger_ctrl)
+        stagger_row.addWidget(self._le_stagger_ctrl)
+
+        stagger_row.addStretch(1)
 
         self._combo_stagger_axis = QtWidgets.QComboBox()
         self._combo_stagger_axis.setEditable(True)
         self._combo_stagger_axis.addItems(self._ATTR_ITEMS)
-        self._combo_stagger_axis.setCurrentText("tx")
+        self._combo_stagger_axis.setCurrentIndex(-1)
+        self._combo_stagger_axis.lineEdit().setPlaceholderText("attribute")
         self._combo_stagger_axis.setFixedWidth(75)
-        stagger_row1.addWidget(self._combo_stagger_axis)
+        stagger_row.addWidget(self._combo_stagger_axis)
 
-        stagger_row1.addWidget(QtWidgets.QLabel("Mode:"))
+        stagger_row.addStretch(1)
+
+        self._stagger_sign = 1.0
+        self.btn_stagger_sign = QtWidgets.QToolButton()
+        self.btn_stagger_sign.setFixedSize(26, 34)
+        self.btn_stagger_sign.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
+        self.btn_stagger_sign.setText("+")
+        self.btn_stagger_sign.setEnabled(False)
+        self.btn_stagger_sign.setAutoRaise(True)
+        self.btn_stagger_sign.setStyleSheet("""
+            QToolButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 3px;
+                font-size: 14px;
+                font-weight: bold;
+            }
+            QToolButton:hover   { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """)
+        self.btn_stagger_sign.setToolTip(
+            "Symmetric only — controls which side is positive.\n"
+            "+: left half → '+', right half → '\u2212'.\n"
+            "\u2212: left half → '\u2212', right half → '+'.")
+        def _on_stagger_sign_clicked():
+            self._stagger_sign *= -1.0
+            self.btn_stagger_sign.setText("\u2212" if self._stagger_sign < 0 else "+")
+        self.btn_stagger_sign.clicked.connect(_on_stagger_sign_clicked)
+        stagger_row.addWidget(self.btn_stagger_sign)
+
         self._combo_stagger_mode = QtWidgets.QComboBox()
         self._combo_stagger_mode.addItems(["Linear", "Mirror", "Symmetric"])
         self._combo_stagger_mode.setFixedWidth(90)
@@ -1551,40 +1797,22 @@ class RigConnectorDialog(QtWidgets.QDialog):
             "           Left half and right half get opposite directions.\n"
             "           Ideal for brows and cheekbones.")
         self._combo_stagger_mode.currentTextChanged.connect(self._on_stagger_mode_changed)
-        stagger_row1.addWidget(self._combo_stagger_mode)
+        stagger_row.addWidget(self._combo_stagger_mode)
 
-        self._chk_stagger_sign = QtWidgets.QCheckBox("+/\u2212")
-        self._chk_stagger_sign.setEnabled(False)
-        self._chk_stagger_sign.setToolTip(
-            "Symmetric only — controls which side is positive.\n"
-            "Unchecked: left half → '\u2212', right half → '+'.\n"
-            "Checked:   left half → '+', right half → '\u2212'.")
-        stagger_row1.addWidget(self._chk_stagger_sign)
+        stagger_row.addStretch(1)
 
-        self._chk_stagger_proxies = QtWidgets.QCheckBox("Proxies")
-        self._chk_stagger_proxies.setChecked(True)
-        self._chk_stagger_proxies.setToolTip(
-            "ON: creates a new proxy row (sub-driver) for each selected row,\n"
-            "    driven by the stagger controller with the computed In Min / In Max.\n"
-            "OFF: applies the controller, axis, In Min and In Max directly\n"
-            "    to the selected rows, without adding proxy rows.")
-        stagger_row1.addWidget(self._chk_stagger_proxies)
-        stagger_row1.addStretch()
-        stagger_box.addLayout(stagger_row1)
-
-        stagger_row2 = QtWidgets.QHBoxLayout()
-        stagger_row2.setSpacing(4)
-
-        stagger_row2.addWidget(QtWidgets.QLabel("In Max:"))
+        stagger_row.addWidget(QtWidgets.QLabel("In Max"))
         self._sb_stagger_inmax = QtWidgets.QDoubleSpinBox()
         self._sb_stagger_inmax.setRange(0.0, 9999.0)
         self._sb_stagger_inmax.setValue(0.0)
         self._sb_stagger_inmax.setDecimals(3)
         self._sb_stagger_inmax.setFixedWidth(70)
         self._sb_stagger_inmax.setLocale(QtCore.QLocale(QtCore.QLocale.English))
-        stagger_row2.addWidget(self._sb_stagger_inmax)
+        stagger_row.addWidget(self._sb_stagger_inmax)
 
-        stagger_row2.addWidget(QtWidgets.QLabel("Smooth:"))
+        stagger_row.addStretch(1)
+
+        stagger_row.addWidget(QtWidgets.QLabel("Blend"))
         self._sb_stagger_falloff = QtWidgets.QDoubleSpinBox()
         self._sb_stagger_falloff.setRange(0.0, 9999.0)
         self._sb_stagger_falloff.setValue(0.0)
@@ -1593,24 +1821,47 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._sb_stagger_falloff.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self._sb_stagger_falloff.setToolTip(
             "Overlap amount added on each side of a shape's activation slot.\n"
-            "Example: slot [0.2, 0.4] with smooth 0.01 → In Min=0.19, In Max=0.41.\n"
+            "Example: slot [0.2, 0.4] with blend 0.01 → In Min=0.19, In Max=0.41.\n"
             "First shape never goes below 0; last shape never exceeds In Max.")
-        stagger_row2.addWidget(self._sb_stagger_falloff)
+        stagger_row.addWidget(self._sb_stagger_falloff)
 
-        btn_stagger = QtWidgets.QPushButton("Create / Set Stagger")
+        stagger_row.addStretch(1)
+
+        self._chk_stagger_proxies = QtWidgets.QCheckBox("As Proxies")
+        self._chk_stagger_proxies.setChecked(False)
+        self._chk_stagger_proxies.setToolTip(
+            "ON: creates a new proxy row (sub-driver) for each selected row,\n"
+            "    driven by the stagger controller with the computed In Min / In Max.\n"
+            "OFF: applies the controller, axis, In Min and In Max directly\n"
+            "    to the selected rows, without adding proxy rows.")
+        stagger_row.addWidget(self._chk_stagger_proxies)
+
+        stagger_row.addStretch(1)
+
+        stagger_row.addWidget(QtWidgets.QLabel("Create Stagger"))
+        btn_stagger = QtWidgets.QToolButton()
+        btn_stagger.setAutoRaise(True)
+        btn_stagger.setStyleSheet("""
+            QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
+            QToolButton:hover   { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """)
+        _pix_stagger = QtGui.QPixmap(f"{_idir}/stagger.png")
+        if not _pix_stagger.isNull():
+            btn_stagger.setIcon(QtGui.QIcon(_pix_stagger))
+            btn_stagger.setIconSize(QtCore.QSize(34, 34))
+        btn_stagger.setFixedSize(36, 36)
         btn_stagger.setToolTip(
             "Apply stagger In Min / In Max to the selected rows.\n"
-            "Proxies ON: creates a proxy sub-row per shape driven by the stagger controller.\n"
-            "Proxies OFF: writes the values directly onto the selected rows.\n"
+            "As Proxies ON: creates a proxy sub-row per shape driven by the stagger controller.\n"
+            "As Proxies OFF: writes the values directly onto the selected rows.\n"
             "Each shape gets a sequential activation slot within [0, In Max].\n"
-            "Smooth extends each slot by ±smooth (clamped to bounds).\n"
+            "Blend extends each slot by ±blend (clamped to bounds).\n"
             "Mirror/Symmetric: outer shapes share slot 0, centre shape activates last.")
         btn_stagger.clicked.connect(self._apply_stagger)
-        stagger_row2.addWidget(btn_stagger)
-        stagger_row2.addStretch()
-        stagger_box.addLayout(stagger_row2)
+        stagger_row.addWidget(btn_stagger)
 
-        outer.addLayout(stagger_box)
+        outer.addWidget(grp_stagger)
 
         # ── Soft Blend Pairs (collapsible, closed by default) ─────────────────
         _HDR_STYLE = (
@@ -1635,6 +1886,10 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         def _toggle_sb():
             _sb_open[0] = not _sb_open[0]
+            if _sb_open[0]:
+                self.setMinimumHeight(0)
+            else:
+                QtCore.QTimer.singleShot(50, lambda: self.setMinimumHeight(self.height()))
             sb_body.setVisible(_sb_open[0])
             sb_header.setText(("▼  Soft Blend Pairs") if _sb_open[0]
                                else ("▶  Soft Blend Pairs"))
@@ -1645,10 +1900,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         outer.addWidget(sb_header)
         outer.addWidget(sb_body)
 
-        # ── Table (left) + Graph (right) side by side ────────────────────────
-        tbl_graph_row = QtWidgets.QHBoxLayout()
-        tbl_graph_row.setSpacing(6)
-
+        # ── Pairs table (full width) ──────────────────────────────────────────
         self._tbl_pairs = QtWidgets.QTableWidget(0, 3)
         self._tbl_pairs.setHorizontalHeaderLabels(["Shape A", "Shape B", ""])
         self._tbl_pairs.verticalHeader().setVisible(False)
@@ -1660,18 +1912,9 @@ class RigConnectorDialog(QtWidgets.QDialog):
         hh_sb.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
         hh_sb.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
         self._tbl_pairs.setColumnWidth(2, 24)
-        tbl_graph_row.addWidget(self._tbl_pairs, stretch=7)
 
-        self._graph = _SoftBlendGraphWidget()
-        self._graph.keys_changed.connect(self._on_graph_keys_changed)
-        tbl_graph_row.addWidget(self._graph, stretch=3)
-
-        lay_sb.addLayout(tbl_graph_row)
-
-        # ── Bottom row: Add Pair | Reset Curve | U | V | Tangent ─────────────
-        bottom_row = QtWidgets.QHBoxLayout()
-        bottom_row.setSpacing(4)
-
+        pair_btn_row = QtWidgets.QHBoxLayout()
+        pair_btn_row.setSpacing(4)
         btn_add_pair = QtWidgets.QPushButton("+ Add Pair")
         btn_add_pair.setFixedWidth(80)
         btn_add_pair.setToolTip(
@@ -1679,18 +1922,31 @@ class RigConnectorDialog(QtWidgets.QDialog):
             "will be driven by an animCurveUU with smooth tangents at neutral\n"
             "instead of the standard linear norm/clamp network.")
         btn_add_pair.clicked.connect(self._add_soft_blend_pair)
-        bottom_row.addWidget(btn_add_pair)
+        pair_btn_row.addWidget(btn_add_pair)
+        pair_btn_row.addStretch()
 
-        bottom_row.addStretch()
+        _left_col = QtWidgets.QVBoxLayout()
+        _left_col.setSpacing(3)
+        _left_col.addWidget(self._tbl_pairs)
+        _left_col.addLayout(pair_btn_row)
+
+        # ── Blend Graph (right panel) ──────────────────────────────────────────
+        self._graph = _SoftBlendGraphWidget()
+        self._graph.keys_changed.connect(self._on_graph_keys_changed)
+
+        # Graph controls: Reset Curve | U | V | Tangent
+        graph_ctrl_row = QtWidgets.QHBoxLayout()
+        graph_ctrl_row.setSpacing(4)
 
         btn_reset_curve = QtWidgets.QPushButton("Reset Curve")
         btn_reset_curve.setFixedWidth(80)
         btn_reset_curve.setToolTip("Reset the soft blend curve to the default 5-key preset.")
         btn_reset_curve.clicked.connect(self._reset_soft_blend_curve)
-        bottom_row.addWidget(btn_reset_curve)
+        graph_ctrl_row.addWidget(btn_reset_curve)
 
-        bottom_row.addSpacing(8)
-        bottom_row.addWidget(QtWidgets.QLabel("U:"))
+        graph_ctrl_row.addStretch()
+        graph_ctrl_row.addSpacing(8)
+        graph_ctrl_row.addWidget(QtWidgets.QLabel("U:"))
         self._sb_key_u = QtWidgets.QDoubleSpinBox()
         self._sb_key_u.setRange(-1.0, 1.0)
         self._sb_key_u.setDecimals(3)
@@ -1698,9 +1954,9 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._sb_key_u.setFixedWidth(65)
         self._sb_key_u.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self._sb_key_u.valueChanged.connect(self._on_key_u_changed)
-        bottom_row.addWidget(self._sb_key_u)
+        graph_ctrl_row.addWidget(self._sb_key_u)
 
-        bottom_row.addWidget(QtWidgets.QLabel("V:"))
+        graph_ctrl_row.addWidget(QtWidgets.QLabel("V:"))
         self._sb_key_v = QtWidgets.QDoubleSpinBox()
         self._sb_key_v.setRange(-1.0, 1.0)
         self._sb_key_v.setDecimals(3)
@@ -1708,102 +1964,29 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._sb_key_v.setFixedWidth(65)
         self._sb_key_v.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self._sb_key_v.valueChanged.connect(self._on_key_v_changed)
-        bottom_row.addWidget(self._sb_key_v)
+        graph_ctrl_row.addWidget(self._sb_key_v)
 
-        bottom_row.addWidget(QtWidgets.QLabel("Tangent:"))
+        graph_ctrl_row.addWidget(QtWidgets.QLabel("Tangent:"))
         self._combo_key_tang = QtWidgets.QComboBox()
         self._combo_key_tang.addItems(["smooth", "auto", "linear"])
         self._combo_key_tang.setFixedWidth(76)
         self._combo_key_tang.currentTextChanged.connect(self._on_key_tangent_changed)
-        bottom_row.addWidget(self._combo_key_tang)
+        graph_ctrl_row.addWidget(self._combo_key_tang)
 
-        lay_sb.addLayout(bottom_row)
+        _right_col = QtWidgets.QVBoxLayout()
+        _right_col.setSpacing(3)
+        _right_col.addWidget(self._graph)
+        _right_col.addLayout(graph_ctrl_row)
+
+        _sb_split = QtWidgets.QHBoxLayout()
+        _sb_split.setSpacing(6)
+        _sb_split.addLayout(_left_col, 7)
+        _sb_split.addLayout(_right_col, 3)
+        lay_sb.addLayout(_sb_split)
 
         self._updating_controls = False
         self._refresh_key_controls()
 
-        # ── Button bar ────────────────────────────────────────────────────────
-        btn_bar = QtWidgets.QHBoxLayout()
-        btn_bar.setSpacing(4)
-
-        btn_autofill = QtWidgets.QPushButton("Auto-fill")
-        btn_autofill.setToolTip(
-            "Auto-populate the Controller and Attr columns based on naming conventions")
-        btn_autofill.clicked.connect(self._auto_fill)
-        btn_bar.addWidget(btn_autofill)
-
-        btn_add = QtWidgets.QPushButton("Add Row")
-        btn_add.setToolTip("Add one row per target selected in the Shape Editor.\n"
-                           "Falls back to one empty row if nothing is selected.")
-        btn_add.clicked.connect(self._add_row)
-        btn_bar.addWidget(btn_add)
-
-        btn_remove = QtWidgets.QPushButton("Remove Row")
-        btn_remove.setToolTip("Delete the selected rows from the table")
-        btn_remove.clicked.connect(self._remove_rows)
-        btn_bar.addWidget(btn_remove)
-
-        btn_opp = QtWidgets.QPushButton("Create Opposite")
-        btn_opp.setToolTip(
-            "Duplicate the selected row with opposite names:\n"
-            "swaps L/R (and other symmetric tokens) in the Shape and Controller fields.\n"
-            "The new row is inserted directly below the source row.")
-        btn_opp.clicked.connect(self._create_opposite_row)
-        btn_bar.addWidget(btn_opp)
-
-        btn_up = QtWidgets.QPushButton("\u2191")
-        btn_up.setFixedWidth(26)
-        btn_up.setToolTip("Move selected rows up by one position")
-        btn_up.clicked.connect(self._move_up)
-        btn_bar.addWidget(btn_up)
-
-        btn_dn = QtWidgets.QPushButton("\u2193")
-        btn_dn.setFixedWidth(26)
-        btn_dn.setToolTip("Move selected rows down by one position")
-        btn_dn.clicked.connect(self._move_down)
-        btn_bar.addWidget(btn_dn)
-
-        btn_bar.addStretch()
-
-        btn_load = QtWidgets.QPushButton("Load Mapping")
-        btn_load.setToolTip("Load a previously saved table mapping from a JSON file")
-        btn_load.clicked.connect(self._load_mapping)
-        btn_bar.addWidget(btn_load)
-
-        btn_save = QtWidgets.QPushButton("Save Mapping")
-        btn_save.setToolTip("Save the current table mapping to a JSON file")
-        btn_save.clicked.connect(self._save_mapping)
-        btn_bar.addWidget(btn_save)
-
-        btn_bar.addSpacing(8)
-
-        btn_disc_sel = QtWidgets.QPushButton("Disconnect Selected")
-        btn_disc_sel.setToolTip(
-            "Remove the rig network for the selected shapes (utility nodes deleted,\n"
-            "blendShape weight disconnected). Does not delete the shapes themselves.")
-        btn_disc_sel.clicked.connect(self._disconnect_selected)
-        btn_bar.addWidget(btn_disc_sel)
-
-        btn_disc_all = QtWidgets.QPushButton("Disconnect All")
-        btn_disc_all.setToolTip(
-            "Remove the rig network for all shapes in the table (utility nodes deleted,\n"
-            "blendShape weights disconnected). Does not delete the shapes themselves.")
-        btn_disc_all.clicked.connect(self._disconnect_all)
-        btn_bar.addWidget(btn_disc_all)
-
-        btn_bar.addSpacing(16)
-
-        self._btn_build = QtWidgets.QPushButton("Build && Connect ▸")
-        self._btn_build.setToolTip(
-            "Build the rig network for all valid rows:\n"
-            "  • Creates offset / normalize / clamp utility nodes per shape\n"
-            "  • Applies transform limits and locks unused axes on each controller\n"
-            "  • Optionally generates scale shapes (if Auto Scale Shapes is checked)")
-        self._btn_build.setEnabled(False)
-        self._btn_build.clicked.connect(self._on_build_connect)
-        btn_bar.addWidget(self._btn_build)
-
-        outer.addLayout(btn_bar)
 
     # ── Populate ──────────────────────────────────────────────────────────────
 
@@ -1940,6 +2123,35 @@ class RigConnectorDialog(QtWidgets.QDialog):
         if path:
             self._le_json.setText(path)
             self._load_shapes_from_json(path)
+
+    def _fill_from_bs_node(self):
+        bs_node = self._le_bs_node.text().strip()
+        if not bs_node:
+            # Auto-detect from selection
+            self._get_bs_node()
+            bs_node = self._le_bs_node.text().strip()
+        if not bs_node:
+            return
+        try:
+            targets = cmds.listAttr(f"{bs_node}.w", m=True) or []
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Fill from BS", str(e))
+            return
+        if not targets:
+            QtWidgets.QMessageBox.information(
+                self, "Fill from BS", f"No targets found on '{bs_node}'.")
+            return
+        if self._shapes:
+            answer = QtWidgets.QMessageBox.question(
+                self, "Fill from BS",
+                f"Replace the current {len(self._shapes)} row(s) with "
+                f"{len(targets)} targets from '{bs_node}'?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+            if answer != QtWidgets.QMessageBox.Yes:
+                return
+        self._le_json.clear()
+        self._shapes = targets
+        self._rebuild_table()
 
     # ── Auto-fill ─────────────────────────────────────────────────────────────
 
@@ -2368,11 +2580,14 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._graph.set_selected_tangent(text)
 
     def _save_mapping(self):
-        default = _rig_mapping_prefs_path()
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Save Mapping", default, "JSON files (*.json)")
+        path = self._le_mapping_path.text().strip()
         if not path:
-            return
+            default = _rig_mapping_prefs_path()
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, "Save Mapping", default, "JSON files (*.json)")
+            if not path:
+                return
+            self._le_mapping_path.setText(path)
         data = {
             "connections":       self._collect_rows(),
             "soft_blend_pairs":  self._collect_soft_blend_pairs(),
@@ -2390,6 +2605,10 @@ class RigConnectorDialog(QtWidgets.QDialog):
             self, "Load Mapping", default, "JSON files (*.json)")
         if not path or not os.path.exists(path):
             return
+        self._le_mapping_path.setText(path)
+        self._load_mapping_from_path(path)
+
+    def _load_mapping_from_path(self, path):
         try:
             with open(path, "r") as f:
                 data = json.load(f)
@@ -2521,7 +2740,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         # ── Soft blend curve ──────────────────────────────────────────────────
         import copy
-        curve = data.get("soft_blend_curve") if isinstance(raw, dict) else None
+        curve = data.get("soft_blend_curve") if isinstance(data, dict) else None
         if curve:
             self._graph.set_keys(curve)
         else:
@@ -2627,7 +2846,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
     # ── Auto-stagger ──────────────────────────────────────────────────────────
 
     def _on_stagger_mode_changed(self, text):
-        self._chk_stagger_sign.setEnabled(text == "Symmetric")
+        self.btn_stagger_sign.setEnabled(text == "Symmetric")
 
     def _apply_stagger(self):
         """Apply stagger In Min / In Max to the selected primary rows.
@@ -2649,7 +2868,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         mode          = self._combo_stagger_mode.currentText()   # "Linear"/"Mirror"/"Symmetric"
         use_mirror    = (mode == "Mirror")
         use_symmetric = (mode == "Symmetric")
-        positive_left = self._chk_stagger_sign.isChecked()
+        positive_left = self._stagger_sign > 0
         use_proxies   = self._chk_stagger_proxies.isChecked()
 
         if use_proxies and not master_ctrl:
@@ -2756,6 +2975,58 @@ class RigConnectorDialog(QtWidgets.QDialog):
     # ── Build & Connect ───────────────────────────────────────────────────────
 
     @undo_chunk
+    def _connect_selected_rows(self):
+        bs_node = self._le_bs_node.text().strip()
+        if not bs_node or not cmds.objExists(bs_node):
+            QtWidgets.QMessageBox.warning(
+                self, "Connect Selected",
+                "No valid blendShape node set.\nUse 'Get' to pick one.")
+            return
+        sel_rows = sorted(set(idx.row() for idx in self._table.selectedIndexes()))
+        if not sel_rows:
+            QtWidgets.QMessageBox.warning(self, "Connect Selected", "No rows selected.")
+            return
+        # Expand to include proxy rows (↳) that belong to selected primaries
+        all_rows = self._collect_rows()
+        n = len(all_rows)
+        expanded = set(sel_rows)
+        for r in sel_rows:
+            for nr in range(r + 1, n):
+                num_item = self._table.item(nr, self._COL_NUM)
+                if num_item and num_item.text() == "\u21b3":
+                    expanded.add(nr)
+                else:
+                    break
+        rows = [all_rows[r] for r in sorted(expanded) if r < n]
+        pairs  = self._collect_soft_blend_pairs()
+        curve  = self._graph.get_keys()
+        results = build_and_connect_rig(
+            bs_node, rows, soft_blend_pairs=pairs, soft_blend_curve=curve)
+        row_by_shape = {}
+        for r in range(self._table.rowCount()):
+            item = self._table.item(r, self._COL_SHAPE)
+            if item:
+                row_by_shape[item.text()] = r
+        ok_count = err_count = skip_count = 0
+        for res in results:
+            shape  = res["shape"]
+            status = res["status"]
+            r = row_by_shape.get(shape)
+            if r is not None:
+                lbl = self._table.cellWidget(r, self._COL_STAT)
+                if lbl:
+                    if status in ("ok", "ok:direct"):
+                        color = "#00cc00"; ok_count += 1
+                    elif status == "skip":
+                        color = "grey"; skip_count += 1
+                    else:
+                        color = "#ff4444"; err_count += 1
+                    lbl.setStyleSheet(f"color: {color};")
+                    lbl.setToolTip(status)
+        self._set_status(
+            f"Connect Selected: {ok_count} ok, {skip_count} skipped, {err_count} error(s).")
+
+    @undo_chunk
     def _on_build_connect(self):
         bs_node = self._le_bs_node.text().strip()
         if not bs_node or not cmds.objExists(bs_node):
@@ -2763,7 +3034,12 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 self, "Build & Connect", "No valid blendShape node set.\nUse 'Get' to pick one.")
             return
 
-        rows   = self._collect_rows()
+        rows = self._collect_rows()
+        if not rows:
+            QtWidgets.QMessageBox.information(
+                self, "Build & Connect",
+                "The table is empty.\nPlease load a mapping JSON or use Auto Fill first.")
+            return
         pairs  = self._collect_soft_blend_pairs()
         curve  = self._graph.get_keys()
         results = build_and_connect_rig(
@@ -3241,16 +3517,107 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._nom_side_right  = "R"
         self._sel_changed_job = None
         self._cached_phantom_count = 0
+        self._edit_poll_state = None
+        self._last_sculpt_hook = None
+        self._sculpt_hook_mel_path = None
         self._build_ui()
         self.resize(_SHELF_W, _DEFAULT_H)
         self._mouse_filter = _GlobalMouseReleaseFilter(self._refresh_top_status, self)
         QtWidgets.QApplication.instance().installEventFilter(self._mouse_filter)
         self._refresh_top_status(check_phantoms=True)
+        import blendshape_ui as _bse_mod
+        _bse_mod._sculpt_idx_callback = self._on_sculpt_idx_changed
+        self._install_sculpt_hook()
 
 
     def closeEvent(self, event):
+        self._uninstall_sculpt_hook()
+        import blendshape_ui as _bse_mod
+        _bse_mod._sculpt_idx_callback = None
         QtWidgets.QApplication.instance().removeEventFilter(self._mouse_filter)
         super().closeEvent(event)
+
+    # ── setSculptTargetIndex hook ──────────────────────────────────────────────
+
+    def _install_sculpt_hook(self):
+        try:
+            import re
+            result = mel.eval('whatIs "setSculptTargetIndex"')
+            if 'found in:' not in str(result):
+                return
+            mel_path = result.split('found in:')[-1].strip()
+            self._sculpt_hook_mel_path = mel_path
+            with open(mel_path, 'r') as f:
+                src = f.read()
+            # Parse exact signature and parameter names from the source file
+            m = re.search(r'global\s+proc\s+setSculptTargetIndex\s*(\([^)]*\))', src)
+            if not m:
+                return
+            sig = m.group(1)                          # "(string $node, int $idx, ...)"
+            params = re.findall(r'\$\w+', sig)        # ['$node', '$idx', ...]
+            call_args = ', '.join(params)
+            node_p, idx_p = params[0], params[1]
+            # Define renamed original with exact signature
+            renamed = src.replace('proc setSculptTargetIndex',
+                                  'proc _bse_orig_setSculptTargetIndex', 1)
+            mel.eval(renamed)
+            # Define wrapper with the same signature — single-line to avoid MEL multiline issues
+            mel.eval(
+                f'global proc setSculptTargetIndex{sig} {{'
+                f' python("import blendshape_ui; blendshape_ui._on_sculpt_target_index_changed(\'" + {node_p} + "\', " + string({idx_p}) + ")");'
+                f' _bse_orig_setSculptTargetIndex({call_args});'
+                f' }}'
+            )
+        except Exception:
+            pass
+
+    def _uninstall_sculpt_hook(self):
+        try:
+            if self._sculpt_hook_mel_path:
+                mel.eval(f'source "{self._sculpt_hook_mel_path}"')
+                self._sculpt_hook_mel_path = None
+        except Exception:
+            pass
+
+    def _on_sculpt_idx_changed(self, bs_node, idx):
+        """Fired by the MEL hook. idx == -1 means edit mode off."""
+        # Always record the raw hook state so _refresh_top_status can read it
+        # even when _edit_poll_state is not yet initialised.
+        self._last_sculpt_hook = (bs_node, idx)
+        current = self._edit_poll_state
+        if not current or current[0] != bs_node:
+            return
+        edit_on = (idx == current[1])
+        self._apply_edit_btn_style(edit_on)
+        self._edit_poll_state = (current[0], current[1], edit_on)
+
+    def _apply_edit_btn_style(self, edit_on):
+        if edit_on:
+            self._btn_edit_target.setStyleSheet(
+                "QPushButton { background-color: #ff0000; color: white; border: none; }"
+                "QPushButton:hover { background-color: #ff3333; }"
+                "QPushButton:pressed { background-color: #cc0000; }"
+            )
+        else:
+            self._btn_edit_target.setStyleSheet(
+                "QPushButton { background-color: #5a5a5a; color: #cccccc; border: none; }"
+                "QPushButton:hover { background-color: #6a6a6a; }"
+                "QPushButton:pressed { background-color: #4a4a4a; }"
+                "QPushButton:disabled { background-color: #3a3a3a; color: #666666; border: none; }"
+            )
+
+    def _toggle_edit_mode(self):
+        state = getattr(self, '_edit_poll_state', None)
+        if not state:
+            return
+        bs_node, idx, edit_on = state
+        if edit_on:
+            mel.eval(f'catchQuiet(`sculptTarget -e -target -1 "{bs_node}"`)')
+        else:
+            mel.eval(f'catchQuiet(`blendShape -e -w {idx} 1.0 "{bs_node}"`)')
+            mel.eval(f'catchQuiet(`sculptTarget -e -target {idx} "{bs_node}"`)')
+
+    # ── end setSculptTargetIndex hook ─────────────────────────────────────────
 
     def _icon_btn(self, icon_path, label, tooltip=""):
         """
@@ -3547,6 +3914,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         outer.add_compact_spacer    = add_compact_spacer
         outer.add_compact_row_break = add_compact_row_break
         outer.finalize_compact      = finalize_compact
+        outer.compact_shelf         = shelf_widget
 
         return outer, body, body_lay
 
@@ -3832,12 +4200,23 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # ── Connect From File ──────────────────────────────────────────────
         cff_row = QtWidgets.QHBoxLayout()
         cff_row.setSpacing(4)
-        btn_rig_browse = QtWidgets.QPushButton()
+        btn_rig_browse = QtWidgets.QToolButton()
+        btn_rig_browse.setAutoRaise(True)
+        btn_rig_browse.setStyleSheet("""
+            QToolButton {
+                background-color: transparent;
+                border: none;
+                border-radius: 3px;
+                padding: 2px;
+            }
+            QToolButton:hover   { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """)
         _pix_browse = QtGui.QPixmap(f"{_icons_dir}/path.png")
         if not _pix_browse.isNull():
             btn_rig_browse.setIcon(QtGui.QIcon(_pix_browse))
-            btn_rig_browse.setIconSize(QtCore.QSize(28, 28))
-        btn_rig_browse.setFixedSize(32, 32)
+            btn_rig_browse.setIconSize(QtCore.QSize(34, 34))
+        btn_rig_browse.setFixedSize(36, 36)
         btn_rig_browse.setToolTip("Browse for a rig mapping JSON file")
         self.line_rig_json = QtWidgets.QLineEdit()
         self.line_rig_json.setReadOnly(True)
@@ -3860,14 +4239,66 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         """)
         _pix_connect = QtGui.QPixmap(f"{_icons_dir}/connect_rig.png")
         if not _pix_connect.isNull():
-            _scaled_connect = _pix_connect.scaled(32, 32, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)
-            btn_rig_connect.setIcon(QtGui.QIcon(_scaled_connect))
-            btn_rig_connect.setIconSize(QtCore.QSize(32, 32))
-        btn_rig_connect.setFixedSize(40, 40)
+            btn_rig_connect.setIcon(QtGui.QIcon(_pix_connect))
+            btn_rig_connect.setIconSize(QtCore.QSize(34, 34))
+        btn_rig_connect.setFixedSize(36, 36)
         cff_row.addWidget(btn_rig_browse)
         cff_row.addWidget(self.line_rig_json, 1)
         cff_row.addWidget(btn_rig_connect)
         shelf_wrapper_lay.addLayout(cff_row)
+
+        # ── Active Target indicator row ────────────────────────────────────────
+        active_row = QtWidgets.QHBoxLayout()
+        active_row.setSpacing(4)
+        active_row.setContentsMargins(0, 0, 0, 0)
+        _icon_lbl = QtWidgets.QLabel()
+        _tgt_pix = QtGui.QPixmap(f"{_icons_dir}/target_object_space.png")
+        if not _tgt_pix.isNull():
+            _icon_lbl.setPixmap(_tgt_pix.scaled(20, 20, QtCore.Qt.KeepAspectRatio,
+                                                 QtCore.Qt.SmoothTransformation))
+        _icon_lbl.setFixedWidth(22)
+        _icon_lbl.setAlignment(QtCore.Qt.AlignCenter)
+        self._lbl_active_target = QtWidgets.QLabel("—")
+        self._lbl_active_target.setStyleSheet("color: #aaaaaa;")
+        self._lbl_active_target.setSizePolicy(
+            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self._lbl_active_target.setToolTip(
+            "Currently selected target in the Shape Editor.\n"
+            "Updates automatically when the selection changes.")
+        self._btn_edit_target = QtWidgets.QPushButton("Edit")
+        self._btn_edit_target.setToolTip(
+            "Toggle sculpt edit mode on the active target.\n"
+            "Red: edit mode ON — the target is live and ready to sculpt.\n"
+            "Gray: edit mode OFF.\n"
+            "Stays in sync with the native Shape Editor edit mode.")
+        self._btn_edit_target.setFixedWidth(40)
+        self._btn_edit_target.setFixedHeight(22)
+        self._btn_edit_target.setEnabled(False)
+        self._btn_edit_target.setStyleSheet(
+            "QPushButton { background-color: #5a5a5a; color: #cccccc; border: none; }"
+            "QPushButton:hover { background-color: #6a6a6a; }"
+            "QPushButton:pressed { background-color: #4a4a4a; }"
+            "QPushButton:disabled { background-color: #3a3a3a; color: #666666; border: none; }"
+        )
+        self._btn_edit_target.clicked.connect(self._toggle_edit_mode)
+        active_row.addWidget(_icon_lbl)
+        active_row.addWidget(self._lbl_active_target)
+        active_row.addWidget(self._btn_edit_target)
+        active_section = QtWidgets.QGroupBox("Active Target")
+        active_section.setStyleSheet("QGroupBox { font-size: 11px; }")
+        active_section_lay = QtWidgets.QVBoxLayout(active_section)
+        active_section_lay.setContentsMargins(8, 4, 8, 4)
+        active_section_lay.setSpacing(8)
+        active_inner = QtWidgets.QFrame()
+        active_inner.setStyleSheet(
+            "QFrame { background-color: #2b2b2b; border-radius: 2px; }")
+        active_inner_lay = QtWidgets.QHBoxLayout(active_inner)
+        active_inner_lay.setContentsMargins(4, 4, 4, 4)
+        active_inner_lay.setSpacing(0)
+        active_inner_lay.addLayout(active_row)
+        active_section_lay.addWidget(active_inner)
+        # ── end Active Target row ──────────────────────────────────────────────
+
         btn_rig_connect.setEnabled(False)
         self.line_rig_json.textChanged.connect(
             lambda text: self.btn_rig_connect.setEnabled(bool(text.strip())))
@@ -3877,6 +4308,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         shelf_wrapper_lay.addWidget(self._ts_toggle)
         shelf_wrapper_lay.addWidget(ts_widget)
         shelf_wrapper_lay.addWidget(shelf_frame)
+        shelf_wrapper_lay.addWidget(active_section)
 
         def _toggle_ts():
             visible = not ts_widget.isVisible()
@@ -3986,7 +4418,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         root.addWidget(grp_nom)
 
         # ── Split (includes Locator controls) ─────────────────────────────
-        grp_split, _body_split, lay_split = self._collapsible_section("Split", two_state=True)
+        grp_split, _body_split, lay_split = self._collapsible_section("Split", two_state=True, initial_state=2)
         lay_split.setSpacing(6)
 
         # ── Locators ──────────────────────────────────────────────────────
@@ -4333,10 +4765,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             f"{_icons_dir}/split.png", "Split Target", self._run_split)
         grp_split.add_compact_action(
             f"{_icons_dir}/edge_split.png", "Edge Loop Split", self._run_edge_loop_split)
-        root.addWidget(grp_split)
-
         # ── Modify ────────────────────────────────────────────────────────
-        grp_mod, _body_mod, lay_mod = self._collapsible_section("Modify Deltas", initial_state=1, compact_rows=4)
+        grp_mod, _body_mod, lay_mod = self._collapsible_section("Modify Deltas", initial_state=2, compact_rows=1)
         lay_mod.setSpacing(4)
 
         _GRP_STYLE = "QGroupBox { font-size: 11px; }"
@@ -4363,8 +4793,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         for idx, axis in enumerate(('X', 'Y', 'Z')):
             lbl = QtWidgets.QPushButton(axis)
             lbl.setCheckable(True)
-            lbl.setFixedWidth(22)
-            lbl.setFixedHeight(24)
+            lbl.setFixedSize(22, 22)
             lbl.setToolTip("Click to select — Shift+click to multi-select.\n"
                            "Typing in a selected field updates all selected fields.")
             fld = _make_factor_field("1.2")
@@ -4409,7 +4838,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.btn_mult_sign.setIcon(_ico_plus)
         def _on_mult_sign_clicked():
             self._mult_sign *= -1.0
-            self.btn_mult_sign.setIcon(_ico_minus if self._mult_sign < 0 else _ico_plus)
+            _ico = _ico_minus if self._mult_sign < 0 else _ico_plus
+            self.btn_mult_sign.setIcon(_ico)
+            _cb = getattr(self, '_compact_sign_btn', None)
+            if _cb:
+                _cb.setIcon(_ico)
         self.btn_mult_sign.clicked.connect(_on_mult_sign_clicked)
         row_xyz.addWidget(self.btn_mult_sign)
         for _lbl, _fld in zip(self._mult_labels, self._mult_fields):
@@ -4417,57 +4850,15 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             _fld.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
             row_xyz.addWidget(_lbl)
             row_xyz.addWidget(_fld, 1)
-        lay_scalar.addLayout(row_xyz)
 
-        _w_mult, _b_mult = self._label_icon_btn(f"{_icons_dir}/multiply_delta.png", "Multiply", _tt_multiply)
-        _b_mult.clicked.connect(self._run_multiply)
-        _w_inv,  _b_inv  = self._label_icon_btn(f"{_icons_dir}/invert_delta.png",   "Invert",   _tt_invert)
-        _b_inv.clicked.connect(self._run_invert_deltas)
-        _w_nul,  _b_nul  = self._label_icon_btn(f"{_icons_dir}/nullify_delta.png",  "Nullify",  _tt_nullify)
-        _b_nul.clicked.connect(self._run_nullify)
-        self._align_label_icon_btns([_w_mult, _w_inv, _w_nul])
-        row_min = QtWidgets.QHBoxLayout()
-        row_min.setSpacing(4)
-        row_min.addWidget(_w_mult)
-        row_min.addWidget(_w_inv)
-        row_min.addWidget(_w_nul)
-        lay_scalar.addLayout(row_min)
-
-        lay_scalar.addSpacing(8)
-
-        # Normal Push
-        self.field_push_factor = _make_factor_field("0.20")
-        self.field_push_factor.setToolTip("Push magnitude relative to existing delta length.")
-
-        self._push_sign = 1.0
-        self.btn_push_sign = QtWidgets.QToolButton()
-        self.btn_push_sign.setFixedSize(26, 34)
-        self.btn_push_sign.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
-        self.btn_push_sign.setText("+")
-        self.btn_push_sign.setAutoRaise(True)
-        self.btn_push_sign.setStyleSheet("""
-            QToolButton {
-                background-color: transparent;
-                border: none;
-                border-radius: 3px;
-                padding: 0px 0px 4px 0px;
-                font-size: 16px;
-                font-weight: bold;
-            }
-            QToolButton:hover   { background-color: rgba(255,255,255,30); }
-            QToolButton:pressed { background-color: rgba(0,0,0,40); }
-        """)
-        self.btn_push_sign.setToolTip("Toggle direction: + pushes outward, − pushes inward.")
-        def _on_push_sign_clicked():
-            self._push_sign *= -1.0
-            self.btn_push_sign.setText("−" if self._push_sign < 0 else "+")
-        self.btn_push_sign.clicked.connect(_on_push_sign_clicked)
-
-        btn_push = QtWidgets.QToolButton()
-        btn_push.setFixedSize(36, 34)
-        btn_push.setIconSize(QtCore.QSize(32, 32))
-        btn_push.setAutoRaise(True)
-        btn_push.setStyleSheet("""
+        self._xyz_linked = True
+        self._btn_normal_mode = QtWidgets.QToolButton()
+        self._btn_normal_mode.setCheckable(True)
+        self._btn_normal_mode.setChecked(False)
+        self._btn_normal_mode.setFixedSize(36, 34)
+        self._btn_normal_mode.setIconSize(QtCore.QSize(32, 32))
+        self._btn_normal_mode.setAutoRaise(True)
+        self._btn_normal_mode.setStyleSheet("""
             QToolButton {
                 background-color: transparent;
                 border: none;
@@ -4476,29 +4867,48 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             }
             QToolButton:hover   { background-color: rgba(255,255,255,30); }
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
+            QToolButton:checked { background-color: rgba(80,120,200,60);
+                                  border: 1px solid rgba(100,150,255,150); }
         """)
-        _px_push = QtGui.QPixmap(f"{_icons_dir}/normal_push.png")
-        if not _px_push.isNull():
-            btn_push.setIcon(QtGui.QIcon(_px_push))
-        btn_push.setToolTip("Add displacement along vertex normals,\n"
-                            "weighted by existing delta magnitude.\n"
-                            "Only vertices with existing deltas are affected.")
-        btn_push.clicked.connect(self._run_push_normals)
+        _px_normal = QtGui.QPixmap(f"{_icons_dir}/normal_push.png")
+        if not _px_normal.isNull():
+            self._btn_normal_mode.setIcon(QtGui.QIcon(_px_normal))
+        self._btn_normal_mode.setToolTip(
+            "Normal Push mode — when active, Multiply and Invert operate\n"
+            "along vertex normals instead of object-space XYZ axes.\n"
+            "XYZ fields are linked and default to 0.20.")
+        row_xyz.addWidget(self._btn_normal_mode)
+        lay_scalar.addLayout(row_xyz)
 
-        row_push = QtWidgets.QHBoxLayout()
-        row_push.setSpacing(4)
-        row_push.setContentsMargins(0, 0, 0, 0)
-        _push_sign_field = QtWidgets.QHBoxLayout()
-        _push_sign_field.setSpacing(1)
-        _push_sign_field.setContentsMargins(0, 0, 0, 0)
-        _push_sign_field.addWidget(self.btn_push_sign)
-        _push_sign_field.addWidget(self.field_push_factor)
-        row_push.addWidget(QtWidgets.QLabel("Normal Push"))
-        row_push.addLayout(_push_sign_field)
-        row_push.addWidget(btn_push)
-        row_push.addStretch()
+        _w_mult, self._btn_mult = self._label_icon_btn(f"{_icons_dir}/multiply_delta.png", "Multiply", _tt_multiply)
+        self._btn_mult.clicked.connect(self._run_multiply)
 
-        lay_scalar.addLayout(row_push)
+        def _on_normal_mode_toggled(checked):
+            self._xyz_linked = checked
+            val = "0.20" if checked else "1.20"
+            for fld in self._mult_fields:
+                fld.setText(val)
+            _cf = getattr(self, '_compact_mult_fld', None)
+            if _cf:
+                _cf.setText(val)
+            _cn = getattr(self, '_compact_normal_btn', None)
+            if _cn and _cn.isChecked() != checked:
+                _cn.setChecked(checked)
+        self._btn_normal_mode.toggled.connect(_on_normal_mode_toggled)
+        _w_inv,  _b_inv  = self._label_icon_btn(f"{_icons_dir}/invert_delta.png",   "Invert",   _tt_invert)
+        _b_inv.clicked.connect(self._run_invert_deltas)
+        _w_nul,  _b_nul  = self._label_icon_btn(f"{_icons_dir}/nullify_delta.png",  "Nullify",  _tt_nullify)
+        _b_nul.clicked.connect(self._run_nullify)
+        self._align_label_icon_btns([_w_mult, _w_inv, _w_nul])
+        row_min = QtWidgets.QHBoxLayout()
+        row_min.setSpacing(0)
+        row_min.addWidget(_w_mult)
+        row_min.addStretch(1)
+        row_min.addWidget(_w_inv)
+        row_min.addStretch(1)
+        row_min.addWidget(_w_nul)
+        lay_scalar.addLayout(row_min)
+
         lay_mod.addWidget(grp_scalar)
 
         # ── Between 2 Targets ─────────────────────────────────────────────────
@@ -4520,7 +4930,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "No vertex selection: operates on the full target.")
         _tt_xfer = (
             "Transfer — Moves deltas from B to A (adds to A, zeros B).\n"
-            "Select target A first, then add select target B.\n"
+            "Select target B first (donor), then add select target A (receiver).\n"
             "Vertex selection: transfers only selected verts.\n"
             "No vertex selection: transfers all delta verts on B.")
         _tt_swap = (
@@ -4539,35 +4949,57 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Select target A first, then add select target B.")
 
         _w_add,  self.btn_delta_add         = self._label_icon_btn(f"{_icons_dir}/add_delta.png",      "Add",      _tt_add)
-        _w_sub,  self.btn_delta_sub         = self._label_icon_btn(f"{_icons_dir}/sub_delta.png",      "Sub",      _tt_sub)
-        _w_msh,  self.btn_delta_mult_shapes = self._label_icon_btn(f"{_icons_dir}/mult_delta.png",     "Mult",     _tt_mult_sh)
-        _w_xfer, self.btn_delta_swap        = self._label_icon_btn(f"{_icons_dir}/transfer_delta.png", "Transfer", _tt_xfer)
+        _w_sub,  self.btn_delta_sub         = self._label_icon_btn(f"{_icons_dir}/sub_delta.png",      "Subtract", _tt_sub)
+        _w_xfer, self.btn_delta_transfer        = self._label_icon_btn(f"{_icons_dir}/transfer_delta.png", "Transfer", _tt_xfer)
         _w_swap, self.btn_delta_swap_pure   = self._label_icon_btn(f"{_icons_dir}/swap_delta.png",     "Swap",     _tt_swap)
-        _w_repl, self.btn_delta_replace     = self._label_icon_btn(f"{_icons_dir}/replace_delta.png",  "Replace",  _tt_repl)
         self.btn_delta_add.clicked.connect(self._run_delta_add)
         self.btn_delta_sub.clicked.connect(self._run_delta_sub)
-        self.btn_delta_mult_shapes.clicked.connect(self._run_delta_mult_shapes)
-        self.btn_delta_swap.clicked.connect(self._run_delta_swap)
+        self.btn_delta_transfer.clicked.connect(self._run_delta_transfer)
         self.btn_delta_swap_pure.clicked.connect(self._run_delta_swap_pure)
-        self.btn_delta_replace.clicked.connect(self._run_delta_replace)
 
+        _w_apply, self.btn_apply_moves = self._label_icon_btn(
+            f"{_icons_dir}/bake_moves.png", "Bake Moves",
+            "Transfers vertex tweaks (pnts[]) from the mesh to the selected target.\n"
+            "Use when you sculpted the mesh directly without entering edit mode first.\n"
+            "The vertex moves are added to the target's existing deltas,\n"
+            "then zeroed out on the mesh.\n"
+            "Works on 1 selected target only.\n\n"
+            "Vertex selection: if vertices are selected on the mesh, only those vertices\n"
+            "are baked — the rest of the target and the remaining tweaks are left untouched.")
+        self.btn_apply_moves.clicked.connect(self._run_apply_moves)
+
+        _w_bake, self.btn_bake_deformers = self._label_icon_btn(
+            f"{_icons_dir}/bake_deformer.png", "Bake Defs",
+            "Bakes the contribution of all deformers stacked above the blendShape into the\n"
+            "selected targets. For each target the tool activates it at weight 1.0, samples\n"
+            "the mesh with all deformers evaluated, and stores the result as the new delta set.\n\n"
+            "Typical workflow:\n"
+            "  1. Add a Delta Mush (or any deformer) on the base mesh and adjust it.\n"
+            "  2. Select the targets to improve in the Shape Editor.\n"
+            "  3. Click Bake Defs.\n"
+            "  4. Delete the deformer.\n\n"
+            "Works on all targets selected in the Shape Editor.\n\n"
+            "Vertex selection: if vertices are selected on the mesh, only those vertices\n"
+            "receive the baked delta — the remaining vertices keep their existing deltas.")
+        self.btn_bake_deformers.clicked.connect(self._run_bake_deformers)
+
+        self._align_label_icon_btns([_w_add, _w_sub, _w_xfer, _w_swap])
+        self._align_label_icon_btns([_w_apply, _w_bake])
         grid_2tgt = QtWidgets.QGridLayout()
         grid_2tgt.setSpacing(4)
-        grid_2tgt.addWidget(_w_add,  0, 0)
-        grid_2tgt.addWidget(_w_sub,  0, 1)
-        grid_2tgt.addWidget(_w_msh,  0, 2)
-        grid_2tgt.addWidget(_w_xfer, 1, 0)
-        grid_2tgt.addWidget(_w_swap, 1, 1)
-        grid_2tgt.addWidget(_w_repl, 1, 2)
-        self._align_label_icon_btns([_w_add, _w_sub, _w_msh, _w_xfer, _w_swap, _w_repl])
+        grid_2tgt.addWidget(_w_add,   0, 0)
+        grid_2tgt.addWidget(_w_sub,   0, 1)
+        grid_2tgt.addWidget(_w_apply, 0, 2)
+        grid_2tgt.addWidget(_w_xfer,  1, 0)
+        grid_2tgt.addWidget(_w_swap,  1, 1)
+        grid_2tgt.addWidget(_w_bake,  1, 2)
         grid_2tgt.setColumnStretch(0, 1)
         grid_2tgt.setColumnStretch(1, 1)
         grid_2tgt.setColumnStretch(2, 1)
         lay_2tgt.addLayout(grid_2tgt)
-        lay_mod.addWidget(grp_2tgt)
 
         # ── Smooth & Relax ────────────────────────────────────────────────────
-        grp_smooth = QtWidgets.QGroupBox("Smooth & Average")
+        grp_smooth = QtWidgets.QGroupBox("Deltas Distribution")
         grp_smooth.setStyleSheet(_GRP_STYLE)
         lay_smooth = QtWidgets.QVBoxLayout(grp_smooth)
         lay_smooth.setContentsMargins(*_GRP_MARGINS)
@@ -4637,23 +5069,24 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         row_neighbors = QtWidgets.QHBoxLayout()
         row_neighbors.setSpacing(2)
-        lbl_smooth_neighbors = QtWidgets.QLabel("Space")
+        lbl_smooth_neighbors = QtWidgets.QLabel("Mode")
         lbl_smooth_neighbors.setFixedWidth(40)
         self.combo_smooth_falloff = QtWidgets.QComboBox()
-        self.combo_smooth_falloff.addItem("Neutral",  "neutral")
-        self.combo_smooth_falloff.addItem("Deformed", "deformed")
+        self.combo_smooth_falloff.addItem("Surface", "surface")
+        self.combo_smooth_falloff.addItem("Volume",  "volume")
         self.combo_smooth_falloff.setCurrentIndex(0)
         self.combo_smooth_falloff.setToolTip(
-            "Space in which neighbor distances are computed (Hammer only).\n"
+            "Hammer mode — how neighbors are determined (Hammer only).\n"
             "\n"
-            "Neutral  — distances on the rest mesh (no deltas applied).\n"
-            "Deformed — distances on the mesh with deltas applied.\n"
+            "Surface — topological Laplacian along mesh edges (1-ring).\n"
+            "          Spreads deltas strictly through edge connectivity.\n"
+            "          Never bleeds across disconnected regions or open seams.\n"
+            "          Classic surface-aware smoothing.\n"
             "\n"
-            "Example — open mouth shape:\n"
-            "  Neutral : upper and lower lip vertices are close at rest,\n"
-            "            so the hammer may blend deltas across the gap.\n"
-            "  Deformed: lips are spread apart, each lip is hammered\n"
-            "            independently without cross-influence.")
+            "Volume  — spatial IDW in neutral-space (rest mesh positions).\n"
+            "          k-nearest Euclidean neighbors regardless of topology.\n"
+            "          Good for volume corrections where proximity in rest pose\n"
+            "          matters more than edge connectivity.")
         lbl_lap = QtWidgets.QLabel("Smooth Iterations")
         lbl_lap.setToolTip("Number of topological Laplacian smoothing passes\n"
                            "applied after the Hammer iterations.\n"
@@ -4683,6 +5116,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_neighbors.addWidget(_w_nb_right)
         lay_smooth.addLayout(row_neighbors)
         lay_mod.addWidget(grp_smooth)
+        lay_mod.addWidget(grp_2tgt)
 
         # ── Selection ─────────────────────────────────────────────────────────
         grp_sel = QtWidgets.QGroupBox("Deltas Clipboard")
@@ -4730,14 +5164,19 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.btn_prune.setToolTip("Zeros out deltas whose magnitude is below the tolerance threshold.")
         self.btn_prune.clicked.connect(self._run_prune_deltas)
 
-        row_prune = QtWidgets.QHBoxLayout()
-        row_prune.setSpacing(4)
-        row_prune.addWidget(QtWidgets.QLabel("Prune Small Deltas"))
-        row_prune.addWidget(self.spin_prune_tol)
-        row_prune.addWidget(self.btn_prune)
+        _lbl_prune = QtWidgets.QLabel("Prune Small Deltas")
+        _w_prune = QtWidgets.QWidget()
+        _w_prune.setFixedHeight(34)
+        _lay_prune = QtWidgets.QHBoxLayout(_w_prune)
+        _lay_prune.setContentsMargins(0, 0, 0, 0)
+        _lay_prune.setSpacing(4)
+        _lay_prune.addWidget(_lbl_prune)
+        _lay_prune.addWidget(self.spin_prune_tol)
+        _lay_prune.addWidget(self.btn_prune)
+        _lay_prune.addStretch()
 
         _w_sel_delta, self.btn_sel_delta = self._label_icon_btn(
-            f"{_icons_dir}/select_delta.png", "Select Delta Vertices",
+            f"{_icons_dir}/select_delta.png", "Select Vertices with Deltas",
             "Selects all vertices that have non-zero deltas on the active target.")
         self.btn_sel_delta.clicked.connect(self._run_select_delta_vertices)
 
@@ -4746,69 +5185,20 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         grid_cps.addWidget(_w_copy_delta,  0, 0)
         grid_cps.addWidget(_w_sel_delta,   0, 1)
         grid_cps.addWidget(_w_paste_delta, 1, 0)
-        grid_cps.addLayout(row_prune,      1, 1)
+        grid_cps.addWidget(_w_prune,       1, 1)
         self._align_label_icon_btns([_w_copy_delta, _w_paste_delta])
+        self._align_label_icon_btns([_w_sel_delta])
         grid_cps.setColumnStretch(0, 1)
         grid_cps.setColumnStretch(1, 1)
         lay_sel.addLayout(grid_cps)
         lay_mod.addWidget(grp_sel)
 
-        # ── Import / Bake ─────────────────────────────────────────────────────
-        grp_bake = QtWidgets.QGroupBox("Deltas Bake")
-        grp_bake.setStyleSheet(_GRP_STYLE)
-        lay_bake = QtWidgets.QVBoxLayout(grp_bake)
-        lay_bake.setContentsMargins(*_GRP_MARGINS)
-        lay_bake.setSpacing(4)
-
-        _w_apply, self.btn_apply_moves = self._label_icon_btn(
-            f"{_icons_dir}/bake_moves.png", "Bake Moves",
-            "Transfers vertex tweaks (pnts[]) from the mesh to the selected target.\n"
-            "Use when you sculpted the mesh directly without entering edit mode first.\n"
-            "The vertex moves are added to the target's existing deltas,\n"
-            "then zeroed out on the mesh.\n"
-            "Works on 1 selected target only.")
-        self.btn_apply_moves.clicked.connect(self._run_apply_moves)
-
-        _w_bake, self.btn_bake_deformers = self._label_icon_btn(
-            f"{_icons_dir}/bake_deformer.png", "Bake Deformers",
-            "Bakes the contribution of all deformers stacked above the blendShape into the\n"
-            "selected targets. For each target the tool activates it at weight 1.0, samples\n"
-            "the mesh with all deformers evaluated, and stores the result as the new delta set.\n\n"
-            "Typical workflow:\n"
-            "  1. Add a Delta Mush (or any deformer) on the base mesh and adjust it.\n"
-            "  2. Select the targets to improve in the Shape Editor.\n"
-            "  3. Click Bake Deformers.\n"
-            "  4. Delete the deformer.\n\n"
-            "Works on all targets selected in the Shape Editor.")
-        self.btn_bake_deformers.clicked.connect(self._run_bake_deformers)
-        self._align_label_icon_btns([_w_apply, _w_bake])
-        lay_bake.addWidget(_w_apply)
-        lay_bake.addWidget(_w_bake)
         # ── Rig Extraction ────────────────────────────────────────────────────
         grp_rig = QtWidgets.QGroupBox("Deltas to Rig")
         grp_rig.setStyleSheet(_GRP_STYLE)
         lay_rig = QtWidgets.QVBoxLayout(grp_rig)
         lay_rig.setContentsMargins(*_GRP_MARGINS)
         lay_rig.setSpacing(4)
-
-        row_delta_opts = QtWidgets.QHBoxLayout()
-        self.chk_delta_neutral = QtWidgets.QCheckBox("Neutral")
-        self.chk_delta_neutral.setChecked(True)
-        self.chk_delta_neutral.setToolTip(
-            "Neutral — creates a new empty '{target}_Copy' target in the blendShape,\n"
-            "then regenerates it as a neutral-pose live mesh.\n"
-            "Weights come from the selected target's delta magnitudes.\n"
-            "Delete the mesh when done to bake your sculpt back into '{target}_Copy'.")
-        self.chk_delta_multi = QtWidgets.QCheckBox("Multi")
-        self.chk_delta_multi.setToolTip(
-            "Multi — when multiple targets are selected, combines all their delta\n"
-            "magnitudes (additive sum, then normalized) into a single cluster or joint.\n"
-            "Works with or without Neutral mode.\n"
-            "If only one target is selected, Multi has no effect.")
-        row_delta_opts.addWidget(self.chk_delta_neutral)
-        row_delta_opts.addWidget(self.chk_delta_multi)
-        row_delta_opts.addStretch()
-        lay_rig.addLayout(row_delta_opts)
 
         _w_dc, self.btn_delta_cluster = self._label_icon_btn(
             f"{_icons_dir}/delta_cluster.png", "Create Delta Cluster",
@@ -4829,71 +5219,34 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._align_label_icon_btns([_w_dc, _w_dj])
         lay_rig.addWidget(_w_dc)
         lay_rig.addWidget(_w_dj)
-        row_bake_rig = QtWidgets.QHBoxLayout()
-        row_bake_rig.setSpacing(4)
-        row_bake_rig.addWidget(grp_bake, 9)
-        row_bake_rig.addWidget(grp_rig, 11)
-        lay_mod.addLayout(row_bake_rig)
 
-        # Row 0 — Deltas Scale + Smooth & Average (8)
-        grp_mod.add_compact_action(f"{_icons_dir}/multiply_delta.png", "Multiply Deltas",      self._run_multiply)
-        grp_mod.add_compact_action(f"{_icons_dir}/invert_delta.png",   "Invert Deltas",        self._run_invert_deltas)
-        grp_mod.add_compact_action(f"{_icons_dir}/nullify_delta.png",  "Nullify",              self._run_nullify)
-        grp_mod.add_compact_action(f"{_icons_dir}/normal_push.png",    "Normal Push",          self._run_push_normals)
-        grp_mod.add_compact_action(f"{_icons_dir}/smooth_delta.png",   "Smooth Deltas",        self._run_smooth_deltas)
-        grp_mod.add_compact_action(f"{_icons_dir}/relax_delta.png",    "Relax Deltas",         self._run_relax_deltas)
-        grp_mod.add_compact_action(f"{_icons_dir}/hammer_delta.png",   "Hammer Deltas",        self._run_hammer_deltas)
-        grp_mod.add_compact_action(f"{_icons_dir}/average_delta.png",  "Average Deltas",       self._run_average_deltas)
-        grp_mod.add_compact_row_break()
-        # Row 1 — Deltas Exchange (6)
-        grp_mod.add_compact_action(f"{_icons_dir}/add_delta.png",      "Add",                  self._run_delta_add)
-        grp_mod.add_compact_action(f"{_icons_dir}/sub_delta.png",      "Sub",                  self._run_delta_sub)
-        grp_mod.add_compact_action(f"{_icons_dir}/mult_delta.png",     "Mult",                 self._run_delta_mult_shapes)
-        grp_mod.add_compact_action(f"{_icons_dir}/transfer_delta.png", "Transfer",             self._run_delta_swap)
-        grp_mod.add_compact_action(f"{_icons_dir}/swap_delta.png",     "Swap",                 self._run_delta_swap_pure)
-        grp_mod.add_compact_action(f"{_icons_dir}/replace_delta.png",  "Replace",              self._run_delta_replace)
-        grp_mod.add_compact_row_break()
-        # Row 2 — Deltas Clipboard + Bake + Rig (8)
-        grp_mod.add_compact_action(f"{_icons_dir}/copy_delta.png",     "Copy Delta",           self._run_copy_delta)
-        grp_mod.add_compact_action(f"{_icons_dir}/paste_delta.png",    "Paste Delta",          self._run_paste_delta)
-        grp_mod.add_compact_action(f"{_icons_dir}/prune_delta.png",    "Prune Small Deltas",      self._run_prune_deltas)
-        grp_mod.add_compact_action(f"{_icons_dir}/select_delta.png",   "Select Delta Vertices",   self._run_select_delta_vertices)
-        grp_mod.add_compact_action(f"{_icons_dir}/bake_moves.png",    "Bake Moves",          self._run_apply_moves)
-        grp_mod.add_compact_action(f"{_icons_dir}/bake_deformer.png",   "Bake Deformers",       self._run_bake_deformers)
-        grp_mod.add_compact_action(f"{_icons_dir}/delta_cluster.png",  "Create Delta Cluster", self._run_delta_cluster)
-        grp_mod.add_compact_action(f"{_icons_dir}/delta_joint.png",    "Create Delta Joint",   self._run_delta_joint)
-        grp_mod.finalize_compact()
-        root.addWidget(grp_mod)
-
-        # ── Tools ─────────────────────────────────────────────────────────────
-        grp_tools, _body_tools, lay_tools = self._collapsible_section("Tools", two_state=True, initial_state=0)
-        lay_tools.setSpacing(6)
-
-        # ── Wrap Setup ────────────────────────────────────────────────────
-        grp_wrap_setup = QtWidgets.QGroupBox("Wrap Setup")
-        grp_wrap_setup.setStyleSheet("QGroupBox { font-size: 11px; }")
+        row_delta_opts = QtWidgets.QHBoxLayout()
+        self.chk_delta_neutral = QtWidgets.QCheckBox("Neutral")
+        self.chk_delta_neutral.setChecked(False)
+        self.chk_delta_neutral.setToolTip(
+            "Neutral — creates a new empty '{target}_Copy' target in the blendShape,\n"
+            "then regenerates it as a neutral-pose live mesh.\n"
+            "Weights come from the selected target's delta magnitudes.\n"
+            "Delete the mesh when done to bake your sculpt back into '{target}_Copy'.")
+        self.chk_delta_multi = QtWidgets.QCheckBox("Multi")
+        self.chk_delta_multi.setToolTip(
+            "Multi — when multiple targets are selected, combines all their delta\n"
+            "magnitudes (additive sum, then normalized) into a single cluster or joint.\n"
+            "Works with or without Neutral mode.\n"
+            "If only one target is selected, Multi has no effect.")
+        row_delta_opts.addWidget(self.chk_delta_neutral)
+        row_delta_opts.addWidget(self.chk_delta_multi)
+        row_delta_opts.addStretch()
+        lay_rig.addLayout(row_delta_opts)
+        # ── Wrap Extract ──────────────────────────────────────────────────────
+        grp_wrap_setup = QtWidgets.QGroupBox("Wrap Extract")
+        grp_wrap_setup.setStyleSheet(_GRP_STYLE)
         lay_wrap_setup = QtWidgets.QVBoxLayout(grp_wrap_setup)
-        lay_wrap_setup.setContentsMargins(8, 8, 8, 8)
-        lay_wrap_setup.setSpacing(6)
+        lay_wrap_setup.setContentsMargins(*_GRP_MARGINS)
+        lay_wrap_setup.setSpacing(4)
 
-        lbl_wrap_info = QtWidgets.QLabel(
-            "Select targets in the Shape Editor + one mesh in the scene.")
-        lbl_wrap_info.setStyleSheet("color: #888888; font-size: 11px;")
-        lbl_wrap_info.setWordWrap(True)
-        lay_wrap_setup.addWidget(lbl_wrap_info)
 
-        self.chk_connect_targets = QtWidgets.QCheckBox("Connect extracted targets")
-        self.chk_connect_targets.setChecked(True)
-        self.chk_connect_targets.setToolTip(
-            "After extraction, connects each target weight from the source blendShape\n"
-            "to the matching target on the mesh's blendShape.\n"
-            "source_bs.target_name  →  mesh_bs.target_name")
-        lay_wrap_setup.addWidget(self.chk_connect_targets)
-
-        row_wrap_btns = QtWidgets.QHBoxLayout()
-        row_wrap_btns.setSpacing(2)
-
-        _w_wrap, self.btn_wrap_extract = self._icon_btn(
+        _w_wrap, self.btn_wrap_extract = self._label_icon_btn(
             f"{_icons_dir}/wrap_extract.png",
             "Extract Wrap Targets",
             "Select master mesh (with BS) + one or more receiver meshes.\n"
@@ -4902,7 +5255,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "A BS node is created on each receiver if none exists.")
         self.btn_wrap_extract.clicked.connect(self._run_wrap_extract)
 
-        _w_extract, self.btn_extract_only = self._icon_btn(
+        _w_extract, self.btn_extract_only = self._label_icon_btn(
             f"{_icons_dir}/extract_only.png",
             "Extract Only",
             "Extracts each selected target using the deformer setup already present\n"
@@ -4910,26 +5263,136 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "No deformer is created or deleted.")
         self.btn_extract_only.clicked.connect(self._run_extract_only)
 
-        row_wrap_btns.addWidget(_w_wrap)
-        row_wrap_btns.addWidget(_w_extract)
-        lay_wrap_setup.addLayout(row_wrap_btns)
-        lay_tools.addWidget(grp_wrap_setup)
+        self._align_label_icon_btns([_w_wrap, _w_extract])
+        lay_wrap_setup.addWidget(_w_wrap)
+        lay_wrap_setup.addWidget(_w_extract)
 
-        grp_wire = QtWidgets.QGroupBox("Wire Setup")
-        grp_wire.setStyleSheet("QGroupBox { font-size: 11px; }")
-        grp_wire.setToolTip(
-            "Wire Setup — Lip/Mouth curve-based deformation rig.\n\n"
-            "Workflow:\n"
-            "  1. Capture a base mesh and a symmetrical edge loop (upper or lower lip line).\n"
-            "  2. List the shape names you want to generate (e.g. lip_up, lip_dn, …).\n"
-            "  3. Create Wire Setup: builds a wire_crv driven by a blendShape (wire_bs),\n"
-            "     deforming a duplicate of the base mesh (wire_setup_msh).\n"
-            "  4. Sculpt each shape curve directly in the viewport.\n"
-            "  5. Bake Wire to Mesh: transfers each posed wire_setup_msh as a\n"
-            "     blendShape target onto the original base mesh."
-        )
-        lay_wire = QtWidgets.QVBoxLayout(grp_wire)
-        lay_wire.setContentsMargins(8, 8, 8, 8)
+        self.chk_connect_targets = QtWidgets.QCheckBox("Connect extracted")
+        self.chk_connect_targets.setChecked(True)
+        self.chk_connect_targets.setToolTip(
+            "After extraction, connects each target weight from the source blendShape\n"
+            "to the matching target on the mesh's blendShape.\n"
+            "source_bs.target_name  →  mesh_bs.target_name")
+        lay_wrap_setup.addWidget(self.chk_connect_targets)
+
+        row_bake_rig = QtWidgets.QHBoxLayout()
+        row_bake_rig.setSpacing(4)
+        row_bake_rig.addWidget(grp_wrap_setup, 9)
+        row_bake_rig.addWidget(grp_rig, 11)
+        lay_mod.addLayout(row_bake_rig)
+
+        # Row 0 — Scale & Push (4)
+        grp_mod.add_compact_action(f"{_icons_dir}/multiply_delta.png", "Multiply Deltas",       self._run_multiply)
+        grp_mod.add_compact_action(f"{_icons_dir}/invert_delta.png",   "Invert Deltas",         self._run_invert_deltas)
+        grp_mod.add_compact_action(f"{_icons_dir}/nullify_delta.png",  "Nullify",               self._run_nullify)
+        grp_mod.add_compact_row_break()
+        # Row 1 — Smooth & Average (4)
+        grp_mod.add_compact_action(f"{_icons_dir}/smooth_delta.png",   "Smooth Deltas",         self._run_smooth_deltas)
+        grp_mod.add_compact_action(f"{_icons_dir}/relax_delta.png",    "Relax Deltas",          self._run_relax_deltas)
+        grp_mod.add_compact_action(f"{_icons_dir}/hammer_delta.png",   "Hammer Deltas",         self._run_hammer_deltas)
+        grp_mod.add_compact_action(f"{_icons_dir}/average_delta.png",  "Average Deltas",        self._run_average_deltas)
+        grp_mod.add_compact_row_break()
+        # Row 2 — Exchange + Bake (6)
+        grp_mod.add_compact_action(f"{_icons_dir}/add_delta.png",      "Add",                   self._run_delta_add)
+        grp_mod.add_compact_action(f"{_icons_dir}/sub_delta.png",      "Subtract",              self._run_delta_sub)
+        grp_mod.add_compact_action(f"{_icons_dir}/transfer_delta.png", "Transfer",              self._run_delta_transfer)
+        grp_mod.add_compact_action(f"{_icons_dir}/swap_delta.png",     "Swap",                  self._run_delta_swap_pure)
+        grp_mod.add_compact_action(f"{_icons_dir}/bake_moves.png",     "Bake Moves",            self._run_apply_moves)
+        grp_mod.add_compact_action(f"{_icons_dir}/bake_deformer.png",  "Bake Defs",             self._run_bake_deformers)
+        grp_mod.add_compact_row_break()
+        # Row 3 — Clipboard & Select (4)
+        grp_mod.add_compact_action(f"{_icons_dir}/copy_delta.png",     "Copy Delta",            self._run_copy_delta)
+        grp_mod.add_compact_action(f"{_icons_dir}/paste_delta.png",    "Paste Delta",           self._run_paste_delta)
+        grp_mod.add_compact_action(f"{_icons_dir}/prune_delta.png",    "Prune Small Deltas",    self._run_prune_deltas)
+        grp_mod.add_compact_action(f"{_icons_dir}/select_delta.png",   "Select Vertices with Deltas", self._run_select_delta_vertices)
+        grp_mod.add_compact_row_break()
+        # Row 4 — Extract & Rig (4)
+        grp_mod.add_compact_action(f"{_icons_dir}/wrap_extract.png",   "Extract Wrap Targets",  self._run_wrap_extract)
+        grp_mod.add_compact_action(f"{_icons_dir}/extract_only.png",   "Extract Only",          self._run_extract_only)
+        grp_mod.add_compact_action(f"{_icons_dir}/delta_cluster.png",  "Create Delta Cluster",  self._run_delta_cluster)
+        grp_mod.add_compact_action(f"{_icons_dir}/delta_joint.png",    "Create Delta Joint",    self._run_delta_joint)
+        grp_mod.finalize_compact()
+
+        # ── Compact XYZ row (prepended at top of compact shelf) ───────────────
+        _cxyz_w = QtWidgets.QWidget()
+        _cxyz_lay = QtWidgets.QHBoxLayout(_cxyz_w)
+        _cxyz_lay.setContentsMargins(2, 2, 2, 2)
+        _cxyz_lay.setSpacing(4)
+
+        self._compact_sign_btn = QtWidgets.QToolButton()
+        self._compact_sign_btn.setFixedSize(28, 28)
+        self._compact_sign_btn.setIconSize(QtCore.QSize(24, 24))
+        self._compact_sign_btn.setAutoRaise(True)
+        self._compact_sign_btn.setStyleSheet("""
+            QToolButton { background: transparent; border: none; border-radius: 3px; padding: 1px; }
+            QToolButton:hover   { background: rgba(255,255,255,30); }
+            QToolButton:pressed { background: rgba(0,0,0,40); }
+        """)
+        self._compact_sign_btn.setIcon(QtGui.QIcon(f"{_icons_dir}/plus.png"))
+        def _cxyz_sign_clicked():
+            self._mult_sign *= -1.0
+            _ico = QtGui.QIcon(f"{_icons_dir}/minus.png") if self._mult_sign < 0 \
+                   else QtGui.QIcon(f"{_icons_dir}/plus.png")
+            self.btn_mult_sign.setIcon(_ico)
+            self._compact_sign_btn.setIcon(_ico)
+        self._compact_sign_btn.clicked.connect(_cxyz_sign_clicked)
+
+
+
+        self._compact_mult_fld = _make_factor_field("1.20")
+        self._compact_mult_fld.setToolTip("Scale factor (XYZ linked).")
+        def _cxyz_fld_edited():
+            val = self._compact_mult_fld.text()
+            for fld in self._mult_fields:
+                fld.setText(val)
+        self._compact_mult_fld.editingFinished.connect(_cxyz_fld_edited)
+
+        self._compact_normal_btn = QtWidgets.QToolButton()
+        self._compact_normal_btn.setCheckable(True)
+        self._compact_normal_btn.setChecked(False)
+        self._compact_normal_btn.setFixedSize(28, 28)
+        self._compact_normal_btn.setIconSize(QtCore.QSize(24, 24))
+        self._compact_normal_btn.setAutoRaise(True)
+        self._compact_normal_btn.setStyleSheet("""
+            QToolButton { background: transparent; border: none; border-radius: 3px; padding: 1px; }
+            QToolButton:hover   { background: rgba(255,255,255,30); }
+            QToolButton:pressed { background: rgba(0,0,0,40); }
+            QToolButton:checked { background: rgba(80,120,200,60);
+                                  border: 1px solid rgba(100,150,255,150); }
+        """)
+        if not _px_normal.isNull():
+            self._compact_normal_btn.setIcon(QtGui.QIcon(_px_normal))
+        self._compact_normal_btn.setToolTip("Normal Push mode.")
+        self._compact_normal_btn.toggled.connect(
+            lambda c: self._btn_normal_mode.setChecked(c)
+            if self._btn_normal_mode.isChecked() != c else None)
+        self._btn_normal_mode.toggled.connect(
+            lambda c: self._compact_normal_btn.setChecked(c)
+            if self._compact_normal_btn.isChecked() != c else None)
+
+        _cxyz_group = QtWidgets.QWidget()
+        _cxyz_group_lay = QtWidgets.QHBoxLayout(_cxyz_group)
+        _cxyz_group_lay.setContentsMargins(0, 0, 0, 0)
+        _cxyz_group_lay.setSpacing(0)
+        _cxyz_group_lay.addWidget(self._compact_mult_fld)
+        _cxyz_group_lay.addWidget(self._compact_normal_btn)
+
+        _cxyz_lay.addWidget(self._compact_sign_btn)
+        _cxyz_lay.addWidget(_cxyz_group)
+        _cxyz_lay.addStretch()
+        grp_mod.compact_shelf.layout().insertWidget(0, _cxyz_w)
+
+        root.addWidget(grp_mod)
+
+        # ── Tools ─────────────────────────────────────────────────────────────
+        grp_tools, _body_tools, lay_tools = self._collapsible_section("Tools", two_state=True, initial_state=0)
+        lay_tools.setSpacing(6)
+
+        lay_tools.addWidget(grp_split)
+
+
+        grp_wire, _body_wire, lay_wire = self._collapsible_section(
+            "Wire Setup", two_state=True, initial_state=0)
         lay_wire.setSpacing(6)
 
         # Paint Wire Weights — shelf button
@@ -5123,9 +5586,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_tools.addWidget(grp_wire)
 
         # ── Joints Setup ──────────────────────────────────────────────────
-        grp_joints = QtWidgets.QGroupBox("Joints Setup")
-        lay_joints = QtWidgets.QVBoxLayout(grp_joints)
-        lay_joints.setContentsMargins(8, 8, 8, 8)
+        grp_joints, _body_joints, lay_joints = self._collapsible_section(
+            "Joints Setup", two_state=True, initial_state=0)
         lay_joints.setSpacing(6)
 
         # Middle Edge row
@@ -5646,7 +6108,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         for base_mesh, prev_disp in self._dv_meshes:
             try:
                 if cmds.objExists(base_mesh):
-                    cmds.polyColorPerVertex(base_mesh, remove=True)
+                    pvc_nodes = cmds.ls(
+                        cmds.listHistory(base_mesh) or [],
+                        type="polyColorPerVertex")
+                    if pvc_nodes:
+                        cmds.delete(pvc_nodes)
                     cmds.setAttr(f"{base_mesh}.displayColors", 1 if prev_disp else 0)
             except Exception:
                 pass
@@ -5837,11 +6303,15 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     def _refresh_top_status(self, check_phantoms=False):
         try:
-            results = get_selected_targets()  # [(bs_node, idx), ...]
+            results = get_selected_targets()  # [(bs_node, idx, name), ...]
             if not results:
                 self.lbl_top_status.setText("— no selection —")
                 self.lbl_top_status.setStyleSheet("color: #666666; font-size: 11px; padding-top: 4px; padding-bottom: 4px;")
                 self._cached_phantom_count = 0
+                self._lbl_active_target.setText("—")
+                self._btn_edit_target.setEnabled(False)
+                self._apply_edit_btn_style(False)
+                self._edit_poll_state = None
                 return
 
             bs_node = results[0][0]
@@ -5873,6 +6343,20 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             self.lbl_top_status.setText("  ·  ".join(parts))
             color = "#c8a030" if self._cached_phantom_count else "#aaaaaa"
             self.lbl_top_status.setStyleSheet(f"color: {color}; font-size: 11px; padding-top: 4px; padding-bottom: 4px;")
+
+            # Update active target label; reset edit state only on target change
+            bs_node_r, idx_r, name_r = results[0]
+            self._lbl_active_target.setText(name_r)
+            self._btn_edit_target.setEnabled(True)
+            current = self._edit_poll_state
+            if not current or current[0] != bs_node_r or current[1] != idx_r:
+                # Consult the last hook event — the hook may have fired before
+                # _edit_poll_state was initialised (e.g. edit activated via native
+                # Shape Editor before the user clicked to trigger _refresh_top_status).
+                last = getattr(self, '_last_sculpt_hook', None)
+                edit_on = bool(last and last[0] == bs_node_r and last[1] == idx_r)
+                self._apply_edit_btn_style(edit_on)
+                self._edit_poll_state = (bs_node_r, idx_r, edit_on)
         except Exception:
             pass
 
@@ -6178,6 +6662,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             self._set_status(f"✗ Could not read JSON: {e}", error=True)
             return
 
+        # Support both old format (list) and new format (dict with "connections" key)
+        if isinstance(data, dict):
+            data = data.get("connections", [])
+
         # Normalize rows (handles old JSON format with direction / custom_attr)
         rows = []
         for rd in data:
@@ -6455,9 +6943,16 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                     lbl.setChecked(False)
 
     def _on_mult_field_edited(self, idx):
-        """Propagate the edited value to all other selected fields."""
-        if self._mult_labels[idx].isChecked():
-            value = self._mult_fields[idx].text()
+        """Propagate the edited value to all other fields when linked, or to selected fields."""
+        value = self._mult_fields[idx].text()
+        if self._xyz_linked:
+            for i, fld in enumerate(self._mult_fields):
+                if i != idx:
+                    fld.setText(value)
+            _cf = getattr(self, '_compact_mult_fld', None)
+            if _cf:
+                _cf.setText(value)
+        elif self._mult_labels[idx].isChecked():
             for i, (lbl, fld) in enumerate(zip(self._mult_labels, self._mult_fields)):
                 if lbl.isChecked() and i != idx:
                     fld.setText(value)
@@ -6498,12 +6993,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._run_delta_combine('sub')
 
     @undo_chunk
-    def _run_delta_swap(self):
+    def _run_delta_transfer(self):
         targets = self._get_targets_or_warn()
         if not targets:
             return
         if len(targets) < 2:
-            self._set_status("✗ Swap: select A (receiver) then B (donor)", error=True)
+            self._set_status("✗ Transfer: select B (donor) then A (receiver)", error=True)
             return
 
         raw_sel     = cmds.ls(sl=True, flatten=True) or []
@@ -6511,8 +7006,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         vtx_indices = None if not vtx_sel else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
 
         if vtx_indices is None:
-            bs_node_a, idx_a, name_a = targets[0]
-            bs_node_b, idx_b, name_b = targets[1]
+            bs_node_b, idx_b, name_b = targets[0]
+            bs_node_a, idx_a, name_a = targets[1]
             msg = QtWidgets.QMessageBox(self)
             msg.setIcon(QtWidgets.QMessageBox.Warning)
             msg.setWindowTitle("Swap — No vertex selection")
@@ -6531,8 +7026,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             if msg.clickedButton() is not btn_continue:
                 return
 
-        bs_node_a, idx_a, name_a = targets[0]
-        bs_node_b, idx_b, name_b = targets[1]
+        bs_node_b, idx_b, name_b = targets[0]
+        bs_node_a, idx_a, name_a = targets[1]
 
         try:
             n = transfer_target_deltas(bs_node_a, idx_a, bs_node_b, idx_b,
@@ -6638,12 +7133,36 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             traceback.print_exc()
             self._set_status(f"✗ {e}", error=True)
 
+    def _run_push_normals_mode(self, factor):
+        raw_sel     = cmds.ls(sl=True, flatten=True) or []
+        vtx_sel     = [s for s in raw_sel if ".vtx[" in s]
+        vtx_indices = None if not vtx_sel else [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
+        targets = self._get_targets_or_warn()
+        if not targets:
+            return
+        try:
+            for bs_node, logical_index, target_name in targets:
+                push_normals_deltas(bs_node, logical_index, factor, vtx_indices=vtx_indices)
+            scope     = "all verts" if vtx_indices is None else f"{len(vtx_indices)} vtx"
+            n_t       = len(targets)
+            direction = "inward" if factor < 0 else "outward"
+            self._set_status(
+                f"Normal Push {n_t} target{'s' if n_t > 1 else ''}"
+                f"  {direction} ×{abs(factor):.2f}  {scope}")
+        except Exception as e:
+            traceback.print_exc()
+            self._set_status(f"✗ {e}", error=True)
+
     @undo_chunk
     def _run_multiply(self):
-        fx = self._mult_sign * self._parse_factor(self._mult_fields[0])
-        fy = self._mult_sign * self._parse_factor(self._mult_fields[1])
-        fz = self._mult_sign * self._parse_factor(self._mult_fields[2])
-        self._run_multiply_factors(fx, fy, fz)
+        if self._btn_normal_mode.isChecked():
+            factor = self._mult_sign * self._parse_factor(self._mult_fields[0])
+            self._run_push_normals_mode(factor)
+        else:
+            fx = self._mult_sign * self._parse_factor(self._mult_fields[0])
+            fy = self._mult_sign * self._parse_factor(self._mult_fields[1])
+            fz = self._mult_sign * self._parse_factor(self._mult_fields[2])
+            self._run_multiply_factors(fx, fy, fz)
 
     @undo_chunk
     def _run_nullify(self):
@@ -6678,7 +7197,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     @undo_chunk
     def _run_invert_deltas(self):
-        self._run_multiply_factors(-1.0, -1.0, -1.0)
+        if self._btn_normal_mode.isChecked():
+            self._run_push_normals_mode(-1.0)
+        else:
+            self._run_multiply_factors(-1.0, -1.0, -1.0)
 
     @undo_chunk
     def _run_delta_mult_shapes(self):
@@ -6706,7 +7228,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             self._set_status(f"✗ {e}", error=True)
 
     @undo_chunk
-    def _run_push_normals(self):
+    def _run_push_normals_legacy(self):
         raw_sel   = cmds.ls(sl=True, flatten=True) or []
         vtx_sel   = [s for s in raw_sel if ".vtx[" in s]
         all_verts = not vtx_sel
@@ -6808,7 +7330,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         opacity = self.slider_smooth_opacity.value() / 100.0
         vtx_indices = [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
-        use_volume = self.combo_smooth_falloff.currentData() == "deformed"
+        hammer_mode = self.combo_smooth_falloff.currentData()
         n_laplacian = int(self.spin_hammer_lap.text() or "0")
         n_t = len(targets)
         try:
@@ -6817,7 +7339,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 self._progress_step(i, f"Hammering {target_name}…")
                 hammer_target_deltas(bs_node, logical_index, vtx_indices,
                                      opacity=opacity, progress_cb=None,
-                                     n_laplacian=n_laplacian, use_volume=use_volume)
+                                     n_laplacian=n_laplacian, mode=hammer_mode)
             scope = f"{len(vtx_indices)} vtx"
             self._set_status(
                 f"Hammer Deltas {n_t} target{'s' if n_t > 1 else ''}"
@@ -6841,12 +7363,13 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             return
 
         opacity = self.slider_smooth_opacity.value() / 100.0
+        hammer_mode = self.combo_smooth_falloff.currentData()
         vtx_indices = [int(s.split(".vtx[")[1].rstrip("]")) for s in vtx_sel]
         n_t = len(targets)
         try:
             for bs_node, logical_index, target_name in targets:
                 average_target_deltas(bs_node, logical_index, vtx_indices,
-                                      opacity=opacity)
+                                      opacity=opacity, mode=hammer_mode)
             self._set_status(
                 f"Average Deltas {n_t} target{'s' if n_t > 1 else ''}"
                 f"  {len(vtx_indices)} vtx  (opacity {opacity:.2f})")
@@ -6948,8 +7471,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 return
             bs_node, logical_index, target_name = targets[0]
             base_mesh = get_base_mesh(bs_node)
-            n = apply_mesh_moves_to_target(bs_node, base_mesh, logical_index)
-            self._set_status(f"✓ Bake Moves: {n} vertex move(s) added to '{target_name}'")
+            vtx_indices = _get_vertex_selection()
+            n = apply_mesh_moves_to_target(bs_node, base_mesh, logical_index,
+                                           vtx_indices=vtx_indices)
+            vtx_suffix = f" on {len(vtx_indices)} vert(s)" if vtx_indices else ""
+            self._set_status(f"✓ Bake Moves: {n} vertex move(s) added to '{target_name}'{vtx_suffix}")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ Bake Moves: {e}", error=True)
@@ -6960,6 +7486,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         if not targets:
             return
         try:
+            vtx_indices = _get_vertex_selection()
             seen = {}
             for bs_node, logical_index, _ in targets:
                 seen.setdefault(bs_node, []).append(logical_index)
@@ -6975,9 +7502,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 for idx in indices:
                     name = cmds.aliasAttr(f"{bs_node}.w[{idx}]", q=True) or str(idx)
                     self._progress_step(done, f"Baking {name}…")
-                    total += bake_deformers_to_targets(bs_node, base_mesh, [idx])
+                    total += bake_deformers_to_targets(bs_node, base_mesh, [idx],
+                                                       vtx_indices=vtx_indices)
                     done += 1
-            self._set_status(f"✓ Bake Deformers: {total} target(s) baked")
+            vtx_suffix = f" on {len(vtx_indices)} vert(s)" if vtx_indices else ""
+            self._set_status(f"✓ Bake Deformers: {total} target(s) baked{vtx_suffix}")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ Bake Deformers: {e}", error=True)

@@ -532,7 +532,7 @@ def _read_tweak_node(tweak_node):
     return tweaks
 
 
-def apply_mesh_moves_to_target(bs_node, base_mesh, logical_index):
+def apply_mesh_moves_to_target(bs_node, base_mesh, logical_index, vtx_indices=None):
     """
     Absorbs vertex moves (tweak node or pnts[]) from the base mesh into the
     blendShape target at logical_index, then removes those moves.
@@ -543,6 +543,9 @@ def apply_mesh_moves_to_target(bs_node, base_mesh, logical_index):
          write the result into the regen mesh pnts[].
       3. Delete the tweak node (or zero pnts[]) to clean the base mesh.
       4. Delete the regen mesh → Maya commits the pnts[] back to the target.
+
+    vtx_indices : optional list of int — restrict the operation to these vertex indices.
+                  Unselected vertices keep their existing target deltas and tweaks intact.
 
     Returns the number of vertices affected.
     """
@@ -573,8 +576,12 @@ def apply_mesh_moves_to_target(bs_node, base_mesh, logical_index):
     deformed_pts = om.MFnMesh(sel.getDagPath(0)).getPoints(om.MSpace.kObject)
     rest_pts     = om.MFnMesh(sel.getDagPath(1)).getPoints(om.MSpace.kObject)
 
+    vtx_set = set(vtx_indices) if vtx_indices else None
+
     new_deltas = {}
     for vi in range(len(deformed_pts)):
+        if vtx_set is not None and vi not in vtx_set:
+            continue
         dx = deformed_pts[vi].x - rest_pts[vi].x
         dy = deformed_pts[vi].y - rest_pts[vi].y
         dz = deformed_pts[vi].z - rest_pts[vi].z
@@ -601,8 +608,11 @@ def apply_mesh_moves_to_target(bs_node, base_mesh, logical_index):
         regen_shape = regen_shapes[0]
 
         # Zero any existing pnts[] that are no longer needed
+        # (skip unselected vertices — their stored deltas must not be altered)
         existing_idx = cmds.getAttr(f"{regen_shape}.pnts", multiIndices=True) or []
         for vi in existing_idx:
+            if vtx_set is not None and vi not in vtx_set:
+                continue
             if vi not in new_deltas:
                 cmds.setAttr(f"{regen_shape}.pnts[{vi}]", 0, 0, 0, type="float3")
 
@@ -613,7 +623,22 @@ def apply_mesh_moves_to_target(bs_node, base_mesh, logical_index):
             cmds.setAttr(f"{regen_shape}.pnts[{vi}].pntz", dz)
 
         # 5. Remove tweak source
-        if tweak_node:
+        if vtx_set is not None:
+            # Vertex selection mode: zero only the selected vertices' tweaks
+            for vi in vtx_set:
+                if tweak_node:
+                    try:
+                        cmds.setAttr(f"{tweak_node}.vlist[0].vertex[{vi}].xVertex", 0.0)
+                        cmds.setAttr(f"{tweak_node}.vlist[0].vertex[{vi}].yVertex", 0.0)
+                        cmds.setAttr(f"{tweak_node}.vlist[0].vertex[{vi}].zVertex", 0.0)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        cmds.setAttr(f"{output_shape}.pnts[{vi}]", 0, 0, 0, type="float3")
+                    except Exception:
+                        pass
+        elif tweak_node:
             cmds.delete(tweak_node)
         else:
             for i in pnt_indices:
@@ -628,7 +653,7 @@ def apply_mesh_moves_to_target(bs_node, base_mesh, logical_index):
     return len(new_deltas)
 
 
-def bake_deformers_to_targets(bs_node, base_mesh, logical_indices):
+def bake_deformers_to_targets(bs_node, base_mesh, logical_indices, vtx_indices=None):
     """
     For each target in logical_indices:
       - Activates the target at weight 1.0 (all others at 0).
@@ -641,18 +666,21 @@ def bake_deformers_to_targets(bs_node, base_mesh, logical_indices):
     after baking and deleting the downstream deformer, the shapes look identical
     to the pre-bake viewport result.
 
+    vtx_indices : optional list of int — restrict the bake to these vertex indices.
+                  Unselected vertices keep their existing target deltas unchanged.
+
     Returns the number of targets processed.
     """
     from maya.api import OpenMaya as om2
 
     # Output shape (non-intermediate) — reads through the full deformer stack
-    out_shapes = cmds.listRelatives(base_mesh, shapes=True, noIntermediate=True) or []
+    out_shapes = cmds.listRelatives(base_mesh, shapes=True, noIntermediate=True, fullPath=True) or []
     if not out_shapes:
         raise RuntimeError(f"No output shape found on '{base_mesh}'")
     mesh_shape = out_shapes[0]
 
     # Intermediate shape — pure rest-pose positions, no deformers
-    all_shapes = cmds.listRelatives(base_mesh, shapes=True) or []
+    all_shapes = cmds.listRelatives(base_mesh, shapes=True, fullPath=True) or []
     int_shapes  = [s for s in all_shapes if cmds.getAttr(f"{s}.intermediateObject")]
     if not int_shapes:
         raise RuntimeError(f"No intermediate shape found on '{base_mesh}'")
@@ -667,6 +695,8 @@ def bake_deformers_to_targets(bs_node, base_mesh, logical_indices):
     # Rest positions — sampled once from the intermediate shape (no deformers)
     rest_pts = _sample(int_shape)
 
+    vtx_set = set(vtx_indices) if vtx_indices else None
+
     bs_state = zero_all_bs_weights(bs_node)
     try:
         EPS   = 1e-6
@@ -680,6 +710,8 @@ def bake_deformers_to_targets(bs_node, base_mesh, logical_indices):
 
             new_deltas = {}
             for vi in range(len(rest_pts)):
+                if vtx_set is not None and vi not in vtx_set:
+                    continue
                 dx = baked_pts[vi].x - rest_pts[vi].x
                 dy = baked_pts[vi].y - rest_pts[vi].y
                 dz = baked_pts[vi].z - rest_pts[vi].z
@@ -687,8 +719,11 @@ def bake_deformers_to_targets(bs_node, base_mesh, logical_indices):
                     new_deltas[vi] = (dx, dy, dz)
 
             # Zero out any vertex present in original but absent from the baked set
+            # (skip unselected vertices — their existing deltas must not be altered)
             original_deltas = get_target_deltas(bs_node, idx)
             for vi in original_deltas:
+                if vtx_set is not None and vi not in vtx_set:
+                    continue
                 if vi not in new_deltas:
                     new_deltas[vi] = (0.0, 0.0, 0.0)
 
@@ -1650,31 +1685,25 @@ def relax_target_deltas(bs_node, logical_index, opacity, vtx_indices=None):
     print(f"  Relax Deltas: opacity={opacity:.2f}  ({scope})")
 
 
-def hammer_target_deltas(bs_node, logical_index, vtx_indices, opacity=1.0, progress_cb=None, n_laplacian=1, use_volume=False):
+def hammer_target_deltas(bs_node, logical_index, vtx_indices, opacity=1.0, progress_cb=None, n_laplacian=1, mode="volume"):
     """
-    Spatial Laplacian hammer applied to blendShape deltas.
+    Hammer applied to blendShape deltas — two modes:
 
-    Dirichlet boundary conditions:
-      - Selected vertices are the unknowns — updated each pass.
-      - Non-selected vertices are frozen anchors — always contribute their
-        original delta (0 if no delta), never mutated.
+    mode="volume"  — Spatial IDW in neutral-space (regen_pos − delta).
+        k-nearest Euclidean neighbors via hash grid, IDW(1/dist²) weighting.
+        Converges to a spatially-smooth delta field regardless of mesh topology.
+        Good for volume-preserving corrections where rest-pose proximity matters.
 
-    Connectivity is SPATIAL (Euclidean k-nearest) in NEUTRAL pose space.
-    Neutral positions are derived from the regen mesh as:
-        neutral[vi] = regen_pos[vi] - pnts[vi]
-    This is critical: using deformed positions would yield wrong neighbors
-    (e.g. open-mouth corners appear close while center lip verts are far apart,
-    whereas in neutral pose all lip-seam verts should be equidistant).
+    mode="surface" — Topological Laplacian along mesh edges (1-ring connectivity).
+        Each selected vertex converges to the uniform average of its edge-connected
+        neighbors' deltas. Respects mesh topology: never bleeds across disconnected
+        regions or across seams. Classic surface-aware smoothing.
 
-    A spatial hash grid replaces the previous O(n²) brute-force, giving
-    roughly O(n) precompute regardless of mesh density.
+    Both modes use Dirichlet boundary conditions:
+        - Selected vertices are the unknowns (updated each pass).
+        - Non-selected vertices are frozen anchors at their original delta.
 
-    Each pass: selected_delta[vi] = IDW(1/dist²) average over k nearest
-    neighbors (selected or not). Interior selected verts converge toward
-    their own delta; boundary selected verts converge toward 0.
-
-    The loop runs until convergence (max 200 passes, tol=1e-4) so one click
-    always gives a fully-resolved hammer result. `opacity` then blends
+    The loop runs to convergence (max 200 passes, tol=1e-4). `opacity` then blends
     between the original deltas and the converged result.
 
     vtx_indices : list of ints — must be non-empty (selection required).
@@ -1687,11 +1716,12 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, opacity=1.0, progr
     from maya.api import OpenMaya as om
 
     vtx_set = set(vtx_indices)
+    _MAX_PASSES = 200
+    _TOL        = 1e-4
 
     saved = _save_shape_editor_selection()
     try:
         mesh_shape, tgt_transform, was_live = _get_regen_mesh(bs_node, logical_index)
-
         n_verts = cmds.polyEvaluate(mesh_shape, vertex=True)
 
         # Read deltas from pnts[]
@@ -1703,107 +1733,118 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, opacity=1.0, progr
             if abs(dx) > 1e-6 or abs(dy) > 1e-6 or abs(dz) > 1e-6:
                 deltas[i] = (dx, dy, dz)
 
-        # Derive positions used for neighbor lookup:
-        #   Surface (default): neutral pose = regen_pos - delta
-        #     (avoids reading the base mesh DAG which may return deformed positions)
-        #   Volume: deformed pose = regen_pos as-is (target at weight=1)
-        om_sel    = om.MSelectionList()
-        om_sel.add(mesh_shape)
-        regen_pts = om.MFnMesh(om_sel.getDagPath(0)).getPoints(om.MSpace.kObject)
-
-        neutral = []
-        for i in range(n_verts):
-            p = regen_pts[i]
-            if use_volume:
-                neutral.append((p.x, p.y, p.z))
-            else:
-                d = deltas.get(i, (0.0, 0.0, 0.0))
-                neutral.append((p.x - d[0], p.y - d[1], p.z - d[2]))
-
-        # Build spatial hash grid from lookup positions
-        # Target ~40 verts/cell so a radius-1 search (27 cells) gives ~1000 candidates
-        xs = [p[0] for p in neutral]
-        ys = [p[1] for p in neutral]
-        zs = [p[2] for p in neutral]
-        bbox_diag = math.sqrt(
-            (max(xs) - min(xs)) ** 2 +
-            (max(ys) - min(ys)) ** 2 +
-            (max(zs) - min(zs)) ** 2
-        ) or 1.0
-        n_cells   = max(n_verts // 40, 8)
-        cell_size = bbox_diag / max(n_cells ** (1.0 / 3.0), 1.0)
-
-        grid = {}
-        for vi, (x, y, z) in enumerate(neutral):
-            c = (math.floor(x / cell_size),
-                 math.floor(y / cell_size),
-                 math.floor(z / cell_size))
-            grid.setdefault(c, []).append(vi)
-
-        # k-nearest neighbors in neutral space via grid lookup
-        k = min(max(8, n_verts // 50), 32)
-        # eps softens the IDW kernel: w = 1/(dist² + eps) instead of 1/dist²
-        # Prevents near-coincident vertices (e.g. upper/lower lip center touching in
-        # neutral pose) from getting infinite weight and crushing all other neighbors.
-        # Scaled to ~average squared edge length so weighting stays meaningful.
-        eps_idw = (bbox_diag / max(n_verts ** 0.5, 1.0)) ** 2
-        spatial_neighbors = {}
-        for vi in vtx_indices:
-            x, y, z = neutral[vi]
-            cx = math.floor(x / cell_size)
-            cy = math.floor(y / cell_size)
-            cz = math.floor(z / cell_size)
-
-            # Expand search radius until enough candidates found (usually radius=1 suffices)
-            candidates = set()
-            for radius in range(1, 6):
-                for dx in range(-radius, radius + 1):
-                    for dy in range(-radius, radius + 1):
-                        for dz in range(-radius, radius + 1):
-                            c = (cx + dx, cy + dy, cz + dz)
-                            if c in grid:
-                                candidates.update(grid[c])
-                if len(candidates) >= k + 1:
-                    break
-
-            dists = []
-            for vj in candidates:
-                if vj == vi:
-                    continue
-                qx, qy, qz = neutral[vj]
-                d2 = (x - qx) ** 2 + (y - qy) ** 2 + (z - qz) ** 2
-                dists.append((d2, vj))
-            dists.sort()
-            spatial_neighbors[vi] = [(vj, d2) for d2, vj in dists[:k]]
-
-        # Iterative IDW averaging — runs until convergence, then blends by opacity
-        # Non-selected verts are frozen anchors at their original delta (0 if none).
-        _MAX_PASSES = 200
-        _TOL        = 1e-4
-        current = dict(deltas)
+        current      = dict(deltas)
         n_passes_run = _MAX_PASSES
-        for _pass in range(_MAX_PASSES):
-            if progress_cb:
-                progress_cb(_pass, _MAX_PASSES, f"Hammer pass {_pass + 1}…")
-            snapshot   = dict(current)
-            max_change = 0.0
-            for vi in vtx_set:
-                sx = sy = sz = total_w = 0.0
-                for vj, dist2 in spatial_neighbors[vi]:
-                    w = 1.0 / (dist2 + eps_idw)
-                    d = snapshot.get(vj, (0.0, 0.0, 0.0))
-                    sx += w * d[0]; sy += w * d[1]; sz += w * d[2]
-                    total_w += w
-                if total_w > 0:
-                    new_d = (sx / total_w, sy / total_w, sz / total_w)
-                    old_d = current.get(vi, (0.0, 0.0, 0.0))
-                    chg = abs(new_d[0] - old_d[0]) + abs(new_d[1] - old_d[1]) + abs(new_d[2] - old_d[2])
+        adj          = None   # built lazily, shared between surface + n_laplacian
+
+        if mode == "surface":
+            # ── Topological Laplacian (1-ring edge neighbors) ─────────────────
+            base_mesh = get_base_mesh(bs_node)
+            adj = _build_adjacency(base_mesh)
+            for _pass in range(_MAX_PASSES):
+                if progress_cb:
+                    progress_cb(_pass, _MAX_PASSES, f"Hammer pass {_pass + 1}…")
+                snapshot   = dict(current)
+                max_change = 0.0
+                for vi in vtx_set:
+                    nbrs = adj.get(vi, [])
+                    if not nbrs:
+                        continue
+                    sx = sy = sz = 0.0
+                    for nb in nbrs:
+                        d = snapshot.get(nb, (0.0, 0.0, 0.0))
+                        sx += d[0]; sy += d[1]; sz += d[2]
+                    n      = len(nbrs)
+                    new_d  = (sx / n, sy / n, sz / n)
+                    old_d  = current.get(vi, (0.0, 0.0, 0.0))
+                    chg    = abs(new_d[0] - old_d[0]) + abs(new_d[1] - old_d[1]) + abs(new_d[2] - old_d[2])
                     if chg > max_change:
                         max_change = chg
                     current[vi] = new_d
-            if max_change < _TOL:
-                n_passes_run = _pass + 1
-                break
+                if max_change < _TOL:
+                    n_passes_run = _pass + 1
+                    break
+
+        else:
+            # ── Spatial IDW in neutral space (regen_pos − delta) ──────────────
+            om_sel    = om.MSelectionList()
+            om_sel.add(mesh_shape)
+            regen_pts = om.MFnMesh(om_sel.getDagPath(0)).getPoints(om.MSpace.kObject)
+
+            neutral = []
+            for i in range(n_verts):
+                p = regen_pts[i]
+                d = deltas.get(i, (0.0, 0.0, 0.0))
+                neutral.append((p.x - d[0], p.y - d[1], p.z - d[2]))
+
+            xs = [p[0] for p in neutral]
+            ys = [p[1] for p in neutral]
+            zs = [p[2] for p in neutral]
+            bbox_diag = math.sqrt(
+                (max(xs) - min(xs)) ** 2 +
+                (max(ys) - min(ys)) ** 2 +
+                (max(zs) - min(zs)) ** 2
+            ) or 1.0
+            n_cells   = max(n_verts // 40, 8)
+            cell_size = bbox_diag / max(n_cells ** (1.0 / 3.0), 1.0)
+
+            grid = {}
+            for vi, (x, y, z) in enumerate(neutral):
+                c = (math.floor(x / cell_size),
+                     math.floor(y / cell_size),
+                     math.floor(z / cell_size))
+                grid.setdefault(c, []).append(vi)
+
+            k       = min(max(8, n_verts // 50), 32)
+            eps_idw = (bbox_diag / max(n_verts ** 0.5, 1.0)) ** 2
+            spatial_neighbors = {}
+            for vi in vtx_indices:
+                x, y, z = neutral[vi]
+                cx = math.floor(x / cell_size)
+                cy = math.floor(y / cell_size)
+                cz = math.floor(z / cell_size)
+                candidates = set()
+                for radius in range(1, 6):
+                    for ddx in range(-radius, radius + 1):
+                        for ddy in range(-radius, radius + 1):
+                            for ddz in range(-radius, radius + 1):
+                                c = (cx + ddx, cy + ddy, cz + ddz)
+                                if c in grid:
+                                    candidates.update(grid[c])
+                    if len(candidates) >= k + 1:
+                        break
+                dists = []
+                for vj in candidates:
+                    if vj == vi:
+                        continue
+                    qx, qy, qz = neutral[vj]
+                    d2 = (x - qx) ** 2 + (y - qy) ** 2 + (z - qz) ** 2
+                    dists.append((d2, vj))
+                dists.sort()
+                spatial_neighbors[vi] = [(vj, d2) for d2, vj in dists[:k]]
+
+            for _pass in range(_MAX_PASSES):
+                if progress_cb:
+                    progress_cb(_pass, _MAX_PASSES, f"Hammer pass {_pass + 1}…")
+                snapshot   = dict(current)
+                max_change = 0.0
+                for vi in vtx_set:
+                    sx = sy = sz = total_w = 0.0
+                    for vj, dist2 in spatial_neighbors[vi]:
+                        w = 1.0 / (dist2 + eps_idw)
+                        d = snapshot.get(vj, (0.0, 0.0, 0.0))
+                        sx += w * d[0]; sy += w * d[1]; sz += w * d[2]
+                        total_w += w
+                    if total_w > 0:
+                        new_d = (sx / total_w, sy / total_w, sz / total_w)
+                        old_d = current.get(vi, (0.0, 0.0, 0.0))
+                        chg   = abs(new_d[0] - old_d[0]) + abs(new_d[1] - old_d[1]) + abs(new_d[2] - old_d[2])
+                        if chg > max_change:
+                            max_change = chg
+                        current[vi] = new_d
+                if max_change < _TOL:
+                    n_passes_run = _pass + 1
+                    break
 
         # Blend converged result with original by opacity
         if opacity < 1.0:
@@ -1816,10 +1857,10 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, opacity=1.0, progr
                     orig[2] + (conv[2] - orig[2]) * opacity,
                 )
 
-        # Topological Laplacian passes to smooth the resulting delta field
+        # Optional topological Laplacian post-smooth
         if n_laplacian > 0:
-            base_mesh = get_base_mesh(bs_node)
-            adj       = _build_adjacency(base_mesh)
+            if adj is None:
+                adj = _build_adjacency(get_base_mesh(bs_node))
             for _ in range(n_laplacian):
                 snapshot = dict(current)
                 for vi in vtx_set:
@@ -1830,7 +1871,7 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, opacity=1.0, progr
                     for nb in nbrs:
                         d = snapshot.get(nb, (0.0, 0.0, 0.0))
                         sx += d[0]; sy += d[1]; sz += d[2]
-                    n  = len(nbrs)
+                    n      = len(nbrs)
                     ox, oy, oz = current.get(vi, (0.0, 0.0, 0.0))
                     current[vi] = (ox + (sx / n - ox) * 0.5,
                                    oy + (sy / n - oy) * 0.5,
@@ -1850,16 +1891,21 @@ def hammer_target_deltas(bs_node, logical_index, vtx_indices, opacity=1.0, progr
     finally:
         _restore_shape_editor_selection(saved)
 
-    mode = "deformed" if use_volume else "neutral"
-    print(f"  Hammer Deltas: {n_passes_run}/{_MAX_PASSES} passes, {len(vtx_indices)} vtx, k={k}, cell={cell_size:.4f}, opacity={opacity:.0%}, neighbors={mode}")
+    print(f"  Hammer Deltas ({mode}): {n_passes_run}/{_MAX_PASSES} passes, {len(vtx_indices)} vtx, opacity={opacity:.0%}")
 
 
-def average_target_deltas(bs_node, logical_index, vtx_indices, opacity=1.0):
+def average_target_deltas(bs_node, logical_index, vtx_indices, opacity=1.0, mode="volume"):
     """
-    Replaces all selected vertices' deltas with the arithmetic mean of their deltas.
-    Useful to level a cluster of verts to a common midpoint displacement.
+    Averages blendShape deltas for selected vertices — two modes:
 
-    Uses a single regen mesh (read + write) — single Ctrl+Z.
+    mode="volume"  — Global arithmetic mean: all selected vertices are set to the
+                     same single average delta value. Useful to level a cluster of
+                     verts to a common midpoint displacement.
+
+    mode="surface" — Local 1-ring mean: each selected vertex is set to the uniform
+                     average of its edge-connected neighbors (selected or not).
+                     Non-selected neighbors act as frozen anchors, so the operation
+                     fades naturally at the selection boundary.
 
     vtx_indices : list of ints — must be non-empty (selection required).
     opacity     : 0.0–1.0  blend weight between original and the averaged value.
@@ -1868,37 +1914,82 @@ def average_target_deltas(bs_node, logical_index, vtx_indices, opacity=1.0):
         return
 
     saved = _save_shape_editor_selection()
-    mx = my = mz = 0.0
     try:
         mesh_shape, tgt_transform, was_live = _get_regen_mesh(bs_node, logical_index)
 
+        # Read all deltas for the selected verts (+ neighbors may be needed)
         vals = {}
         for vi in vtx_indices:
             dx = cmds.getAttr(f"{mesh_shape}.pnts[{vi}].pntx")
             dy = cmds.getAttr(f"{mesh_shape}.pnts[{vi}].pnty")
             dz = cmds.getAttr(f"{mesh_shape}.pnts[{vi}].pntz")
             vals[vi] = (dx, dy, dz)
-            mx += dx; my += dy; mz += dz
 
-        n   = len(vtx_indices)
-        mx /= n; my /= n; mz /= n
+        if mode == "surface":
+            # ── Local 1-ring average ──────────────────────────────────────────
+            adj = _build_adjacency(get_base_mesh(bs_node))
+            # Also read deltas for non-selected neighbors (frozen anchors)
+            nbr_set = set()
+            for vi in vtx_indices:
+                for nb in adj.get(vi, []):
+                    if nb not in vals:
+                        nbr_set.add(nb)
+            for nb in nbr_set:
+                dx = cmds.getAttr(f"{mesh_shape}.pnts[{nb}].pntx")
+                dy = cmds.getAttr(f"{mesh_shape}.pnts[{nb}].pnty")
+                dz = cmds.getAttr(f"{mesh_shape}.pnts[{nb}].pntz")
+                vals[nb] = (dx, dy, dz)
 
-        for vi in vtx_indices:
-            ox, oy, oz = vals[vi]
-            nx = ox + (mx - ox) * opacity
-            ny = oy + (my - oy) * opacity
-            nz = oz + (mz - oz) * opacity
-            if abs(nx - ox) > 1e-8 or abs(ny - oy) > 1e-8 or abs(nz - oz) > 1e-8:
-                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntx", nx)
-                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pnty", ny)
-                cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntz", nz)
+            result = {}
+            for vi in vtx_indices:
+                nbrs = adj.get(vi, [])
+                if not nbrs:
+                    result[vi] = vals[vi]
+                    continue
+                sx = sy = sz = 0.0
+                for nb in nbrs:
+                    d = vals.get(nb, (0.0, 0.0, 0.0))
+                    sx += d[0]; sy += d[1]; sz += d[2]
+                n = len(nbrs)
+                result[vi] = (sx / n, sy / n, sz / n)
+
+            for vi in vtx_indices:
+                ox, oy, oz = vals[vi]
+                tx, ty, tz = result[vi]
+                nx = ox + (tx - ox) * opacity
+                ny = oy + (ty - oy) * opacity
+                nz = oz + (tz - oz) * opacity
+                if abs(nx - ox) > 1e-8 or abs(ny - oy) > 1e-8 or abs(nz - oz) > 1e-8:
+                    cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntx", nx)
+                    cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pnty", ny)
+                    cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntz", nz)
+
+            print(f"  Average Deltas (surface): opacity={opacity:.2f}, {len(vtx_indices)} vtx")
+
+        else:
+            # ── Global arithmetic mean ────────────────────────────────────────
+            mx = my = mz = 0.0
+            for dx, dy, dz in vals.values():
+                mx += dx; my += dy; mz += dz
+            n = len(vtx_indices)
+            mx /= n; my /= n; mz /= n
+
+            for vi in vtx_indices:
+                ox, oy, oz = vals[vi]
+                nx = ox + (mx - ox) * opacity
+                ny = oy + (my - oy) * opacity
+                nz = oz + (mz - oz) * opacity
+                if abs(nx - ox) > 1e-8 or abs(ny - oy) > 1e-8 or abs(nz - oz) > 1e-8:
+                    cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntx", nx)
+                    cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pnty", ny)
+                    cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntz", nz)
+
+            print(f"  Average Deltas (volume): opacity={opacity:.2f}, {len(vtx_indices)} vtx → ({mx:.4f}, {my:.4f}, {mz:.4f})")
 
         if not was_live:
             cmds.delete(tgt_transform)
     finally:
         _restore_shape_editor_selection(saved)
-
-    print(f"  Average Deltas: opacity={opacity:.2f}, {len(vtx_indices)} vtx → ({mx:.4f}, {my:.4f}, {mz:.4f})")
 
 
 def _collect_magnitudes(bs_node, logical_index):
@@ -1925,6 +2016,30 @@ def _collect_magnitudes(bs_node, logical_index):
     finally:
         _restore_shape_editor_selection(saved)
     return magnitudes, n_verts
+
+
+def _ensure_geom_target_connected(bs_node, logical_index, working_mesh):
+    """
+    After applying a deformer (skinCluster, cluster…) to a regen mesh, Maya can
+    break the shape.outMesh → blendShape.inputGeomTarget connection.
+    This helper verifies the connection is still live and force-reconnects it if not.
+    """
+    geom_plug = (f"{bs_node}.inputTarget[0]"
+                 f".inputTargetGroup[{logical_index}]"
+                 f".inputTargetItem[6000].inputGeomTarget")
+    conns = cmds.listConnections(geom_plug, source=True, plugs=True) or []
+    if conns:
+        return  # still connected — nothing to do
+
+    shapes = cmds.listRelatives(working_mesh, shapes=True, type="mesh") or []
+    if not shapes:
+        return
+    # Prefer the non-intermediate shape
+    non_intermediate = [s for s in shapes
+                        if not cmds.getAttr(f"{s}.intermediateObject")]
+    shape = non_intermediate[0] if non_intermediate else shapes[0]
+    cmds.connectAttr(f"{shape}.outMesh", geom_plug, force=True)
+    print(f"  ⚠ Re-connected {shape}.outMesh → {geom_plug}")
 
 
 def _add_empty_bs_target(bs_node, base_mesh, ref_logical_index, new_name):
@@ -2045,6 +2160,8 @@ def create_delta_cluster(bs_node, logical_index, target_name,
 
     # ── Create cluster ───────────────────────────────────────────────────────
     cluster_node, cluster_handle = cmds.cluster(working_mesh, name=f"{rig_name}_cluster")
+    if not neutral:
+        _ensure_geom_target_connected(bs_node, logical_index, working_mesh)
 
     # ── Set weights — normalized magnitudes ─────────────────────────────────
     weights_list = [magnitudes.get(i, 0.0) / max_mag for i in range(n_verts)]
@@ -2162,6 +2279,8 @@ def create_delta_joint(bs_node, logical_index, target_name,
         skinMethod=0,
         normalizeWeights=1
     )[0]
+    if not neutral:
+        _ensure_geom_target_connected(bs_node, logical_index, working_mesh)
 
     # ── Write weights — disable normalization mid-loop ───────────────────────
     cmds.setAttr(f"{skin_node}.normalizeWeights", 0)
