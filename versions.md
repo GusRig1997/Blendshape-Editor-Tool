@@ -1,5 +1,18 @@
 # Changelog — Blendshape Editor Tool
 
+## v.05.20
+
+**Core — Split / Create Opposite: regen mesh handling**
+
+- Split and Create Opposite now detect blocking regen meshes before running and show a confirmation popup listing each affected target with its status (live sculpt mode or orphaned node)
+- Orphaned regen meshes (name collision, not connected to the blendShape) are deleted on confirmation; the operation then proceeds normally
+- Live regen meshes (target in sculpt mode, `inputGeomTarget` connected) are reused directly by `duplicate_target` without being deleted — the sculpt session is preserved and no phantom slot is created
+- `duplicate_target` now checks `inputGeomTarget` upfront: if a regen mesh is already connected, it uses the transform (not the raw shape node) to ensure `cmds.duplicate()` behaves identically to the normal `sculptTarget` path
+- `find_blocking_regen_meshes(targets)` added to `blendshape_core` — returns `(alias, node, is_connected)` tuples
+- `_confirm_delete_regen_meshes(blockers, command_name)` added to the UI — modal Yes/No dialog, only deletes orphaned nodes
+- `_run_split` and `_run_opposite` both run the pre-check before starting their main loop
+- Clear `RuntimeError` messages added in `duplicate_target`, `create_split_target` and `_write_weighted_target` when `sculptTarget(regenerate=True)` returns `None`, replacing the cryptic `'NoneType' object is not subscriptable` error
+
 ## v.05.19
 
 **UI — Modify Deltas: major layout and workflow overhaul**
