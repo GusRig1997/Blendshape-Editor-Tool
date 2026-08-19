@@ -434,6 +434,36 @@ def _get_regen_mesh(bs_node, logical_index):
     return geom_conns[0], tgt_transform, False
 
 
+def find_blocking_regen_meshes(targets):
+    """
+    Returns a list of (target_alias, regen_transform, is_connected) for targets
+    whose regen mesh would block a sculptTarget(regenerate=True) call.
+
+    is_connected=True  : regen mesh is live (inputGeomTarget connected).
+                         duplicate_target() handles this internally — do NOT delete.
+    is_connected=False : orphaned node with the same name as the target alias.
+                         Safe to delete before the operation.
+
+    targets : list of (bs_node, logical_index, target_name)
+    """
+    blockers = []
+    for bs_node, logical_index, _target_name in targets:
+        alias = (cmds.aliasAttr(f"{bs_node}.w[{logical_index}]", q=True)
+                 or f"target_{logical_index}")
+        geom_plug = (f"{bs_node}.inputTarget[0]"
+                     f".inputTargetGroup[{logical_index}]"
+                     f".inputTargetItem[6000].inputGeomTarget")
+        conns = cmds.listConnections(geom_plug, source=True, destination=False)
+        if conns:
+            regen_shape = conns[0]
+            parents = cmds.listRelatives(regen_shape, parent=True, fullPath=False) or []
+            regen_transform = parents[0] if parents else regen_shape
+            blockers.append((alias, regen_transform, True))
+        elif cmds.objExists(alias):
+            blockers.append((alias, alias, False))
+    return blockers
+
+
 def get_target_deltas(bs_node, logical_index):
     """
     Returns {vertex_index: (dx, dy, dz)} for non-zero deltas only.
@@ -963,15 +993,38 @@ def duplicate_target(bs_node, base_mesh, original_index, new_name, reorder=True,
 
     saved = _save_shape_editor_selection()
     try:
-        # 1. Regenerate original target → live mesh named after the target alias
-        regen_mesh = cmds.sculptTarget(bs_node, e=True, target=original_index, regenerate=True)
-        regen_mesh = regen_mesh if isinstance(regen_mesh, str) else regen_mesh[0]
+        # 1. Check for an already-live regen mesh (target is in sculpt mode).
+        #    Reuse it directly — never delete a live regen mesh, doing so forces Maya
+        #    to end the sculpt session abnormally and can leave phantom slots.
+        geom_plug = (f"{bs_node}.inputTarget[0].inputTargetGroup[{original_index}]"
+                     f".inputTargetItem[6000].inputGeomTarget")
+        geom_conns = cmds.listConnections(geom_plug, source=True, destination=False)
+        if geom_conns:
+            # geom_conns[0] is the shape node — get the parent transform so that
+            # cmds.duplicate() behaves identically to the sculptTarget path below.
+            regen_shape  = geom_conns[0]
+            parents      = cmds.listRelatives(regen_shape, parent=True, fullPath=False) or []
+            regen_mesh   = parents[0] if parents else regen_shape
+            regen_was_live = True
+        else:
+            # Regenerate the original target → live mesh named after the target alias
+            regen_mesh = cmds.sculptTarget(bs_node, e=True, target=original_index, regenerate=True)
+            if regen_mesh is None:
+                source_alias = (cmds.aliasAttr(f"{bs_node}.w[{original_index}]", q=True)
+                                or f"target_{original_index}")
+                raise RuntimeError(
+                    f"Cannot rebuild target '{source_alias}': regeneration failed. "
+                    f"A regen mesh named '{source_alias}' already exists in the scene — "
+                    f"delete it and try again.")
+            regen_mesh   = regen_mesh if isinstance(regen_mesh, str) else regen_mesh[0]
+            regen_was_live = False
 
-        # 2. Duplicate the regenerated mesh
+        # 2. Duplicate the regen mesh (live or freshly created)
         temp_dup = cmds.duplicate(regen_mesh, n=f"{new_name}_TEMP")[0]
 
-        # 3. Delete the regenerated mesh — restores original target
-        cmds.delete(regen_mesh)
+        # 3. Delete only if WE created the regen mesh — preserves the user's sculpt session
+        if not regen_was_live:
+            cmds.delete(regen_mesh)
     finally:
         _restore_shape_editor_selection(saved)
 
@@ -1073,6 +1126,11 @@ def create_split_target(bs_node, base_mesh, target_name, source_index, loc_idx, 
     saved = _save_shape_editor_selection()
     try:
         regen_mesh = cmds.sculptTarget(bs_node, e=True, target=target_idx, regenerate=True)
+        if regen_mesh is None:
+            raise RuntimeError(
+                f"Cannot rebuild target '{target_name}': regeneration failed. "
+                f"A regen mesh named '{target_name}' already exists in the scene — "
+                f"delete it and try again.")
         regen_mesh = regen_mesh if isinstance(regen_mesh, str) else regen_mesh[0]
 
         # 3. Scale each delta by w — skip w==1 (vertex keeps full delta, no write needed)
@@ -2488,6 +2546,11 @@ def edge_loop_split_target(bs_node, logical_index, target_name,
         saved = _save_shape_editor_selection()
         try:
             regen = cmds.sculptTarget(bs_node, e=True, target=idx, regenerate=True)
+            if regen is None:
+                raise RuntimeError(
+                    f"Cannot rebuild target '{new_name}': regeneration failed. "
+                    f"A regen mesh named '{new_name}' already exists in the scene — "
+                    f"delete it and try again.")
             regen = regen if isinstance(regen, str) else regen[0]
             for vi, (dx, dy, dz) in deltas.items():
                 w = weight_map.get(vi, 0.0)

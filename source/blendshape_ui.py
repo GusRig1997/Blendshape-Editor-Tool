@@ -3494,7 +3494,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
 class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     TOOL_NAME = "BlendshapeEditorUI"
-    VERSION   = "v.05.18"
+    VERSION   = "v.05.20"
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -6810,6 +6810,47 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             traceback.print_exc()
             self._set_status(f"✗ Search & Replace: {e}", error=True)
 
+    def _confirm_delete_regen_meshes(self, blockers, command_name):
+        """
+        Shows a dialog listing regen meshes that would affect `command_name`.
+
+        Connected regen meshes (is_connected=True) are handled transparently by
+        duplicate_target() — they are reused as-is and never deleted here, so the
+        sculpt session is preserved and no phantom slot is created.
+
+        Orphaned regen meshes (is_connected=False) collide with sculptTarget's
+        naming and must be deleted before the operation can proceed.
+
+        Returns True if the user confirms (or if only connected blockers exist),
+        False if the user cancels.
+        """
+        connected = [(a, n) for a, n, c in blockers if c]
+        orphaned  = [(a, n) for a, n, c in blockers if not c]
+
+        lines = []
+        for alias, node in connected:
+            lines.append(f"  • {alias}  — live regen mesh (sculpt mode active, will be reused)")
+        for alias, node in orphaned:
+            lines.append(f"  • {alias}  — orphaned regen mesh (will be deleted)")
+
+        reply = QtWidgets.QMessageBox.question(
+            self,
+            "Regen Mesh Exists",
+            f"The following regen mesh(es) are blocking {command_name}:\n\n"
+            + "\n".join(lines)
+            + "\n\nContinue?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+            QtWidgets.QMessageBox.Yes,
+        )
+        if reply != QtWidgets.QMessageBox.Yes:
+            return False
+
+        # Only delete orphaned nodes — connected ones are handled by duplicate_target()
+        for _alias, node in orphaned:
+            if cmds.objExists(node):
+                cmds.delete(node)
+        return True
+
     @undo_chunk
     def _run_split(self):
         n_locs = self.table.rowCount()
@@ -6819,6 +6860,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         targets = self._get_targets_or_warn()
         if not targets:
+            return
+
+        blockers = find_blocking_regen_meshes(targets)
+        if blockers and not self._confirm_delete_regen_meshes(blockers, "Split"):
             return
 
         locators = []
@@ -7407,6 +7452,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     @undo_chunk
     def _run_opposite(self):
+        targets = get_selected_targets()
+        if targets:
+            blockers = find_blocking_regen_meshes(targets)
+            if blockers and not self._confirm_delete_regen_meshes(blockers, "Create Opposite"):
+                return
         try:
             create_opposite_shape(
                 symmetry_axis=self._opp_axis,
