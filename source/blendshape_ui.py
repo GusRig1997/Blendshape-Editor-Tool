@@ -280,6 +280,18 @@ def create_opposite_shape(symmetry_axis="Topology", topo_edge=None):
         base_mesh        = get_base_mesh(bs_name)
         dup_idx          = None
         duplicated_shape = f"{shape}_Copy"
+
+        # Temporarily disconnect only the source target's incoming connections so
+        # sculptTarget -regenerate can set the weight freely.  Other targets are
+        # left untouched — disconnecting all of them on every iteration is
+        # unnecessarily expensive when many targets are selected.
+        src_attr  = f"{bs_name}.w[{index}]"
+        src_conns = cmds.listConnections(src_attr, source=True, destination=False, plugs=True) or []
+        src_conns = [c for c in src_conns
+                     if cmds.nodeType(c.split(".")[0]) != "combinationShape"]
+        for c in src_conns:
+            cmds.disconnectAttr(c, src_attr)
+
         try:
             dup_idx = duplicate_target(bs_name, base_mesh, index, duplicated_shape, force_reorder=True)
 
@@ -311,13 +323,12 @@ def create_opposite_shape(symmetry_axis="Topology", topo_edge=None):
 
             # Rename the flipped duplicate to the opposite name
             cmds.aliasAttr(opposite_shape, f"{bs_name}.{duplicated_shape}")
-            print(f"  ✓ Opposite created : {opposite_shape}")
+            print(f"Opposite created : {opposite_shape}")
 
             # Mirror driver connection — only when freshly created
+            # src_conns holds the source target's original drivers (saved + disconnected above)
             if was_fresh:
-                src_weight = f"{bs_name}.weight[{index}]"
-                drivers = cmds.listConnections(src_weight, source=True, plugs=True, d=False) or []
-                for driver_plug in drivers:
+                for driver_plug in src_conns:
                     dot = driver_plug.rfind(".")
                     if dot == -1:
                         continue
@@ -370,17 +381,22 @@ def create_opposite_shape(symmetry_axis="Topology", topo_edge=None):
 
                     new_weight = f"{bs_name}.weight[{dup_idx}]"
                     cmds.connectAttr(opp_plug, new_weight, force=True)
-                    print(f"  ✓ Driver mirrored : {opp_plug} → {new_weight}")
+                    print(f"Driver mirrored : {opp_plug} ->{new_weight}")
 
         except Exception:
             # Clean up the _Copy slot so it doesn't become a phantom target
             if dup_idx is not None:
                 try:
                     mel.eval(f"blendShapeDeleteTargetGroup {bs_name} {dup_idx};")
-                    print(f"  ✗ Cleaned up temp slot [{dup_idx}] after error on '{shape}'")
+                    print(f"Cleaned up temp slot [{dup_idx}] after error on '{shape}'")
                 except Exception:
                     pass
             raise
+        finally:
+            # Reconnect the source target's connections regardless of success or failure
+            for c in src_conns:
+                if cmds.objExists(c.split(".")[0]):
+                    cmds.connectAttr(c, src_attr, force=True)
 
 
 class _ProgressCtx:
@@ -604,7 +620,7 @@ class RenameMatchDialog(QtWidgets.QDialog):
             clean_proposed = proposed
             try:
                 cmds.aliasAttr(clean_proposed, f"{self.bs_node}.w[{idx}]")
-                renamed.append(f"{current} → {clean_proposed}")
+                renamed.append(f"{current} ->{clean_proposed}")
             except Exception as e:
                 errors.append(f"{current}: {e}")
 
@@ -790,7 +806,7 @@ class CheckShapesDialog(QtWidgets.QDialog):
         btn_match.setFixedHeight(28)
         btn_match.setToolTip(
             "Scans the blendShape node for targets whose name tokens match a JSON list entry\n"
-            "but are in the wrong order (e.g. L_brow_a_up → L_brow_up_a, M_ → C_).\n"
+            "but are in the wrong order (e.g. L_brow_a_up ->L_brow_up_a, M_ ->C_).\n"
             "Opens a dialog showing all suggestions — you choose which ones to apply.")
         lay.addWidget(btn_match)
 
@@ -1035,7 +1051,7 @@ class CheckShapesDialog(QtWidgets.QDialog):
         # Collect existing aliases
         alias_pairs = cmds.aliasAttr(bs_node, q=True) or []
         # aliasAttr returns a flat list: [alias, attr, alias, attr, ...]
-        existing = {}  # alias → logical_index
+        existing = {}  # alias ->logical_index
         for i in range(0, len(alias_pairs) - 1, 2):
             alias = alias_pairs[i]
             attr  = alias_pairs[i + 1]  # e.g. "weight[12]"
@@ -1053,8 +1069,8 @@ class CheckShapesDialog(QtWidgets.QDialog):
                 json_names.append(grp_item.child(j).text(0))
         json_name_set = set(json_names)
 
-        # Build token lookup: frozenset(tokens) → [json_names]
-        # Normalize M → C when tokenizing
+        # Build token lookup: frozenset(tokens) ->[json_names]
+        # Normalize M ->C when tokenizing
         def _norm_tokens(name):
             toks = name.split("_")
             return frozenset("C" if t == "M" else t for t in toks)
@@ -1074,7 +1090,7 @@ class CheckShapesDialog(QtWidgets.QDialog):
             key = _norm_tokens(alias)
             matches = token_map.get(key, [])
 
-            # Pass 2 — missing side prefix (e.g. jaw_up → C_jaw_up)
+            # Pass 2 — missing side prefix (e.g. jaw_up ->C_jaw_up)
             if not matches:
                 side_matches = [f"{s}_{alias}" for s in ("C", "L", "R")
                                 if f"{s}_{alias}" in json_name_set]
@@ -1143,7 +1159,7 @@ class _SoftBlendGraphWidget(QtWidgets.QWidget):
     Key roles:
       idx 0  (-1,  0, linear) — fixed: partner full extent, dead zone
       idx 1  (-0.5, 0, linear) — fixed: partner half extent, dead zone
-      idx 2  ( 0,  0, smooth) — U/V locked, tangent editable → controls undershoot
+      idx 2  ( 0,  0, smooth) — U/V locked, tangent editable ->controls undershoot
       idx 3  ( 0.5, 0.5, auto) — fully editable: the "midpoint" key
       idx 4  ( 1,  1, linear) — fixed: full activation endpoint
     """
@@ -1261,7 +1277,7 @@ class _SoftBlendGraphWidget(QtWidgets.QWidget):
                 du = k["u"] - pk["u"]
                 return (k["v"] - pk["v"]) / du if abs(du) > 1e-9 else 0.0
             return 0.0
-        # smooth / auto → Catmull-Rom
+        # smooth / auto ->Catmull-Rom
         if 0 < idx < len(keys) - 1:
             pk = keys[idx - 1]; nk = keys[idx + 1]
             du = nk["u"] - pk["u"]
@@ -1493,10 +1509,49 @@ class RigConnectorDialog(QtWidgets.QDialog):
         )
         files_row = QtWidgets.QHBoxLayout(grp_files)
         files_row.setContentsMargins(8, 4, 8, 4)
-        files_row.setSpacing(4)
+        files_row.setSpacing(0)
+
+        _FS = 6  # uniform spacing between label / field / button
 
         # Mapping json
         files_row.addWidget(QtWidgets.QLabel("Mapping json"))
+        files_row.addSpacing(_FS)
+        btn_save_map = QtWidgets.QToolButton()
+        btn_save_map.setAutoRaise(True)
+        btn_save_map.setStyleSheet(_fm_ss)
+        _pix_save_map = QtGui.QPixmap(f"{_idir}/save.png")
+        if not _pix_save_map.isNull():
+            btn_save_map.setIcon(QtGui.QIcon(_pix_save_map))
+            btn_save_map.setIconSize(QtCore.QSize(34, 34))
+        btn_save_map.setFixedSize(36, 36)
+        btn_save_map.setToolTip(
+            "Save the current table mapping.\n"
+            "Opens a dialog pre-filled with the loaded path if available.")
+        btn_save_map.clicked.connect(self._save_mapping)
+        files_row.addWidget(btn_save_map)
+        files_row.addSpacing(2)
+        btn_save_plus = QtWidgets.QToolButton()
+        btn_save_plus.setAutoRaise(True)
+        btn_save_plus.setStyleSheet(_fm_ss)
+        _pix_save_plus = QtGui.QPixmap(f"{_idir}/save_plus.png")
+        if not _pix_save_plus.isNull():
+            btn_save_plus.setIcon(QtGui.QIcon(_pix_save_plus))
+            btn_save_plus.setIconSize(QtCore.QSize(34, 34))
+        btn_save_plus.setFixedSize(36, 36)
+        btn_save_plus.setToolTip(
+            "Save As — increment version.\n"
+            "Proposes a new filename with an incremented version number\n"
+            "(e.g. mapping_v01.json ->mapping_v02.json).")
+        btn_save_plus.clicked.connect(self._save_mapping_increment)
+        files_row.addWidget(btn_save_plus)
+        files_row.addSpacing(_FS)
+        self._le_mapping_path = QtWidgets.QLineEdit()
+        self._le_mapping_path.setReadOnly(True)
+        self._le_mapping_path.setFixedWidth(180)
+        self._le_mapping_path.setFixedHeight(23)
+        self._le_mapping_path.setPlaceholderText("C:/path/to/rig_mapping.json")
+        files_row.addWidget(self._le_mapping_path)
+        files_row.addSpacing(_FS)
         btn_load_map = QtWidgets.QToolButton()
         btn_load_map.setAutoRaise(True)
         btn_load_map.setStyleSheet(_fm_ss)
@@ -1508,16 +1563,19 @@ class RigConnectorDialog(QtWidgets.QDialog):
         btn_load_map.setToolTip("Load a previously saved table mapping from a JSON file")
         btn_load_map.clicked.connect(self._load_mapping)
         files_row.addWidget(btn_load_map)
-        self._le_mapping_path = QtWidgets.QLineEdit()
-        self._le_mapping_path.setReadOnly(True)
-        self._le_mapping_path.setFixedWidth(180)
-        self._le_mapping_path.setPlaceholderText("C:/path/to/rig_mapping.json")
-        files_row.addWidget(self._le_mapping_path)
 
         files_row.addStretch(1)
 
         # BS Node
         files_row.addWidget(QtWidgets.QLabel("BS Node"))
+        files_row.addSpacing(_FS)
+        self._le_bs_node = QtWidgets.QLineEdit()
+        self._le_bs_node.setReadOnly(True)
+        self._le_bs_node.setFixedWidth(160)
+        self._le_bs_node.setFixedHeight(23)
+        self._le_bs_node.setPlaceholderText("blendShape node")
+        files_row.addWidget(self._le_bs_node)
+        files_row.addSpacing(_FS)
         btn_get_bs = QtWidgets.QToolButton()
         btn_get_bs.setAutoRaise(True)
         btn_get_bs.setStyleSheet(_fm_ss)
@@ -1529,11 +1587,6 @@ class RigConnectorDialog(QtWidgets.QDialog):
         btn_get_bs.setToolTip("Grab the blendShape node from the current selection")
         btn_get_bs.clicked.connect(self._get_bs_node)
         files_row.addWidget(btn_get_bs)
-        self._le_bs_node = QtWidgets.QLineEdit()
-        self._le_bs_node.setReadOnly(True)
-        self._le_bs_node.setFixedWidth(160)
-        self._le_bs_node.setPlaceholderText("blendShape node")
-        files_row.addWidget(self._le_bs_node)
 
         files_row.addStretch(1)
 
@@ -1688,24 +1741,10 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._btn_build.setFixedSize(40, 40)
         self._btn_build.clicked.connect(self._on_build_connect)
 
-        btn_save_map = QtWidgets.QToolButton()
-        btn_save_map.setAutoRaise(True)
-        btn_save_map.setStyleSheet(_rc_icon_ss)
-        _pix_save_map = QtGui.QPixmap(f"{_idir}/save.png")
-        if not _pix_save_map.isNull():
-            btn_save_map.setIcon(QtGui.QIcon(_pix_save_map.scaled(
-                34, 34, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
-            btn_save_map.setIconSize(QtCore.QSize(34, 34))
-        btn_save_map.setFixedSize(40, 40)
-        btn_save_map.setToolTip(
-            "Save the current table mapping.\n"
-            "If a path is already loaded, saves directly without dialog.")
-        btn_save_map.clicked.connect(self._save_mapping)
-
         side_col = QtWidgets.QVBoxLayout()
         side_col.setSpacing(0)
         side_col.setContentsMargins(0, 0, 0, 0)
-        _side_btns = (btn_add, btn_rm, btn_up, btn_dn, btn_opp,
+        _side_btns = (btn_opp, btn_add, btn_rm, btn_up, btn_dn,
                       btn_connect_sel, btn_disc_sel, btn_disc_all, self._btn_build)
         for _b in _side_btns:
             side_col.addWidget(_b, 0, QtCore.Qt.AlignHCenter)
@@ -1718,7 +1757,6 @@ class RigConnectorDialog(QtWidgets.QDialog):
         _side_vlay = QtWidgets.QVBoxLayout()
         _side_vlay.setSpacing(0)
         _side_vlay.setContentsMargins(0, 0, 0, 0)
-        _side_vlay.addWidget(btn_save_map, 0, QtCore.Qt.AlignHCenter)
         _side_vlay.addStretch(1)
         _side_vlay.addLayout(side_col)
 
@@ -1778,8 +1816,8 @@ class RigConnectorDialog(QtWidgets.QDialog):
         """)
         self.btn_stagger_sign.setToolTip(
             "Symmetric only — controls which side is positive.\n"
-            "+: left half → '+', right half → '\u2212'.\n"
-            "\u2212: left half → '\u2212', right half → '+'.")
+            "+: left half ->'+', right half ->'\u2212'.\n"
+            "\u2212: left half ->'\u2212', right half ->'+'.")
         def _on_stagger_sign_clicked():
             self._stagger_sign *= -1.0
             self.btn_stagger_sign.setText("\u2212" if self._stagger_sign < 0 else "+")
@@ -1802,26 +1840,26 @@ class RigConnectorDialog(QtWidgets.QDialog):
         stagger_row.addStretch(1)
 
         stagger_row.addWidget(QtWidgets.QLabel("In Max"))
-        self._sb_stagger_inmax = QtWidgets.QDoubleSpinBox()
-        self._sb_stagger_inmax.setRange(0.0, 9999.0)
-        self._sb_stagger_inmax.setValue(0.0)
-        self._sb_stagger_inmax.setDecimals(3)
+        self._sb_stagger_inmax = QtWidgets.QLineEdit("0.000")
         self._sb_stagger_inmax.setFixedWidth(70)
-        self._sb_stagger_inmax.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self._sb_stagger_inmax.setAlignment(QtCore.Qt.AlignCenter)
+        _inmax_v = QtGui.QDoubleValidator(0.0, 9999.0, 3, self._sb_stagger_inmax)
+        _inmax_v.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self._sb_stagger_inmax.setValidator(_inmax_v)
         stagger_row.addWidget(self._sb_stagger_inmax)
 
         stagger_row.addStretch(1)
 
         stagger_row.addWidget(QtWidgets.QLabel("Blend"))
-        self._sb_stagger_falloff = QtWidgets.QDoubleSpinBox()
-        self._sb_stagger_falloff.setRange(0.0, 9999.0)
-        self._sb_stagger_falloff.setValue(0.0)
-        self._sb_stagger_falloff.setDecimals(3)
+        self._sb_stagger_falloff = QtWidgets.QLineEdit("0.000")
         self._sb_stagger_falloff.setFixedWidth(70)
-        self._sb_stagger_falloff.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self._sb_stagger_falloff.setAlignment(QtCore.Qt.AlignCenter)
+        _falloff_v = QtGui.QDoubleValidator(0.0, 9999.0, 3, self._sb_stagger_falloff)
+        _falloff_v.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self._sb_stagger_falloff.setValidator(_falloff_v)
         self._sb_stagger_falloff.setToolTip(
             "Overlap amount added on each side of a shape's activation slot.\n"
-            "Example: slot [0.2, 0.4] with blend 0.01 → In Min=0.19, In Max=0.41.\n"
+            "Example: slot [0.2, 0.4] with blend 0.01 ->In Min=0.19, In Max=0.41.\n"
             "First shape never goes below 0; last shape never exceeds In Max.")
         stagger_row.addWidget(self._sb_stagger_falloff)
 
@@ -1987,6 +2025,9 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._updating_controls = False
         self._refresh_key_controls()
 
+        self.setStyleSheet("QLineEdit { border: none; border-radius: 3px; padding: 0px 4px; }")
+        # Restore native look on the editable combo's internal QLineEdit
+        self._combo_stagger_axis.lineEdit().setStyleSheet("")
 
     # ── Populate ──────────────────────────────────────────────────────────────
 
@@ -2085,9 +2126,9 @@ class RigConnectorDialog(QtWidgets.QDialog):
         le_gate.setText(gate)
         le_gate.setToolTip("Combo driver(s): one or more entries, comma-separated.\n"
                            "Each entry multiplies the shape weight in series.\n"
-                           "  - blendShape target name   → jaw_dn\n"
-                           "  - node.attr plug           → FKJaw_ctrl.zip\n"
-                           "  - rev: prefix (inverted)   → rev:FKJaw_ctrl.retain\n"
+                           "  - blendShape target name   ->jaw_dn\n"
+                           "  - node.attr plug           ->FKJaw_ctrl.zip\n"
+                           "  - rev: prefix (inverted)   ->rev:FKJaw_ctrl.retain\n"
                            "The shape only activates when all combo drivers are active.")
         self._table.setCellWidget(row, self._COL_GATE, le_gate)
 
@@ -2218,7 +2259,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 continue
             shape_side, shape_part, direction, split = parsed
 
-            # Map direction token → attr name + sign
+            # Map direction token ->attr name + sign
             dir_lower = direction.lower()
             if dir_lower in _RC_CUSTOM_DIRS:
                 attr     = direction  # keep the raw token as custom attr name
@@ -2393,9 +2434,9 @@ class RigConnectorDialog(QtWidgets.QDialog):
         le_gate.setText(d.get("gate", ""))
         le_gate.setToolTip("Combo driver(s): one or more entries, comma-separated.\n"
                            "Each entry multiplies the shape weight in series.\n"
-                           "  - blendShape target name   → jaw_dn\n"
-                           "  - node.attr plug           → FKJaw_ctrl.zip\n"
-                           "  - rev: prefix (inverted)   → rev:FKJaw_ctrl.retain\n"
+                           "  - blendShape target name   ->jaw_dn\n"
+                           "  - node.attr plug           ->FKJaw_ctrl.zip\n"
+                           "  - rev: prefix (inverted)   ->rev:FKJaw_ctrl.retain\n"
                            "The shape only activates when all combo drivers are active.")
         self._table.setCellWidget(pos, self._COL_GATE, le_gate)
 
@@ -2580,14 +2621,49 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._graph.set_selected_tangent(text)
 
     def _save_mapping(self):
-        path = self._le_mapping_path.text().strip()
+        loaded = self._le_mapping_path.text().strip()
+        default = loaded if loaded else _rig_mapping_prefs_path()
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Mapping", default, "JSON files (*.json)")
         if not path:
+            return
+        self._le_mapping_path.setText(path)
+        data = {
+            "connections":       self._collect_rows(),
+            "soft_blend_pairs":  self._collect_soft_blend_pairs(),
+            "soft_blend_curve":  self._graph.get_keys(),
+        }
+        try:
+            with open(path, "w") as f:
+                json.dump(data, f, indent=2)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Save Error", str(e))
+
+    def _save_mapping_increment(self):
+        """Save As with auto-incremented version number in the filename."""
+        import re
+        loaded = self._le_mapping_path.text().strip()
+        if loaded:
+            directory = os.path.dirname(loaded)
+            basename  = os.path.basename(loaded)
+            stem, ext = os.path.splitext(basename)
+            # Try to find an existing vNN pattern and increment it
+            m = re.search(r'(.*[_\-])v(\d+)$', stem, re.IGNORECASE)
+            if m:
+                prefix  = m.group(1)
+                num     = int(m.group(2))
+                width   = len(m.group(2))
+                new_stem = f"{prefix}v{num + 1:0{width}d}"
+            else:
+                new_stem = f"{stem}_v02"
+            default = os.path.join(directory, new_stem + ext)
+        else:
             default = _rig_mapping_prefs_path()
-            path, _ = QtWidgets.QFileDialog.getSaveFileName(
-                self, "Save Mapping", default, "JSON files (*.json)")
-            if not path:
-                return
-            self._le_mapping_path.setText(path)
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Save Mapping As", default, "JSON files (*.json)")
+        if not path:
+            return
+        self._le_mapping_path.setText(path)
         data = {
             "connections":       self._collect_rows(),
             "soft_blend_pairs":  self._collect_soft_blend_pairs(),
@@ -2635,11 +2711,11 @@ class RigConnectorDialog(QtWidgets.QDialog):
             attr    = rd.get("attr", "ty")
             in_min  = float(rd.get("in_min", 0.0))
             in_max  = float(rd.get("in_max", 1.0))
-            # Old format: attr=="custom" → use custom_attr value
+            # Old format: attr=="custom" ->use custom_attr value
             custom_attr = rd.get("custom_attr", "")
             if attr == "custom" and custom_attr:
                 attr = custom_attr
-            # Old format: direction=="−" → negate in_max (and in_min if nonzero)
+            # Old format: direction=="−" ->negate in_max (and in_min if nonzero)
             if rd.get("direction", "+") == "\u2212":
                 in_max = -abs(in_max)
                 if in_min != 0.0:
@@ -2832,9 +2908,9 @@ class RigConnectorDialog(QtWidgets.QDialog):
         le_gate_new.setPlaceholderText("shape name")
         le_gate_new.setToolTip("Combo driver(s): one or more entries, comma-separated.\n"
                                "Each entry multiplies the shape weight in series.\n"
-                               "  - blendShape target name   → jaw_dn\n"
-                               "  - node.attr plug           → FKJaw_ctrl.zip\n"
-                               "  - rev: prefix (inverted)   → rev:FKJaw_ctrl.retain\n"
+                               "  - blendShape target name   ->jaw_dn\n"
+                               "  - node.attr plug           ->FKJaw_ctrl.zip\n"
+                               "  - rev: prefix (inverted)   ->rev:FKJaw_ctrl.retain\n"
                                "The shape only activates when all combo drivers are active.")
         self._table.setCellWidget(insert_row, self._COL_GATE, le_gate_new)
 
@@ -2863,8 +2939,8 @@ class RigConnectorDialog(QtWidgets.QDialog):
         """
         master_ctrl   = self._le_stagger_ctrl.text().strip()
         axis          = self._combo_stagger_axis.currentText()
-        in_max_ref    = self._sb_stagger_inmax.value()
-        smooth        = self._sb_stagger_falloff.value()
+        in_max_ref    = float(self._sb_stagger_inmax.text() or "0")
+        smooth        = float(self._sb_stagger_falloff.text() or "0")
         mode          = self._combo_stagger_mode.currentText()   # "Linear"/"Mirror"/"Symmetric"
         use_mirror    = (mode == "Mirror")
         use_symmetric = (mode == "Symmetric")
@@ -2929,7 +3005,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
             slot      = _slot(k)
             direction = _direction(k)   # "+", "−", or None
 
-            # Compute signed in_min / in_max (Symmetric → negative side gets negated values)
+            # Compute signed in_min / in_max (Symmetric ->negative side gets negated values)
             base_min = max(0.0, slot * slot_width - smooth)
             base_max = min(in_max_ref, (slot + 1) * slot_width + smooth)
             if direction == "\u2212":
@@ -3045,7 +3121,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         results = build_and_connect_rig(
             bs_node, rows, soft_blend_pairs=pairs, soft_blend_curve=curve)
 
-        # Build shape → table row lookup
+        # Build shape ->table row lookup
         row_by_shape = {}
         for r in range(self._table.rowCount()):
             item = self._table.item(r, self._COL_SHAPE)
@@ -3410,7 +3486,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
             "{suffix}": "up",
         }
         parts = [example[tok] for tok in tokens if example.get(tok)]
-        self._lbl_preview.setText("Preview  →  e.g. " + "_".join(parts))
+        self._lbl_preview.setText("Preview  -> e.g. " + "_".join(parts))
 
     # ── Pairs table helpers ────────────────────────────────────────────────
     def _add_row(self, tbl, token_a, token_b, builtin=False):
@@ -3606,6 +3682,42 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 "QPushButton:disabled { background-color: #3a3a3a; color: #666666; border: none; }"
             )
 
+    def _set_weight_widgets(self, enabled, value, tip):
+        """Sync weight slider without triggering Maya writes."""
+        self._slider_target_weight.blockSignals(True)
+        self._slider_target_weight.setValue(int(round(value * 1000)))
+        self._slider_target_weight.setEnabled(enabled and not self._vis_is_hidden())
+        self._slider_target_weight.setToolTip(tip)
+        self._slider_target_weight.blockSignals(False)
+
+    def _on_target_weight_slider(self, int_val):
+        v = int_val / 1000.0
+        state = self._edit_poll_state
+        if state:
+            try:
+                cmds.setAttr(f"{state[0]}.weight[{state[1]}]", v)
+            except Exception:
+                pass
+
+    def _vis_is_hidden(self):
+        b = getattr(self, '_btn_target_vis', None)
+        return b is not None and b.isChecked()
+
+    def _on_target_vis_toggled(self, checked):
+        """Toggle blendShape target visibility. checked=True ->hidden (black dot)."""
+        state = getattr(self, '_edit_poll_state', None)
+        if state:
+            import maya.mel as mel
+            mel.eval(f'blendShapeToggleVisibility {state[0]} {state[1]} ""')
+        hidden = checked
+        pix = self._pix_tgt_off if hidden else self._pix_tgt_on
+        if not pix.isNull():
+            self._icon_target_lbl.setPixmap(pix)
+        self._lbl_active_target.setStyleSheet(
+            "color: #555555;" if hidden else "color: #aaaaaa;")
+        self._slider_target_weight.setEnabled(not hidden and state is not None)
+        self._btn_edit_target.setEnabled(not hidden and state is not None)
+
     def _toggle_edit_mode(self):
         state = getattr(self, '_edit_poll_state', None)
         if not state:
@@ -3795,11 +3907,15 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         ARROWS = {2: QtCore.Qt.DownArrow, 1: QtCore.Qt.DownArrow, 0: QtCore.Qt.RightArrow}
         LABELS = {2: f"  {title}", 1: f"  {title}", 0: f"  {title}"}
 
+        persistent_widgets = []  # shown in states 1+2, hidden in state 0
+
         def _apply_state(s):
             header.setArrowType(ARROWS[s])
             header.setText(LABELS[s])
             shelf_widget.setVisible(s == 1)
             body.setVisible(s == 2)
+            for w in persistent_widgets:
+                w.setVisible(s in (1, 2))
 
         def _on_click():
             cur = state[0]
@@ -3809,8 +3925,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 # Bounce cycle: 1→2→1→0→1→2→...
                 # 2 and 0 always return to compact (1).
                 # From compact, direction depends on where we came from:
-                #   came from open (2) → go to closed (0)
-                #   otherwise         → go to open (2)
+                #   came from open (2) ->go to closed (0)
+                #   otherwise         ->go to open (2)
                 if cur in (2, 0):
                     nxt = 1
                 else:
@@ -3909,12 +4025,20 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             def finalize_compact():
                 pass  # no-op for single-row mode
 
+        def add_persistent_widget(widget):
+            """Insert a widget just below the header, visible in states 1 and 2, hidden in 0."""
+            # position 1 = after header, before shelf_widget
+            outer_lay.insertWidget(1, widget)
+            persistent_widgets.append(widget)
+            widget.setVisible(state[0] in (1, 2))
+
         outer.add_compact_action    = add_compact_action
         outer.add_compact_text_btn  = add_compact_text_btn
         outer.add_compact_spacer    = add_compact_spacer
         outer.add_compact_row_break = add_compact_row_break
         outer.finalize_compact      = finalize_compact
         outer.compact_shelf         = shelf_widget
+        outer.add_persistent_widget = add_persistent_widget
 
         return outer, body, body_lay
 
@@ -3937,6 +4061,24 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         act_reset = menu_edit.addAction("Reset Default Options")
         act_reset.setToolTip("Restore all split options to their default values")
         act_reset.triggered.connect(self._reset_default_options)
+        menu_edit.addSeparator()
+        act_naming = menu_edit.addAction("Naming Convention…")
+        act_naming.setToolTip(
+            "Configure token order, prefix, and custom naming pairs\n"
+            "used by the tool when generating target names.")
+        act_naming.triggered.connect(self._open_naming_convention)
+        menu_edit.addSeparator()
+        act_clean_bs = menu_edit.addAction("Clean Blendshape Node")
+        act_clean_bs.setToolTip(
+            "Removes phantom (empty/unaliased) target slots from the blendShape node(s)\n"
+            "of the selected targets in the Shape Editor.")
+        act_clean_bs.triggered.connect(self._run_clean_bs)
+        act_clean_mesh = menu_edit.addAction("Clean Deformed Mesh")
+        act_clean_mesh.setToolTip(
+            "Removes residual sculpt color sets (SculptFreezeColorTemp, SculptMaskColorTemp)\n"
+            "and any leftover unnamed sets, then bakes non-deformer history\n"
+            "on the selected mesh(es).")
+        act_clean_mesh.triggered.connect(self._run_clean_deformed_mesh)
         menu_edit.addSeparator()
         act_doc = menu_edit.addAction("Documentation")
         act_doc.setToolTip("Open the online documentation in your web browser")
@@ -4039,13 +4181,18 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         shelf_lay.addWidget(_shelf_btn(
             f"{_icons_dir}/blendShapeEditor.png", "Shape Editor", mel_cmd="ShapeEditor"))
         shelf_lay.addStretch(1)
-        self.btn_clean_bs = _shelf_btn(
-            f"{_icons_dir}/clean_bsnode.png",
-            "Clean Blendshape Node\n"
-            "Removes phantom (empty/unaliased) target slots from the blendShape node(s)\n"
-            "of the selected targets in the Shape Editor.",
-            callback=self._run_clean_bs)
-        shelf_lay.addWidget(self.btn_clean_bs)
+        self.btn_delta_mush = _shelf_btn(
+            f"{_icons_dir}/deltaMush_cleaner.png",
+            "Delta Mush Cleaner\n"
+            "Creates a cleaning Delta Mush to remove residual deltas and relax your shapes\n"
+            "in the best possible way.\n"
+            "Especially useful on complex meshes with heavy bevels, where keeping consistent\n"
+            "vertex distances is difficult.\n"
+            "Primarily used alongside the Bake Deformers tool.\n"
+            "It is recommended to delete this node once your targets are cleaned,\n"
+            "before publishing your rig.",
+            callback=self._run_delta_mush_cleaner)
+        shelf_lay.addWidget(self.btn_delta_mush)
         shelf_lay.addStretch(1)
         self.btn_reset_weights = _shelf_btn(
             f"{_icons_dir}/reset_bsnode.png",
@@ -4115,7 +4262,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Connect Targets A to B\n"
             "Select two meshes (source first, target second).\n"
             "Finds the blendShape on each and connects every weight attribute\n"
-            "that shares the same target name:  bs_A.name  →  bs_B.name",
+            "that shares the same target name:  bs_A.name  -> bs_B.name",
             callback=self._run_connect_targets_A_to_B)
         row2_lay.addWidget(self.btn_connect_ab)
 
@@ -4220,6 +4367,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         btn_rig_browse.setToolTip("Browse for a rig mapping JSON file")
         self.line_rig_json = QtWidgets.QLineEdit()
         self.line_rig_json.setReadOnly(True)
+        self.line_rig_json.setFixedHeight(23)
         self.line_rig_json.setPlaceholderText("C:/path/to/rig_mapping.json")
         self.btn_rig_connect = QtWidgets.QToolButton()
         btn_rig_connect = self.btn_rig_connect
@@ -4251,20 +4399,36 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         active_row = QtWidgets.QHBoxLayout()
         active_row.setSpacing(4)
         active_row.setContentsMargins(0, 0, 0, 0)
-        _icon_lbl = QtWidgets.QLabel()
-        _tgt_pix = QtGui.QPixmap(f"{_icons_dir}/target_object_space.png")
-        if not _tgt_pix.isNull():
-            _icon_lbl.setPixmap(_tgt_pix.scaled(20, 20, QtCore.Qt.KeepAspectRatio,
-                                                 QtCore.Qt.SmoothTransformation))
-        _icon_lbl.setFixedWidth(22)
-        _icon_lbl.setAlignment(QtCore.Qt.AlignCenter)
+        self._icon_target_lbl = QtWidgets.QLabel()
+        self._pix_tgt_on  = QtGui.QPixmap(f"{_icons_dir}/target_object_space.png").scaled(
+            20, 20, QtCore.Qt.IgnoreAspectRatio, QtCore.Qt.SmoothTransformation)
+        # Generate OFF version from ON — guarantees identical pixel dimensions
+        _pm_off = QtGui.QPixmap(self._pix_tgt_on.size())
+        _pm_off.fill(QtCore.Qt.transparent)
+        _p = QtGui.QPainter(_pm_off)
+        _p.setOpacity(0.3)
+        _p.drawPixmap(0, 0, self._pix_tgt_on)
+        _p.end()
+        self._pix_tgt_off = _pm_off
+        if not self._pix_tgt_on.isNull():
+            self._icon_target_lbl.setPixmap(self._pix_tgt_on)
+        self._icon_target_lbl.setFixedSize(22, 22)
+        self._icon_target_lbl.setAlignment(QtCore.Qt.AlignCenter)
+        _icon_lbl = self._icon_target_lbl
         self._lbl_active_target = QtWidgets.QLabel("—")
         self._lbl_active_target.setStyleSheet("color: #aaaaaa;")
         self._lbl_active_target.setSizePolicy(
-            QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+            QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
         self._lbl_active_target.setToolTip(
             "Currently selected target in the Shape Editor.\n"
             "Updates automatically when the selection changes.")
+        self._slider_target_weight = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._slider_target_weight.setMinimum(0)
+        self._slider_target_weight.setMaximum(1000)
+        self._slider_target_weight.setValue(0)
+        self._slider_target_weight.setEnabled(False)
+        self._slider_target_weight.setToolTip("Target weight")
+        self._slider_target_weight.valueChanged.connect(self._on_target_weight_slider)
         self._btn_edit_target = QtWidgets.QPushButton("Edit")
         self._btn_edit_target.setToolTip(
             "Toggle sculpt edit mode on the active target.\n"
@@ -4281,23 +4445,35 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "QPushButton:disabled { background-color: #3a3a3a; color: #666666; border: none; }"
         )
         self._btn_edit_target.clicked.connect(self._toggle_edit_mode)
+        self._btn_target_vis = QtWidgets.QPushButton()
+        self._btn_target_vis.setCheckable(True)
+        self._btn_target_vis.setChecked(False)
+        self._btn_target_vis.setFixedSize(10, 10)
+        self._btn_target_vis.setEnabled(False)
+        self._btn_target_vis.setToolTip(
+            "Toggle target visibility in the Shape Editor.\n"
+            "White = visible  ·  Black = hidden")
+        self._btn_target_vis.setStyleSheet(
+            "QPushButton { background-color: #cccccc; border-radius: 5px; border: none; }"
+            "QPushButton:hover:!checked { background-color: #ffffff; }"
+            "QPushButton:checked { background-color: #1a1a1a; border-radius: 5px; border: none; }"
+            "QPushButton:hover:checked { background-color: #333333; }"
+            "QPushButton:disabled { background-color: #505050; border-radius: 5px; border: none; }"
+        )
+        self._btn_target_vis.toggled.connect(self._on_target_vis_toggled)
+        active_row.addWidget(self._btn_target_vis)
         active_row.addWidget(_icon_lbl)
         active_row.addWidget(self._lbl_active_target)
+        active_row.addSpacing(5)
+        active_row.addWidget(self._slider_target_weight)
         active_row.addWidget(self._btn_edit_target)
-        active_section = QtWidgets.QGroupBox("Active Target")
-        active_section.setStyleSheet("QGroupBox { font-size: 11px; }")
-        active_section_lay = QtWidgets.QVBoxLayout(active_section)
-        active_section_lay.setContentsMargins(8, 4, 8, 4)
-        active_section_lay.setSpacing(8)
         active_inner = QtWidgets.QFrame()
-        active_inner.setStyleSheet(
-            "QFrame { background-color: #2b2b2b; border-radius: 2px; }")
+        active_inner.setStyleSheet("QFrame { background-color: #383838; border-radius: 2px; }")
         active_inner_lay = QtWidgets.QHBoxLayout(active_inner)
-        active_inner_lay.setContentsMargins(4, 4, 4, 4)
+        active_inner_lay.setContentsMargins(4, 3, 4, 3)
         active_inner_lay.setSpacing(0)
         active_inner_lay.addLayout(active_row)
-        active_section_lay.addWidget(active_inner)
-        # ── end Active Target row ──────────────────────────────────────────────
+        # ── end Active Target ──────────────────────────────────────────────────
 
         btn_rig_connect.setEnabled(False)
         self.line_rig_json.textChanged.connect(
@@ -4305,10 +4481,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         btn_rig_browse.clicked.connect(self._browse_rig_json)
         btn_rig_connect.clicked.connect(self._run_connect_from_file)
 
+        shelf_wrapper_lay.addWidget(active_inner)
+        shelf_wrapper_lay.addWidget(shelf_frame)
         shelf_wrapper_lay.addWidget(self._ts_toggle)
         shelf_wrapper_lay.addWidget(ts_widget)
-        shelf_wrapper_lay.addWidget(shelf_frame)
-        shelf_wrapper_lay.addWidget(active_section)
 
         def _toggle_ts():
             visible = not ts_widget.isVisible()
@@ -4339,13 +4515,6 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         grp_nom, _body_nom, lay_nom = self._collapsible_section("Nomenclature", two_state=True, initial_state=0)
         lay_nom.setSpacing(6)
 
-        btn_naming_conv = QtWidgets.QPushButton("Naming Convention…")
-        btn_naming_conv.setToolTip(
-            "Configure token order, prefix, and custom naming pairs\n"
-            "used by the tool when generating target names.")
-        btn_naming_conv.clicked.connect(self._open_naming_convention)
-        lay_nom.addWidget(btn_naming_conv)
-
         # ── Rename Targets group ───────────────────────────────────────────
         grp_rename = QtWidgets.QGroupBox("Rename Targets")
         grp_rename.setStyleSheet("QGroupBox { font-size: 11px; }")
@@ -4361,15 +4530,15 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         ren_grid.setColumnStretch(3, 1)
 
         # Row 0 : Pfx / Sfx
-        lbl_pfx = QtWidgets.QLabel("Set Prfx")
-        lbl_pfx.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        lbl_pfx = QtWidgets.QLabel("Add")
+        lbl_pfx.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         self.edit_rename_pfx = QtWidgets.QLineEdit()
-        self.edit_rename_pfx.setPlaceholderText("prefix")
+        self.edit_rename_pfx.setPlaceholderText("Prefix_")
         self.edit_rename_pfx.setToolTip("Add a prefix to each selected target name")
-        lbl_sfx = QtWidgets.QLabel("Sufx")
-        lbl_sfx.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        lbl_sfx = QtWidgets.QLabel("_target_")
+        lbl_sfx.setAlignment(QtCore.Qt.AlignCenter)
         self.edit_rename_sfx = QtWidgets.QLineEdit()
-        self.edit_rename_sfx.setPlaceholderText("suffix")
+        self.edit_rename_sfx.setPlaceholderText("_Suffix")
         self.edit_rename_sfx.setToolTip("Add a suffix to each selected target name")
         btn_apply_ps = QtWidgets.QPushButton("Apply")
         btn_apply_ps.setFixedWidth(_REN_BTN_W)
@@ -4383,12 +4552,19 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # Row 1 : Search / Replace
         lbl_search = QtWidgets.QLabel("S&R")
-        lbl_search.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        lbl_search.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         self.edit_search = QtWidgets.QLineEdit()
         self.edit_search.setPlaceholderText("search")
         self.edit_search.setToolTip("String to find in target names")
-        lbl_arrow = QtWidgets.QLabel("→")
-        lbl_arrow.setAlignment(QtCore.Qt.AlignCenter)
+        btn_swap_sr = QtWidgets.QPushButton("⇄")
+        btn_swap_sr.setFixedSize(30, 30)
+        btn_swap_sr.setStyleSheet("font-size: 16px;")
+        btn_swap_sr.setToolTip("Swap search and replace texts")
+        def _swap_sr():
+            a, b = self.edit_search.text(), self.edit_replace.text()
+            self.edit_search.setText(b)
+            self.edit_replace.setText(a)
+        btn_swap_sr.clicked.connect(_swap_sr)
         self.edit_replace = QtWidgets.QLineEdit()
         self.edit_replace.setPlaceholderText("replace")
         self.edit_replace.setToolTip("Replacement string (leave empty to delete)")
@@ -4398,19 +4574,34 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         btn_apply_sr.clicked.connect(self._run_search_replace)
         ren_grid.addWidget(lbl_search,       1, 0)
         ren_grid.addWidget(self.edit_search,  1, 1)
-        ren_grid.addWidget(lbl_arrow,         1, 2)
+        ren_grid.addWidget(btn_swap_sr,       1, 2)
         ren_grid.addWidget(self.edit_replace, 1, 3)
         ren_grid.addWidget(btn_apply_sr,      1, 4)
 
         lay_rename.addLayout(ren_grid)
 
         # ── Swap Target Names ─────────────────────────────────────────────
-        _w_swap, self.btn_swap_names = self._icon_btn(
-            f"{_icons_dir}/swap_names.png", "Swap Target Names",
+        # ── Swap Target Names ─────────────────────────────────────────────
+        row_swap = QtWidgets.QHBoxLayout()
+        row_swap.addStretch(1)
+        self.btn_swap_names = QtWidgets.QToolButton()
+        self.btn_swap_names.setFixedSize(36, 36)
+        self.btn_swap_names.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        self.btn_swap_names.setToolTip(
+            "Swap Target Names\n"
             "Swaps the names of exactly 2 selected targets in the Shape Editor.\n"
             "Select 2 targets, then click — their names are exchanged instantly.")
+        self.btn_swap_names.setStyleSheet("""
+            QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
+            QToolButton:hover { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """)
+        self.btn_swap_names.setIcon(QtGui.QIcon(f"{_icons_dir}/swap_names.png"))
+        self.btn_swap_names.setIconSize(QtCore.QSize(34, 34))
         self.btn_swap_names.clicked.connect(self._run_swap_names)
-        lay_rename.addWidget(_w_swap)
+        row_swap.addWidget(self.btn_swap_names)
+        row_swap.addStretch(1)
+        lay_rename.addLayout(row_swap)
 
         lay_nom.addWidget(grp_rename)
 
@@ -4420,6 +4611,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # ── Split (includes Locator controls) ─────────────────────────────
         grp_split, _body_split, lay_split = self._collapsible_section("Split", two_state=True, initial_state=2)
         lay_split.setSpacing(6)
+        self._suffix_template = "abc"  # "abc" or "positional"
 
         # ── Locators ──────────────────────────────────────────────────────
         #
@@ -4429,9 +4621,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         #   [↑][↓]
         #   [🔗][⛓]
         #
-        _BW = 28  # button size (square)
+        _BW = 32  # button size (square)
         _SP = 2   # grid spacing
-        _grid_h = 4 * _BW + 3 * _SP  # 118 px — drives table height too
+        _grid_h = 4 * _BW + 3 * _SP  # drives table height too (4 rows)
         self._loc_grid_h = _grid_h   # minimum table height (= button block height)
 
         _ICON_BTN_STYLE = """
@@ -4449,6 +4641,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             b = QtWidgets.QPushButton(label)
             b.setFixedSize(_BW, _BW)
             b.setFocusPolicy(QtCore.Qt.NoFocus)
+            b.setStyleSheet(
+                "QPushButton { font-size: 16px; font-weight: bold;"
+                " background-color: rgba(255,255,255,18); border: none; border-radius: 3px; }"
+                "QPushButton:hover { background-color: rgba(255,255,255,30); }"
+                "QPushButton:pressed { background-color: rgba(0,0,0,40); }"
+            )
             b.setToolTip(tooltip)
             b.clicked.connect(callback)
             return b
@@ -4460,9 +4658,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             b.setToolTip(tooltip)
             px = QtGui.QPixmap(icon_path)
             if not px.isNull():
-                b.setIcon(QtGui.QIcon(px.scaled(20, 20,
+                b.setIcon(QtGui.QIcon(px.scaled(24, 24,
                     QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
-                b.setIconSize(QtCore.QSize(20, 20))
+                b.setIconSize(QtCore.QSize(24, 24))
             b.clicked.connect(callback)
             return b
 
@@ -4470,9 +4668,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Select locators from the character's right side to left\n"
             "(i.e. from your left to right when facing the character).\n"
             "The selection order maps directly to zone naming:\n"
-            "  1 locator  →  symmetric L_ / R_ pair\n"
-            "  3 locators →  R_ / C_ / L_\n"
-            "  4+ locators → alphabetical  (a, b, c…)",
+            "  1 locator  -> symmetric L_ / R_ pair\n"
+            "  3 locators -> R_ / C_ / L_\n"
+            "  4+ locators ->alphabetical  (a, b, c…)",
             self._get_locators_from_selection)
         btn_rm     = _side_btn("−", "Remove selected row",    self._remove_row)
         btn_up     = _side_btn("↑", "Move selected row up",   self._move_row_up)
@@ -4490,27 +4688,40 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         btn_unlink.setStyleSheet(_ICON_BTN_STYLE)
 
         btn_create_loc = QtWidgets.QToolButton()
-        btn_create_loc.setFixedSize(_BW * 2 + _SP, _BW)
+        btn_create_loc.setFixedSize(_BW, _BW)
         btn_create_loc.setAutoRaise(True)
         btn_create_loc.setStyleSheet(_ICON_BTN_STYLE)
         btn_create_loc.setToolTip("Create a locator at the origin and add it to the table")
         _px_loc = QtGui.QPixmap(f"{_icons_dir}/locator.png")
         if not _px_loc.isNull():
             btn_create_loc.setIcon(QtGui.QIcon(_px_loc.scaled(
-                24, 24, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
-            btn_create_loc.setIconSize(QtCore.QSize(24, 24))
+                _BW, _BW, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
+            btn_create_loc.setIconSize(QtCore.QSize(_BW, _BW))
         btn_create_loc.clicked.connect(self._create_locator)
+
+        btn_clear_table = QtWidgets.QToolButton()
+        btn_clear_table.setFixedSize(_BW, _BW)
+        btn_clear_table.setAutoRaise(True)
+        btn_clear_table.setStyleSheet(_ICON_BTN_STYLE)
+        btn_clear_table.setToolTip("Remove all locators from the table")
+        _px_clear = QtGui.QPixmap(f"{_icons_dir}/clear_table.png")
+        if not _px_clear.isNull():
+            btn_clear_table.setIcon(QtGui.QIcon(_px_clear.scaled(
+                _BW, _BW, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
+            btn_clear_table.setIconSize(QtCore.QSize(_BW, _BW))
+        btn_clear_table.clicked.connect(self._clear_table)
 
         side_grid = QtWidgets.QGridLayout()
         side_grid.setSpacing(_SP)
-        side_grid.setContentsMargins(0, 0, 0, 0)
-        side_grid.addWidget(btn_create_loc, 0, 0, 1, 2)  # row 0, colspan 2
-        side_grid.addWidget(btn_get,        1, 0)
-        side_grid.addWidget(btn_up,         1, 1)
-        side_grid.addWidget(btn_rm,         2, 0)
-        side_grid.addWidget(btn_dn,         2, 1)
-        side_grid.addWidget(btn_link,       3, 0)
-        side_grid.addWidget(btn_unlink,     3, 1)
+        side_grid.setContentsMargins(_SP, _SP, _SP, _SP)
+        side_grid.addWidget(btn_create_loc,  0, 0)        # row 0 col 0
+        side_grid.addWidget(btn_clear_table, 0, 1)        # row 0 col 1
+        side_grid.addWidget(btn_get,         1, 0)
+        side_grid.addWidget(btn_up,          1, 1)
+        side_grid.addWidget(btn_rm,          2, 0)
+        side_grid.addWidget(btn_dn,          2, 1)
+        side_grid.addWidget(btn_link,        3, 0)
+        side_grid.addWidget(btn_unlink,      3, 1)
 
         self.table = QtWidgets.QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Locator", "Side", "Suffix"])
@@ -4524,6 +4735,65 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.table.setHorizontalScrollBarPolicy(QtCore.Qt.ScrollBarAlwaysOff)
         self.table.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
         self.table.setFixedHeight(_grid_h)
+        self.table.setEditTriggers(QtWidgets.QAbstractItemView.DoubleClicked)
+        self.table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self._on_table_context_menu)
+        self.table.itemChanged.connect(self._on_locator_name_edited)
+        _hdr = self.table.horizontalHeader()
+        _hdr.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        _hdr.customContextMenuRequested.connect(self._on_table_header_context_menu)
+
+        # ── Preset row ────────────────────────────────────────────────────
+        # [load_btn] [combo, stretch — aligns with table] | [save_btn — aligns with side_grid]
+        self._current_locs_grp = None
+        _side_w = 2 * _BW + 3 * _SP          # total width of side_grid incl. margins
+
+        preset_row = QtWidgets.QHBoxLayout()
+        preset_row.setSpacing(4)
+        preset_row.setContentsMargins(0, 0, 0, 0)
+
+        btn_load_preset = QtWidgets.QToolButton()
+        btn_load_preset.setFixedHeight(22)
+        btn_load_preset.setAutoRaise(True)
+        btn_load_preset.setStyleSheet(_ICON_BTN_STYLE)
+        btn_load_preset.setToolTip(
+            "Select a locator group in the scene and click to load its presets into the list.")
+        _px_lp = QtGui.QPixmap(f"{_icons_dir}/load_preset.png")
+        if not _px_lp.isNull():
+            btn_load_preset.setIcon(QtGui.QIcon(_px_lp.scaled(
+                16, 16, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
+            btn_load_preset.setIconSize(QtCore.QSize(16, 16))
+        else:
+            btn_load_preset.setText("Load")
+        btn_load_preset.clicked.connect(self._on_load_split_preset_grp)
+
+        self._combo_split_preset = QtWidgets.QComboBox()
+        self._combo_split_preset.addItem("— presets —")
+        self._combo_split_preset.setToolTip(
+            "Select a preset to load its locators and split settings.")
+        self._combo_split_preset.activated.connect(self._on_split_preset_activated)
+
+        btn_save_preset = QtWidgets.QToolButton()
+        btn_save_preset.setFixedSize(_side_w, 22)
+        btn_save_preset.setAutoRaise(True)
+        btn_save_preset.setStyleSheet(_ICON_BTN_STYLE)
+        btn_save_preset.setToolTip(
+            "Save the current locators and settings into the selected preset group\n"
+            "(or create a new preset group if none is selected).\n"
+            "Locators are parented to the preset sub-group inside the locs_grp.")
+        _px_sp = QtGui.QPixmap(f"{_icons_dir}/save_preset.png")
+        if not _px_sp.isNull():
+            btn_save_preset.setIcon(QtGui.QIcon(_px_sp.scaled(
+                16, 16, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
+            btn_save_preset.setIconSize(QtCore.QSize(16, 16))
+        else:
+            btn_save_preset.setText("Save")
+        btn_save_preset.clicked.connect(self._on_save_split_preset)
+
+        preset_row.addWidget(btn_load_preset)
+        preset_row.addWidget(self._combo_split_preset, 1)
+        preset_row.addWidget(btn_save_preset)
+        lay_split.addLayout(preset_row)
 
         loc_row = QtWidgets.QHBoxLayout()
         loc_row.setSpacing(4)
@@ -4531,12 +4801,6 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         loc_row.addWidget(self.table, 1)
         loc_row.addLayout(side_grid)
         lay_split.addLayout(loc_row)
-
-        # ── Separateur visuel ─────────────────────────────────────────────
-        _sep_loc = QtWidgets.QFrame()
-        _sep_loc.setFrameShape(QtWidgets.QFrame.HLine)
-        _sep_loc.setFrameShadow(QtWidgets.QFrame.Sunken)
-        lay_split.addWidget(_sep_loc)
 
         # ── Axis group ────────────────────────────────────────────────
         grp_axis = QtWidgets.QGroupBox("Axis Options")
@@ -4643,6 +4907,16 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_rad.addWidget(self.chk_radius)
         self.radius_label = QtWidgets.QLabel("")
 
+        self.spin_radius = QtWidgets.QLineEdit("1.00")
+        self.spin_radius.setFixedWidth(38)
+        self.spin_radius.setAlignment(QtCore.Qt.AlignCenter)
+        _rv = QtGui.QDoubleValidator(0.0, 15.0, 2, self.spin_radius)
+        _rv.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self.spin_radius.setValidator(_rv)
+        self.spin_radius.setEnabled(False)
+        self.spin_radius.editingFinished.connect(self._on_radius_spin)
+        row_rad.addWidget(self.spin_radius)
+
         self.slider_radius = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self.slider_radius.setMinimum(0)
         self.slider_radius.setMaximum(150)
@@ -4654,37 +4928,61 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.slider_radius.valueChanged.connect(self._on_radius_slider)
         row_rad.addWidget(self.slider_radius)
 
-        self.spin_radius = QtWidgets.QDoubleSpinBox()
-        self.spin_radius.setRange(0.0, 15.0)
-        self.spin_radius.setValue(1.0)
-        self.spin_radius.setSingleStep(0.1)
-        self.spin_radius.setDecimals(1)
-        self.spin_radius.setFixedWidth(55)
-        self.spin_radius.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
-        self.spin_radius.setLocale(QtCore.QLocale(QtCore.QLocale.English))
-        self.spin_radius.setEnabled(False)
-        self.spin_radius.valueChanged.connect(self._on_radius_spin)
-        row_rad.addWidget(self.spin_radius)
-
         lay_falloff.addLayout(row_rad)
         lay_split.addWidget(grp_falloff)
 
-        # Split Target button
-        _w_split, self.btn_split = self._icon_btn(
-            f"{_icons_dir}/split.png", "Split Target",
-            "Creates split targets in the blendShape node")
-        self.btn_split.clicked.connect(self._run_split)
+        # Split Target + Edge Loop Split — same row
+        _split_btn_ss = """
+            QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
+            QToolButton:hover { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """
+        row_split_actions = QtWidgets.QHBoxLayout()
 
-        # ── Edge Loop Split button ────────────────────────────────────────
-        _w_els, self.btn_edge_loop_split = self._icon_btn(
-            f"{_icons_dir}/edge_split.png", "Edge Loop Split",
+        _half_split = QtWidgets.QHBoxLayout()
+        _half_split.setSpacing(4)
+        _lbl_split = QtWidgets.QLabel("Split Target")
+        _half_split.addWidget(_lbl_split)
+        self.btn_split = QtWidgets.QToolButton()
+        self.btn_split.setFixedSize(36, 36)
+        self.btn_split.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        self.btn_split.setToolTip("Creates split targets in the blendShape node")
+        self.btn_split.setStyleSheet(_split_btn_ss)
+        self.btn_split.setIcon(QtGui.QIcon(f"{_icons_dir}/split.png"))
+        self.btn_split.setIconSize(QtCore.QSize(34, 34))
+        self.btn_split.clicked.connect(self._run_split)
+        _half_split.addWidget(self.btn_split)
+        _half_split.addStretch(1)
+
+        _half_els = QtWidgets.QHBoxLayout()
+        _half_els.setSpacing(4)
+        _lbl_els = QtWidgets.QLabel("Edge Loop Split")
+        _half_els.addWidget(_lbl_els)
+        self.btn_edge_loop_split = QtWidgets.QToolButton()
+        self.btn_edge_loop_split.setFixedSize(36, 36)
+        self.btn_edge_loop_split.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        self.btn_edge_loop_split.setToolTip(
             "Splits selected targets along the stored edge loop.\n"
             "Set Vertices and Edgeloop via the Setup section below.\n"
             "The Radius setting controls the falloff blend at the seam (default: 1).\n"
             "Enable Radius and increase the value for a softer transition.")
+        self.btn_edge_loop_split.setStyleSheet(_split_btn_ss)
+        self.btn_edge_loop_split.setIcon(QtGui.QIcon(f"{_icons_dir}/edge_split.png"))
+        self.btn_edge_loop_split.setIconSize(QtCore.QSize(34, 34))
         self.btn_edge_loop_split.clicked.connect(self._run_edge_loop_split)
-        lay_split.addWidget(_w_split)
-        lay_split.addWidget(_w_els)
+        _half_els.addWidget(self.btn_edge_loop_split)
+        _half_els.addStretch(1)
+
+        row_split_actions.addLayout(_half_split, 1)
+        row_split_actions.addLayout(_half_els, 1)
+
+        grp_split_actions = QtWidgets.QGroupBox()
+        grp_split_actions.setStyleSheet("QGroupBox { font-size: 11px; }")
+        lay_split_actions_grp = QtWidgets.QVBoxLayout(grp_split_actions)
+        lay_split_actions_grp.setContentsMargins(8, 6, 8, 6)
+        lay_split_actions_grp.setSpacing(0)
+        lay_split_actions_grp.addLayout(row_split_actions)
+        lay_split.addWidget(grp_split_actions)
 
         # ── Edge Loop Split setup — collapsible ───────────────────────────
         self._els_setup_toggle = QtWidgets.QToolButton()
@@ -4757,9 +5055,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Select locators from the character's right side to left\n"
             "(i.e. from your left to right when facing the character).\n"
             "The selection order maps directly to zone naming:\n"
-            "  1 locator  →  symmetric L_ / R_ pair\n"
-            "  3 locators →  R_ / C_ / L_\n"
-            "  4+ locators → alphabetical  (a, b, c…)",
+            "  1 locator  -> symmetric L_ / R_ pair\n"
+            "  3 locators -> R_ / C_ / L_\n"
+            "  4+ locators ->alphabetical  (a, b, c…)",
             self._get_locators_from_selection)
         grp_split.add_compact_action(
             f"{_icons_dir}/split.png", "Split Target", self._run_split)
@@ -5009,21 +5307,30 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_opacity.setSpacing(4)
         lbl_opacity = QtWidgets.QLabel("Opacity")
         lbl_opacity.setFixedWidth(52)
-        self.slider_smooth_opacity = QtWidgets.QSlider(QtCore.Qt.Horizontal)
-        self.slider_smooth_opacity.setRange(1, 100)
-        self.slider_smooth_opacity.setValue(100)
-        self.slider_smooth_opacity.setToolTip(
+        _opacity_tip = (
             "Strength for Smooth, Relax, Hammer and Average.\n"
             "Smooth / Relax: maps to 1–10 iterative passes.\n"
             "Hammer: blends between original and fully-converged result (100% = full hammer).\n"
             "Average: blend weight between original and averaged value.")
-        self.lbl_smooth_opacity_val = QtWidgets.QLabel("1.00")
-        self.lbl_smooth_opacity_val.setFixedWidth(30)
+        self.spin_smooth_opacity = QtWidgets.QLineEdit("1.00")
+        self.spin_smooth_opacity.setFixedWidth(55)
+        self.spin_smooth_opacity.setAlignment(QtCore.Qt.AlignCenter)
+        _ov = QtGui.QDoubleValidator(0.01, 1.0, 2, self.spin_smooth_opacity)
+        _ov.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self.spin_smooth_opacity.setValidator(_ov)
+        self.spin_smooth_opacity.setToolTip(_opacity_tip)
+        self.slider_smooth_opacity = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self.slider_smooth_opacity.setRange(1, 100)
+        self.slider_smooth_opacity.setValue(100)
+        self.slider_smooth_opacity.setToolTip(_opacity_tip)
         self.slider_smooth_opacity.valueChanged.connect(
-            lambda v: self.lbl_smooth_opacity_val.setText(f"{v/100:.2f}"))
+            lambda v: (self.spin_smooth_opacity.blockSignals(True),
+                       self.spin_smooth_opacity.setText(f"{v / 100.0:.2f}"),
+                       self.spin_smooth_opacity.blockSignals(False)))
+        self.spin_smooth_opacity.editingFinished.connect(self._on_opacity_spin_edited)
         row_opacity.addWidget(lbl_opacity)
+        row_opacity.addWidget(self.spin_smooth_opacity)
         row_opacity.addWidget(self.slider_smooth_opacity)
-        row_opacity.addWidget(self.lbl_smooth_opacity_val)
         lay_smooth.addLayout(row_opacity)
 
         row_sr = QtWidgets.QHBoxLayout()
@@ -5267,13 +5574,25 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_wrap_setup.addWidget(_w_wrap)
         lay_wrap_setup.addWidget(_w_extract)
 
-        self.chk_connect_targets = QtWidgets.QCheckBox("Connect extracted")
+        self.chk_connect_targets = QtWidgets.QCheckBox("Connect")
         self.chk_connect_targets.setChecked(True)
         self.chk_connect_targets.setToolTip(
             "After extraction, connects each target weight from the source blendShape\n"
             "to the matching target on the mesh's blendShape.\n"
-            "source_bs.target_name  →  mesh_bs.target_name")
-        lay_wrap_setup.addWidget(self.chk_connect_targets)
+            "source_bs.target_name  -> mesh_bs.target_name")
+        self.chk_wrap_overwrite = QtWidgets.QCheckBox("Overwrite")
+        self.chk_wrap_overwrite.setChecked(True)
+        self.chk_wrap_overwrite.setToolTip(
+            "Overwrite ON  — if a target with the same name already exists on the\n"
+            "receiver, replace it with the newly extracted version.\n"
+            "Overwrite OFF — keep the existing target and append a numeric suffix\n"
+            "to the new one (e.g. 'jaw' ->'jaw1'), like Maya's native behaviour.")
+        row_wrap_row1 = QtWidgets.QHBoxLayout()
+        row_wrap_row1.setSpacing(8)
+        row_wrap_row1.addWidget(self.chk_connect_targets)
+        row_wrap_row1.addWidget(self.chk_wrap_overwrite)
+        row_wrap_row1.addStretch()
+        lay_wrap_setup.addLayout(row_wrap_row1)
 
         row_bake_rig = QtWidgets.QHBoxLayout()
         row_bake_rig.setSpacing(4)
@@ -5398,7 +5717,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # Paint Wire Weights — shelf button
         _wire_shelf_row = QtWidgets.QHBoxLayout()
         btn_paint_wire = QtWidgets.QToolButton()
-        btn_paint_wire.setFixedSize(40, 40)
+        btn_paint_wire.setFixedSize(36, 36)
         btn_paint_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         btn_paint_wire.setToolTip("Paint Wire Weights\nOpens the Paint Attributes tool on wire_setup_wire.weights.")
         btn_paint_wire.setStyleSheet("""
@@ -5408,9 +5727,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         """)
         _pw_px = QtGui.QPixmap(f"{_icons_dir}/paint_wire.png")
         if not _pw_px.isNull():
-            btn_paint_wire.setIcon(QtGui.QIcon(
-                _pw_px.scaled(32, 32, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
-            btn_paint_wire.setIconSize(QtCore.QSize(32, 32))
+            btn_paint_wire.setIcon(QtGui.QIcon(_pw_px))
+            btn_paint_wire.setIconSize(QtCore.QSize(34, 34))
         btn_paint_wire.clicked.connect(self._run_paint_wire)
         btn_paint_wire.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         btn_paint_wire.customContextMenuRequested.connect(
@@ -5422,7 +5740,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # Mirror Wire Weights — shelf button
         btn_mirror_wire = QtWidgets.QToolButton()
-        btn_mirror_wire.setFixedSize(40, 40)
+        btn_mirror_wire.setFixedSize(36, 36)
         btn_mirror_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         btn_mirror_wire.setToolTip(
             "Mirror Wire Weights (YZ)\n"
@@ -5437,9 +5755,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         """)
         _mw_px = QtGui.QPixmap(f"{_icons_dir}/mirror_wire.png")
         if not _mw_px.isNull():
-            btn_mirror_wire.setIcon(QtGui.QIcon(
-                _mw_px.scaled(32, 32, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
-            btn_mirror_wire.setIconSize(QtCore.QSize(32, 32))
+            btn_mirror_wire.setIcon(QtGui.QIcon(_mw_px))
+            btn_mirror_wire.setIconSize(QtCore.QSize(34, 34))
         btn_mirror_wire.clicked.connect(self._run_mirror_wire_weights)
         btn_mirror_wire.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         btn_mirror_wire.customContextMenuRequested.connect(
@@ -5447,7 +5764,76 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         )
         _wire_shelf_row.addWidget(btn_mirror_wire)
 
+        # Copy / Paste Wire Weight
+        _wire_btn_ss2 = """
+            QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
+            QToolButton:hover { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+            QToolButton:disabled { opacity: 0.4; }
+        """
+        self.btn_copy_wire_delta = QtWidgets.QToolButton()
+        self.btn_copy_wire_delta.setFixedSize(36, 36)
+        self.btn_copy_wire_delta.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        self.btn_copy_wire_delta.setToolTip(
+            "Copy Wire Weight\n"
+            "Select exactly 1 vertex on a mesh with a wire deformer.\n"
+            "Copies the wire weight value of that vertex into the clipboard.")
+        self.btn_copy_wire_delta.setStyleSheet(_wire_btn_ss2)
+        _cpw_px = QtGui.QPixmap(f"{_icons_dir}/copy_delta.png")
+        if not _cpw_px.isNull():
+            self.btn_copy_wire_delta.setIcon(QtGui.QIcon(_cpw_px))
+            self.btn_copy_wire_delta.setIconSize(QtCore.QSize(34, 34))
+        self.btn_copy_wire_delta.clicked.connect(self._run_copy_wire_delta)
+        _wire_shelf_row.addWidget(self.btn_copy_wire_delta)
+
+        self.btn_paste_wire_delta = QtWidgets.QToolButton()
+        self.btn_paste_wire_delta.setFixedSize(36, 36)
+        self.btn_paste_wire_delta.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        self.btn_paste_wire_delta.setToolTip(
+            "Paste Wire Weight\n"
+            "Select one or more vertices on a mesh with a wire deformer.\n"
+            "Applies the copied weight value to all selected vertices. Undoable.")
+        self.btn_paste_wire_delta.setStyleSheet(_wire_btn_ss2)
+        self.btn_paste_wire_delta.setEnabled(False)
+        _ppw_px = QtGui.QPixmap(f"{_icons_dir}/paste_delta.png")
+        if not _ppw_px.isNull():
+            self.btn_paste_wire_delta.setIcon(QtGui.QIcon(_ppw_px))
+            self.btn_paste_wire_delta.setIconSize(QtCore.QSize(34, 34))
+        self.btn_paste_wire_delta.clicked.connect(self._run_paste_wire_delta)
+        _wire_shelf_row.addWidget(self.btn_paste_wire_delta)
+
         _wire_shelf_row.addStretch(1)
+
+        self._wire_delete_after_bake = False
+        btn_bake_wire_shelf = QtWidgets.QToolButton()
+        btn_bake_wire_shelf.setFixedSize(36, 36)
+        btn_bake_wire_shelf.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        btn_bake_wire_shelf.setToolTip(
+            "Bake Wire to Mesh\n"
+            "For each shape curve, poses wire_setup_msh and adds the result\n"
+            "as a blendShape target on the base mesh's bs_node.\n"
+            "Existing targets with the same name are overwritten.")
+        btn_bake_wire_shelf.setStyleSheet("""
+            QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
+            QToolButton:hover { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """)
+        _bw_px = QtGui.QPixmap(f"{_icons_dir}/bake_wire.png")
+        if not _bw_px.isNull():
+            btn_bake_wire_shelf.setIcon(QtGui.QIcon(_bw_px))
+            btn_bake_wire_shelf.setIconSize(QtCore.QSize(34, 34))
+        btn_bake_wire_shelf.clicked.connect(self._run_bake_wire)
+        btn_bake_wire_shelf.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        def _bake_wire_ctx_menu(pos):
+            menu = QtWidgets.QMenu(btn_bake_wire_shelf)
+            act_del = menu.addAction("Delete Wire at Bake")
+            act_del.setCheckable(True)
+            act_del.setChecked(self._wire_delete_after_bake)
+            act_del.toggled.connect(lambda v: setattr(self, "_wire_delete_after_bake", v))
+            menu.exec_(btn_bake_wire_shelf.mapToGlobal(pos))
+        btn_bake_wire_shelf.customContextMenuRequested.connect(_bake_wire_ctx_menu)
+        _wire_shelf_row.addWidget(btn_bake_wire_shelf)
+
         lay_wire.addLayout(_wire_shelf_row)
 
         # Base Mesh
@@ -5505,11 +5891,16 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.edit_wire_shape_add = QtWidgets.QLineEdit()
         self.edit_wire_shape_add.setPlaceholderText("new shape name")
         self.edit_wire_shape_add.returnPressed.connect(self._wire_add_shape)
-        btn_wire_add_shape = QtWidgets.QPushButton("Add")
-        btn_wire_add_shape.setFixedWidth(40)
+        _wire_btn_ss = "font-size: 12px; font-weight: bold;"
+        btn_wire_add_shape = QtWidgets.QPushButton("+")
+        btn_wire_add_shape.setFixedSize(22, 22)
+        btn_wire_add_shape.setFocusPolicy(QtCore.Qt.NoFocus)
+        btn_wire_add_shape.setStyleSheet(_wire_btn_ss)
         btn_wire_add_shape.clicked.connect(self._wire_add_shape)
-        btn_wire_rm_shape = QtWidgets.QPushButton("Remove")
-        btn_wire_rm_shape.setFixedWidth(56)
+        btn_wire_rm_shape = QtWidgets.QPushButton("−")
+        btn_wire_rm_shape.setFixedSize(22, 22)
+        btn_wire_rm_shape.setFocusPolicy(QtCore.Qt.NoFocus)
+        btn_wire_rm_shape.setStyleSheet(_wire_btn_ss)
         btn_wire_rm_shape.setToolTip("Remove selected shape from the list")
         btn_wire_rm_shape.clicked.connect(self._wire_remove_shape)
         row_shapes_ctrl.addWidget(self.edit_wire_shape_add, 1)
@@ -5520,31 +5911,30 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # Dropoff / Rotation / Spans / Flat Curve
         row_wparams = QtWidgets.QHBoxLayout()
         row_wparams.addWidget(QtWidgets.QLabel("Dropoff"))
-        self.spin_wire_dropoff = QtWidgets.QDoubleSpinBox()
-        self.spin_wire_dropoff.setRange(0.1, 9999.0)
-        self.spin_wire_dropoff.setValue(100.0)
-        self.spin_wire_dropoff.setDecimals(1)
+        self.spin_wire_dropoff = QtWidgets.QLineEdit("100.0")
         self.spin_wire_dropoff.setFixedWidth(60)
-        self.spin_wire_dropoff.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self.spin_wire_dropoff.setAlignment(QtCore.Qt.AlignCenter)
+        _dv = QtGui.QDoubleValidator(0.1, 9999.0, 1, self.spin_wire_dropoff)
+        _dv.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self.spin_wire_dropoff.setValidator(_dv)
         self.spin_wire_dropoff.setToolTip("Wire deformer dropoff distance")
         row_wparams.addWidget(self.spin_wire_dropoff)
         row_wparams.addSpacing(8)
         row_wparams.addWidget(QtWidgets.QLabel("Rotation"))
-        self.spin_wire_rotation = QtWidgets.QDoubleSpinBox()
-        self.spin_wire_rotation.setRange(0.0, 1.0)
-        self.spin_wire_rotation.setValue(0.0)
-        self.spin_wire_rotation.setSingleStep(0.05)
-        self.spin_wire_rotation.setDecimals(2)
+        self.spin_wire_rotation = QtWidgets.QLineEdit("0.00")
         self.spin_wire_rotation.setFixedWidth(50)
-        self.spin_wire_rotation.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self.spin_wire_rotation.setAlignment(QtCore.Qt.AlignCenter)
+        _rv = QtGui.QDoubleValidator(0.0, 1.0, 2, self.spin_wire_rotation)
+        _rv.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self.spin_wire_rotation.setValidator(_rv)
         self.spin_wire_rotation.setToolTip("Wire deformer rotation value")
         row_wparams.addWidget(self.spin_wire_rotation)
         row_wparams.addSpacing(8)
         row_wparams.addWidget(QtWidgets.QLabel("Spans"))
-        self.spin_wire_spans = QtWidgets.QSpinBox()
-        self.spin_wire_spans.setRange(1, 64)
-        self.spin_wire_spans.setValue(4)
+        self.spin_wire_spans = QtWidgets.QLineEdit("4")
         self.spin_wire_spans.setFixedWidth(44)
+        self.spin_wire_spans.setAlignment(QtCore.Qt.AlignCenter)
+        self.spin_wire_spans.setValidator(QtGui.QIntValidator(1, 64, self.spin_wire_spans))
         self.spin_wire_spans.setToolTip(
             "Number of spans for the rebuilt wire curve (rebuildCurve s=N).\n"
             "More spans = more CVs = finer control.")
@@ -5561,27 +5951,27 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_wire.addWidget(self.chk_wire_flat)
 
         # Create Wire Setup
-        btn_create_wire = QtWidgets.QPushButton("Create Wire Setup")
+        _wire_action_ss = """
+            QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
+            QToolButton:hover { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """
+        row_create_wire = QtWidgets.QHBoxLayout()
+        row_create_wire.setSpacing(4)
+        row_create_wire.addWidget(QtWidgets.QLabel("Create Wire Setup"))
+        btn_create_wire = QtWidgets.QToolButton()
+        btn_create_wire.setFixedSize(36, 36)
+        btn_create_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         btn_create_wire.setToolTip(
             "Creates wire_setup_msh, wire_crv, wire_bs and the wire deformer\n"
             "from the base mesh and edge selection above.")
+        btn_create_wire.setStyleSheet(_wire_action_ss)
+        btn_create_wire.setIcon(QtGui.QIcon(f"{_icons_dir}/create_wire_setup.png"))
+        btn_create_wire.setIconSize(QtCore.QSize(34, 34))
         btn_create_wire.clicked.connect(self._run_create_wire_setup)
-        lay_wire.addWidget(btn_create_wire)
-
-        # Bake Wire to Mesh
-        btn_bake_wire = QtWidgets.QPushButton("Bake Wire to Mesh")
-        btn_bake_wire.setToolTip(
-            "For each shape curve, poses wire_setup_msh and adds the result\n"
-            "as a blendShape target on the base mesh's bs_node.\n"
-            "Existing targets with the same name are overwritten.")
-        btn_bake_wire.clicked.connect(self._run_bake_wire)
-        lay_wire.addWidget(btn_bake_wire)
-
-        self.chk_wire_delete_after_bake = QtWidgets.QCheckBox("Delete Wire Setup after Bake")
-        self.chk_wire_delete_after_bake.setChecked(False)
-        self.chk_wire_delete_after_bake.setToolTip(
-            "If checked, deletes wire_setup_grp from the scene after a successful bake.")
-        lay_wire.addWidget(self.chk_wire_delete_after_bake)
+        row_create_wire.addWidget(btn_create_wire)
+        row_create_wire.addStretch(1)
+        lay_wire.addLayout(row_create_wire)
 
         lay_tools.addWidget(grp_wire)
 
@@ -5618,6 +6008,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_joints.addWidget(btn_build_rig)
 
 
+        grp_joints.setEnabled(False)
         lay_tools.addWidget(grp_joints)
 
         root.addWidget(grp_tools)
@@ -5652,6 +6043,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         bottom_lay.addWidget(lbl_version)
         outer_layout.addWidget(bottom_wrapper)
 
+        self.setStyleSheet("QLineEdit { border: none; border-radius: 3px; padding: 0px 4px; }")
+
         self._update_single_loc_state()
 
     # ── Helpers ───────────────────────────────────────────────────────────────
@@ -5659,13 +6052,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
     def _auto_suffixes(self, n):
         if n == 0:
             return []
-        if n <= 3:
-            mapping = {
-                1: ["in"],
-                2: ["in", "out"],
-                3: ["in", "mid", "out"],
-            }
-            return mapping[n]
+        if getattr(self, "_suffix_template", "abc") == "positional" and n <= 3:
+            return {1: ["in"], 2: ["in", "out"], 3: ["in", "mid", "out"]}[n]
         return [chr(ord('a') + i) for i in range(n)]
 
     def _resize_table_to_content(self):
@@ -5675,6 +6063,402 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         final_h    = max(content_h, self._loc_grid_h)
         self.table.setMinimumHeight(final_h)
         self.table.setMaximumHeight(final_h)
+
+    # ── Split presets (stored on Maya nodes via bse_split_data attribute) ────────
+
+    _BSE_ATTR      = "bse_split_data"
+    _LOCS_GRP_NAME = "Splits_locs_grp"
+
+    def _ensure_locs_grp(self):
+        """
+        Return the main locs_grp node (long name), creating it if necessary.
+        Priority:
+          1. self._current_locs_grp if it still exists in the scene
+          2. First node named _LOCS_GRP_NAME found in the scene
+          3. A new empty group created at world root
+        Also refreshes the preset combo when a new group is found or created.
+        """
+        # 1. Already set and still alive
+        if self._current_locs_grp and cmds.objExists(self._current_locs_grp):
+            return self._current_locs_grp
+
+        # 2. Search the scene by name
+        matches = cmds.ls(self._LOCS_GRP_NAME, long=True, type="transform")
+        if matches:
+            self._current_locs_grp = matches[0]
+            self._refresh_preset_combo()
+            return self._current_locs_grp
+
+        # 3. Create at world root
+        result = cmds.group(empty=True, name=self._LOCS_GRP_NAME, world=True)
+        self._current_locs_grp = cmds.ls(result, long=True)[0]
+        self._refresh_preset_combo()
+        return self._current_locs_grp
+
+    def _refresh_preset_combo(self):
+        """Re-populate the preset combo from _current_locs_grp's children."""
+        if not self._current_locs_grp or not cmds.objExists(self._current_locs_grp):
+            return
+        children = cmds.listRelatives(self._current_locs_grp, children=True,
+                                      type="transform", fullPath=True) or []
+        presets  = [c for c in children
+                    if cmds.attributeQuery(self._BSE_ATTR, node=c, exists=True)]
+        _sfx = "_splitsLocs_grp"
+        self._combo_split_preset.blockSignals(True)
+        current_text = self._combo_split_preset.currentText()
+        self._combo_split_preset.clear()
+        self._combo_split_preset.addItem("— presets —")
+        for p in presets:
+            short   = p.split("|")[-1]
+            display = short[:-len(_sfx)] if short.endswith(_sfx) else short
+            self._combo_split_preset.addItem(display)
+        # Restore previous selection if still present
+        idx = self._combo_split_preset.findText(current_text)
+        self._combo_split_preset.setCurrentIndex(idx if idx >= 0 else 0)
+        self._combo_split_preset.blockSignals(False)
+
+    def _preset_write(self, node, data):
+        """Write preset dict as JSON string on node.bse_split_data."""
+        js = json.dumps(data)
+        if not cmds.attributeQuery(self._BSE_ATTR, node=node, exists=True):
+            cmds.addAttr(node, longName=self._BSE_ATTR, dataType="string")
+        cmds.setAttr(f"{node}.{self._BSE_ATTR}", js, type="string")
+
+    def _preset_read(self, node):
+        """Return parsed dict from node.bse_split_data, or None."""
+        if not cmds.attributeQuery(self._BSE_ATTR, node=node, exists=True):
+            return None
+        try:
+            return json.loads(cmds.getAttr(f"{node}.{self._BSE_ATTR}") or "")
+        except Exception:
+            return None
+
+    def _on_load_split_preset_grp(self):
+        """Find Splits_locs_grp in the scene and populate the preset combo."""
+        matches = cmds.ls(self._LOCS_GRP_NAME, long=True, type="transform")
+        if not matches:
+            self._set_status(
+                f"✗ '{self._LOCS_GRP_NAME}' not found in scene. "
+                "It will be created automatically on first Save.", error=True)
+            return
+        self._current_locs_grp = matches[0]
+        self._refresh_preset_combo()
+        children = cmds.listRelatives(self._current_locs_grp, children=True,
+                                      type="transform", fullPath=True) or []
+        n = sum(1 for c in children
+                if cmds.attributeQuery(self._BSE_ATTR, node=c, exists=True))
+        self._set_status(f"✓ {n} preset(s) loaded from '{self._LOCS_GRP_NAME}'")
+
+    def _on_split_preset_activated(self, index):
+        """Load the selected preset group's locators and settings into the table."""
+        if index == 0 or not self._current_locs_grp:
+            return
+        preset_name  = self._combo_split_preset.currentText()
+        node_name    = f"{preset_name}_splitsLocs_grp"
+        children     = cmds.listRelatives(self._current_locs_grp, children=True,
+                                          type="transform", fullPath=True) or []
+        preset_node  = next(
+            (c for c in children if c.split("|")[-1] == node_name), None)
+        if not preset_node:
+            self._set_status(f"✗ Preset group '{node_name}' not found.", error=True)
+            return
+        # Hide all sibling preset groups, show only the selected one
+        for child in children:
+            if cmds.attributeQuery(self._BSE_ATTR, node=child, exists=True):
+                cmds.setAttr(f"{child}.visibility", child == preset_node)
+        data = self._preset_read(preset_node)
+        if not data:
+            self._set_status(f"✗ No data on preset '{preset_name}'.", error=True)
+            return
+        # Locators are children of preset_node
+        loc_children = cmds.listRelatives(
+            preset_node, children=True, type="transform", fullPath=True) or []
+        loc_children = [l for l in loc_children
+                        if cmds.listRelatives(l, shapes=True, type="locator")]
+        stored = {ld["name"]: ld for ld in data.get("locs", [])}
+        data["locators"] = [
+            {"name": l.split("|")[-1], "long": l,
+             "side":   stored.get(l.split("|")[-1], {}).get("side", ""),
+             "suffix": stored.get(l.split("|")[-1], {}).get("suffix", "")}
+            for l in loc_children
+        ]
+        self._apply_split_preset(data)
+        self._set_status(f"✓ Preset loaded: '{preset_name}'")
+
+    def _propose_locator_renames(self, preset_name):
+        """
+        Show a dialog proposing to rename locators based on preset_name + table side/suffix.
+        Proposed format: {side}_{preset_name}_loc_{suffix}  (parts omitted if empty).
+        The user can edit proposed names and check/uncheck individual rows.
+        Accepted renames are applied in Maya and the table is updated.
+        """
+        # Build proposals from table
+        rows = []
+        for row in range(self.table.rowCount()):
+            item     = self.table.item(row, 0)
+            side_itm = self.table.item(row, 1)
+            sfx_itm  = self.table.item(row, 2)
+            if not item:
+                continue
+            long_name  = item.data(QtCore.Qt.UserRole) or ""
+            short_name = item.text()
+            if not long_name or not cmds.objExists(long_name):
+                continue
+            side   = (side_itm.text().strip()  if side_itm  else "").upper()
+            suffix = sfx_itm.text().strip()    if sfx_itm   else ""
+            # Build proposed name
+            parts = []
+            if side:
+                parts.append(side)
+            parts.append(preset_name)
+            parts.append("loc")
+            if suffix:
+                parts.append(suffix)
+            proposed = "_".join(parts)
+            rows.append((row, long_name, short_name, proposed))
+
+        if not rows:
+            return
+
+        # Dialog
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("Rename Locators")
+        dlg.setMinimumWidth(420)
+        lay = QtWidgets.QVBoxLayout(dlg)
+        lay.setSpacing(6)
+
+        lbl = QtWidgets.QLabel(
+            f"Proposed renames for preset <b>{preset_name}</b>.<br>"
+            "Uncheck rows to skip. Proposed names are editable.")
+        lbl.setWordWrap(True)
+        lay.addWidget(lbl)
+
+        tbl = QtWidgets.QTableWidget(len(rows), 2)
+        tbl.setHorizontalHeaderLabels(["Current", "Proposed"])
+        tbl.horizontalHeader().setStretchLastSection(True)
+        tbl.verticalHeader().setVisible(False)
+        tbl.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
+        for i, (_, _, short_name, proposed) in enumerate(rows):
+            cur_item = QtWidgets.QTableWidgetItem(short_name)
+            cur_item.setFlags(QtCore.Qt.ItemIsEnabled | QtCore.Qt.ItemIsUserCheckable)
+            cur_item.setCheckState(QtCore.Qt.Checked)
+            tbl.setItem(i, 0, cur_item)
+            tbl.setItem(i, 1, QtWidgets.QTableWidgetItem(proposed))
+        tbl.resizeColumnToContents(0)
+        lay.addWidget(tbl)
+
+        btn_row = QtWidgets.QHBoxLayout()
+        btn_ok   = QtWidgets.QPushButton("Rename Checked")
+        btn_skip = QtWidgets.QPushButton("Skip")
+        btn_row.addWidget(btn_ok)
+        btn_row.addWidget(btn_skip)
+        lay.addLayout(btn_row)
+
+        btn_ok.clicked.connect(dlg.accept)
+        btn_skip.clicked.connect(dlg.reject)
+
+        if dlg.exec_() != QtWidgets.QDialog.Accepted:
+            return
+
+        # Apply checked renames
+        for i, (row, long_name, short_name, _) in enumerate(rows):
+            cur_item = tbl.item(i, 0)
+            if cur_item.checkState() != QtCore.Qt.Checked:
+                continue
+            new_name = tbl.item(i, 1).text().strip()
+            if not new_name or new_name == short_name:
+                continue
+            try:
+                result = cmds.rename(long_name, new_name)
+                new_long = cmds.ls(result, long=True)[0]
+                # Update table
+                self.table.blockSignals(True)
+                name_item = self.table.item(row, 0)
+                if name_item:
+                    name_item.setText(result)
+                    name_item.setData(QtCore.Qt.UserRole, new_long)
+                self.table.blockSignals(False)
+            except Exception as e:
+                cmds.warning(f"Could not rename '{short_name}' -> '{new_name}': {e}")
+
+    def _on_save_split_preset(self):
+        """Save current table state into the selected (or new) preset sub-group."""
+        locs_grp = self._ensure_locs_grp()
+        idx = self._combo_split_preset.currentIndex()
+        if idx == 0:
+            name, ok = QtWidgets.QInputDialog.getText(
+                self, "New Split Preset", "Preset name:")
+            if not ok or not name.strip():
+                return
+            name = name.strip()
+            # Check if a preset with this name already exists
+            if self._combo_split_preset.findText(name) >= 0:
+                answer = QtWidgets.QMessageBox.question(
+                    self, "Overwrite Preset",
+                    f"A preset named '{name}' already exists.\nOverwrite it?",
+                    QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No,
+                    QtWidgets.QMessageBox.No)
+                if answer != QtWidgets.QMessageBox.Yes:
+                    return
+        else:
+            name = self._combo_split_preset.currentText()
+
+        # Propose locator renames based on preset name + table side/suffix
+        self._propose_locator_renames(name)
+
+        # Find or create the preset sub-group  ({name}_splitsLocs_grp)
+        node_name   = f"{name}_splitsLocs_grp"
+        children    = cmds.listRelatives(locs_grp, children=True,
+                                         type="transform", fullPath=True) or []
+        preset_node = next(
+            (c for c in children if c.split("|")[-1] == node_name), None)
+        if preset_node is None:
+            result      = cmds.group(empty=True, name=node_name, parent=locs_grp)
+            preset_node = cmds.ls(result, long=True)[0]
+
+        # Collect locators from table + parent them to preset_node
+        locs_data = []
+        for row in range(self.table.rowCount()):
+            item     = self.table.item(row, 0)
+            side_itm = self.table.item(row, 1)
+            sfx_itm  = self.table.item(row, 2)
+            if not item:
+                continue
+            long_name  = item.data(QtCore.Qt.UserRole) or ""
+            short_name = item.text()
+            if not long_name or not cmds.objExists(long_name):
+                continue
+            # Re-parent to preset_node if needed
+            current_parent = (cmds.listRelatives(long_name, parent=True,
+                                                 fullPath=True) or [None])[0]
+            if current_parent != preset_node:
+                cmds.parent(long_name, preset_node)
+            # Update stored long name after potential re-parent
+            new_long = cmds.ls(short_name, long=True)
+            if new_long:
+                self.table.blockSignals(True)
+                item.setData(QtCore.Qt.UserRole, new_long[0])
+                self.table.blockSignals(False)
+            locs_data.append({
+                "name":   short_name,
+                "side":   side_itm.text() if side_itm else "",
+                "suffix": sfx_itm.text()  if sfx_itm  else "",
+            })
+
+        # Build and write settings dict
+        state = self._capture_split_state()
+        payload = {k: v for k, v in state.items() if k != "locators"}
+        payload["locs"] = locs_data
+        self._preset_write(preset_node, payload)
+
+        # Refresh combo
+        self._combo_split_preset.blockSignals(True)
+        if self._combo_split_preset.findText(name) < 0:
+            self._combo_split_preset.addItem(name)
+        self._combo_split_preset.setCurrentIndex(
+            self._combo_split_preset.findText(name))
+        self._combo_split_preset.blockSignals(False)
+        self._set_status(f"✓ Split preset saved: '{name}'")
+
+    def _on_delete_split_preset(self):
+        """Remove the selected preset from the combo (clears bse_split_data, keeps group)."""
+        idx = self._combo_split_preset.currentIndex()
+        if idx == 0 or not self._current_locs_grp:
+            return
+        name      = self._combo_split_preset.currentText()
+        node_name = f"{name}_splitsLocs_grp"
+        # Find the node and remove the attribute (marks it as non-preset)
+        children    = cmds.listRelatives(self._current_locs_grp, children=True,
+                                         type="transform", fullPath=True) or []
+        preset_node = next(
+            (c for c in children if c.split("|")[-1] == node_name), None)
+        if preset_node and cmds.attributeQuery(self._BSE_ATTR, node=preset_node,
+                                               exists=True):
+            cmds.deleteAttr(f"{preset_node}.{self._BSE_ATTR}")
+        self._combo_split_preset.blockSignals(True)
+        self._combo_split_preset.removeItem(idx)
+        self._combo_split_preset.setCurrentIndex(0)
+        self._combo_split_preset.blockSignals(False)
+        self._set_status(f"Preset '{name}' removed (group kept in scene)")
+
+    def _capture_split_state(self):
+        """Snapshot the current locator table and split settings into a dict."""
+        locs = []
+        for row in range(self.table.rowCount()):
+            item     = self.table.item(row, 0)
+            side_itm = self.table.item(row, 1)
+            sfx_itm  = self.table.item(row, 2)
+            if item:
+                locs.append({
+                    "name":   item.text(),
+                    "long":   item.data(QtCore.Qt.UserRole) or "",
+                    "side":   side_itm.text() if side_itm else "",
+                    "suffix": sfx_itm.text()  if sfx_itm  else "",
+                })
+        return {
+            "locators":  locs,
+            "axis_x":    self.chk_x.isChecked(),
+            "axis_y":    self.chk_y.isChecked(),
+            "axis_z":    self.chk_z.isChecked(),
+            "invert":    self.chk_invert_axis.isChecked(),
+            "local":     self.chk_local_axes.isChecked(),
+            "symmetric": self.chk_symmetric.isChecked(),
+            "radial":    self.chk_radial.isChecked(),
+            "radius_on": self.chk_radius.isChecked(),
+            "radius":    self.spin_radius.text(),
+            "curve":     self.combo_curve.currentText(),
+        }
+
+    def _apply_split_preset(self, data):
+        """Restore locator table and split settings from a preset dict."""
+        self.table.blockSignals(True)
+        self.table.setRowCount(0)
+        for ld in data.get("locators", []):
+            long_name  = ld.get("long", "")
+            short_name = ld.get("name", "")
+            if long_name and cmds.objExists(long_name):
+                resolved_long = long_name
+            elif short_name and cmds.objExists(short_name):
+                resolved_long = cmds.ls(short_name, long=True)[0]
+            else:
+                cmds.warning(f"Split preset: locator '{short_name}' not found — skipped")
+                continue
+            resolved_short = resolved_long.split("|")[-1]
+            r = self.table.rowCount()
+            self.table.insertRow(r)
+            item_loc = QtWidgets.QTableWidgetItem(resolved_short)
+            item_loc.setFlags(item_loc.flags() | QtCore.Qt.ItemIsEditable)
+            item_loc.setData(QtCore.Qt.UserRole, resolved_long)
+            self.table.setItem(r, 0, item_loc)
+            self.table.setItem(r, 1, QtWidgets.QTableWidgetItem(ld.get("side", "")))
+            self.table.setItem(r, 2, QtWidgets.QTableWidgetItem(ld.get("suffix", "")))
+        self.table.blockSignals(False)
+
+        for chk, key in [
+            (self.chk_x,           "axis_x"),
+            (self.chk_y,           "axis_y"),
+            (self.chk_z,           "axis_z"),
+            (self.chk_invert_axis, "invert"),
+            (self.chk_local_axes,  "local"),
+            (self.chk_symmetric,   "symmetric"),
+            (self.chk_radial,      "radial"),
+            (self.chk_radius,      "radius_on"),
+        ]:
+            if key in data:
+                chk.blockSignals(True)
+                chk.setChecked(data[key])
+                chk.blockSignals(False)
+
+        if "radius" in data:
+            self.spin_radius.setText(data["radius"])
+        if "curve" in data:
+            idx = self.combo_curve.findText(data["curve"])
+            if idx >= 0:
+                self.combo_curve.setCurrentIndex(idx)
+
+        self._on_radius_enabled(self.chk_radius.isChecked())
+        self._update_single_loc_state()
+        self._resize_table_to_content()
 
     def _on_radius_enabled(self, state):
         """Enable/disable radius slider+spin when checkbox is toggled."""
@@ -5715,11 +6499,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         suffixes = []
 
         # suffixes store only the letter part — prefix (R_/L_/C_) is handled in _run_split
-        # n=1 : [""]          → R_name   L_name
-        # n=2 : ["", ""]      → R_name   L_name
-        # n=3 : ["", "", ""]  → R_name   C_name  L_name
-        # n=4 : ["_b","_a","_a","_b"] → R_name_b  R_name_a  L_name_a  L_name_b
-        # n=5 : ["_b","_a","","_a","_b"] → R_name_b  R_name_a  C_name  L_name_a  L_name_b
+        # n=1 : [""]          ->R_name   L_name
+        # n=2 : ["", ""]      ->R_name   L_name
+        # n=3 : ["", "", ""]  ->R_name   C_name  L_name
+        # n=4 : ["_b","_a","_a","_b"] ->R_name_b  R_name_a  L_name_a  L_name_b
+        # n=5 : ["_b","_a","","_a","_b"] ->R_name_b  R_name_a  C_name  L_name_a  L_name_b
 
         if n == 1:
             suffixes = [""]
@@ -5804,6 +6588,105 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         else:
             self._restore_suffix_editable()
 
+    def _on_table_header_context_menu(self, pos):
+        """Right-click on the locator table header — show suffix template menu on col 2."""
+        col = self.table.horizontalHeader().logicalIndexAt(pos)
+        if col != 2:
+            return
+        menu = QtWidgets.QMenu(self)
+        act_abc = menu.addAction("a, b, c")
+        act_abc.setCheckable(True)
+        act_abc.setChecked(self._suffix_template == "abc")
+        act_pos = menu.addAction("in / mid / out")
+        act_pos.setCheckable(True)
+        act_pos.setChecked(self._suffix_template == "positional")
+        act_abc.triggered.connect(lambda: self._set_suffix_template("abc"))
+        act_pos.triggered.connect(lambda: self._set_suffix_template("positional"))
+        menu.exec_(self.table.horizontalHeader().mapToGlobal(pos))
+
+    def _set_suffix_template(self, template):
+        """Apply a suffix template and refresh suffix cells."""
+        self._suffix_template = template
+        if self.chk_symmetric.isChecked():
+            return  # symmetric mode manages suffixes itself
+        n = self.table.rowCount()
+        suffixes = self._auto_suffixes(n)
+        for row in range(n):
+            sfx_item = self.table.item(row, 2)
+            if sfx_item is None:
+                sfx_item = QtWidgets.QTableWidgetItem("")
+                self.table.setItem(row, 2, sfx_item)
+            sfx_item.setText(suffixes[row] if row < len(suffixes) else "")
+
+    def _select_locs_in_maya(self):
+        """Select the Maya locators that correspond to the currently selected table rows."""
+        rows = sorted({idx.row() for idx in self.table.selectedIndexes()})
+        locs = []
+        for r in rows:
+            item = self.table.item(r, 0)
+            if item:
+                ln = item.data(QtCore.Qt.UserRole)
+                if ln and cmds.objExists(ln):
+                    locs.append(ln)
+        if locs:
+            cmds.select(locs, replace=True)
+
+    def _on_table_context_menu(self, pos):
+        """Right-click context menu on the locator table."""
+        # Right-click doesn't change Qt selection, so select the clicked row if
+        # it isn't already part of the current selection.
+        clicked_row = self.table.rowAt(pos.y())
+        if clicked_row >= 0:
+            selected_rows = {idx.row() for idx in self.table.selectedIndexes()}
+            if clicked_row not in selected_rows:
+                self.table.selectRow(clicked_row)
+
+        menu = QtWidgets.QMenu(self)
+        rows = sorted({idx.row() for idx in self.table.selectedIndexes()})
+        if rows:
+            act_sel = menu.addAction("Select in Maya")
+            act_sel.triggered.connect(self._select_locs_in_maya)
+
+        if not menu.isEmpty():
+            menu.exec_(self.table.viewport().mapToGlobal(pos))
+
+    def _on_locator_name_edited(self, item):
+        """Inline rename: called when col 0 cell text is committed by the user."""
+        if self.table.column(item) != 0:
+            return
+        long_name = item.data(QtCore.Qt.UserRole)
+        if not long_name:
+            return
+        new_name = item.text().strip()
+        old_short = long_name.split("|")[-1]
+        if not new_name:
+            self.table.blockSignals(True)
+            item.setText(old_short)
+            self.table.blockSignals(False)
+            return
+        if new_name == old_short:
+            return
+        if not cmds.objExists(long_name):
+            self.table.blockSignals(True)
+            item.setText(old_short)
+            self.table.blockSignals(False)
+            cmds.warning("Locator no longer exists in scene.")
+            return
+        try:
+            result    = cmds.rename(long_name, new_name)
+            new_long  = cmds.ls(result, long=True)[0]
+            new_short = new_long.split("|")[-1]
+            self.table.blockSignals(True)
+            item.setText(new_short)
+            item.setData(QtCore.Qt.UserRole, new_long)
+            self.table.blockSignals(False)
+            self._set_status(f"Renamed: {old_short} ->{new_short}")
+        except Exception as e:
+            self.table.blockSignals(True)
+            item.setText(old_short)
+            self.table.blockSignals(False)
+            cmds.warning(f"Rename failed: {e}")
+
     def _on_axis_exclusive(self, toggled_chk, state):
         """
         Radial OFF: radio mode — exactly one axis active at a time.
@@ -5832,13 +6715,29 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
     def _on_radius_slider(self, value):
         # Slider range 1-150 maps to value 0.1-15.0
         self.spin_radius.blockSignals(True)
-        self.spin_radius.setValue(value / 10.0)
+        self.spin_radius.setText(f"{value / 10.0:.2f}")
         self.spin_radius.blockSignals(False)
 
-    def _on_radius_spin(self, value):
+    def _on_radius_spin(self):
+        try:
+            value = float(self.spin_radius.text())
+        except ValueError:
+            return
+        self.spin_radius.blockSignals(True)
+        self.spin_radius.setText(f"{value:.2f}")
+        self.spin_radius.blockSignals(False)
         self.slider_radius.blockSignals(True)
         self.slider_radius.setValue(int(value * 10))
         self.slider_radius.blockSignals(False)
+
+    def _on_opacity_spin_edited(self):
+        try:
+            value = max(0.01, min(1.0, float(self.spin_smooth_opacity.text())))
+        except ValueError:
+            return
+        self.slider_smooth_opacity.blockSignals(True)
+        self.slider_smooth_opacity.setValue(int(round(value * 100)))
+        self.slider_smooth_opacity.blockSignals(False)
 
     def _get_axes(self):
         """Returns (use_x, use_z, use_y)."""
@@ -5885,7 +6784,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.slider_radius.blockSignals(False)
 
         self.spin_radius.blockSignals(True)
-        self.spin_radius.setValue(1.0)
+        self.spin_radius.setText("1.00")
         self.spin_radius.blockSignals(False)
 
         # ── Locators table ────────────────────────────────────────────────────
@@ -5910,7 +6809,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.slider_smooth_opacity.blockSignals(True)
         self.slider_smooth_opacity.setValue(50)
         self.slider_smooth_opacity.blockSignals(False)
-        self.lbl_smooth_opacity_val.setText("0.50")
+        self.spin_smooth_opacity.blockSignals(True)
+        self.spin_smooth_opacity.setText("0.50")
+        self.spin_smooth_opacity.blockSignals(False)
 
         self.spin_prune_tol.setText("0.001")
 
@@ -5943,7 +6844,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             share the same color scale (useful for comparing two bs_nodes).
           - Each mesh is colorized independently with that global scale.
 
-        Gradient: black(0) → red(0.5) → yellow(1)
+        Gradient: black(0) ->red(0.5) ->yellow(1)
         """
         targets = self._get_targets_or_warn()
         if not targets:
@@ -5956,15 +6857,15 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             across all transitions — no perceptual dead zones, no white artefacts.
 
             Hue stops match exact target colors:
-              t=0.000–0.001 → noir pur  (0,    0,    0  )
-              t=0.001       → bleu      hue=0.667
-              t=0.125       → cyan      hue=0.500
-              t=0.250       → vert      hue=0.333
-              t=0.500       → jaune     hue=0.167
-              t=0.625       → jaune-org hue=0.100
-              t=0.750       → orange    hue=0.050
-              t=0.999       → rouge     hue=0.000
-              t=0.999–1.000 → blanc pur (1,    1,    1  )
+              t=0.000–0.001 ->noir pur  (0,    0,    0  )
+              t=0.001       ->bleu      hue=0.667
+              t=0.125       ->cyan      hue=0.500
+              t=0.250       ->vert      hue=0.333
+              t=0.500       ->jaune     hue=0.167
+              t=0.625       ->jaune-org hue=0.100
+              t=0.750       ->orange    hue=0.050
+              t=0.999       ->rouge     hue=0.000
+              t=0.999–1.000 ->blanc pur (1,    1,    1  )
             """
             import colorsys
             if t < 0.001:
@@ -6121,6 +7022,29 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.btn_exit_delta_view.setEnabled(False)
         self._set_status("Delta View exited.")
 
+    def _run_delta_mush_cleaner(self):
+        """Create a Delta Mush deformer on the selected mesh with clean default values."""
+        sel = cmds.ls(sl=True, type="transform")
+        if not sel:
+            self._set_status("Select a mesh first.", error=True)
+            return
+        mesh = sel[0]
+        # Verify it has a shape
+        shapes = cmds.listRelatives(mesh, shapes=True, type="mesh") or []
+        if not shapes:
+            self._set_status(f"'{mesh}' has no mesh shape.", error=True)
+            return
+        try:
+            dm_nodes = cmds.deltaMush(mesh)
+            dm = dm_nodes[0]
+            cmds.setAttr(f"{dm}.smoothingIterations", 3)
+            cmds.setAttr(f"{dm}.inwardConstraint",    0.5)
+            cmds.setAttr(f"{dm}.outwardConstraint",   0.5)
+            cmds.setAttr(f"{dm}.distanceWeight",      1.0)
+            self._set_status(f"Delta Mush '{dm}' created on '{mesh}'.")
+        except Exception as e:
+            self._set_status(f"Delta Mush failed: {e}", error=True)
+
     def _create_locator(self):
         loc = cmds.spaceLocator(name="split_locator#")[0]
         # Snap to the current selection if an object is selected
@@ -6135,7 +7059,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         new_row    = self.table.rowCount()
         self.table.insertRow(new_row)
         item_loc = QtWidgets.QTableWidgetItem(short_name)
-        item_loc.setFlags(item_loc.flags() & ~QtCore.Qt.ItemIsEditable)
+        item_loc.setFlags(item_loc.flags() | QtCore.Qt.ItemIsEditable)
         item_loc.setData(QtCore.Qt.UserRole, long_name)
         self.table.setItem(new_row, 0, item_loc)
         self.table.setItem(new_row, 1, QtWidgets.QTableWidgetItem(""))
@@ -6147,6 +7071,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         self._update_single_loc_state()
         self._resize_table_to_content()
+        self._combo_split_preset.setCurrentIndex(0)
         self._set_status(f"✓ Locator created : {short_name}")
 
     def _get_locators_from_selection(self):
@@ -6160,21 +7085,36 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             cmds.warning("No locator selected.")
             return
 
-        self.table.setRowCount(0)
-        suffixes = self._auto_suffixes(len(locators))
+        # Collect long names already in the table to avoid duplicates
+        existing = set()
+        for row in range(self.table.rowCount()):
+            item = self.table.item(row, 0)
+            if item:
+                existing.add(item.data(QtCore.Qt.UserRole) or "")
 
-        for i, loc in enumerate(locators):
+        new_locs = [loc for loc in locators if loc not in existing]
+        if not new_locs:
+            return
+
+        for loc in new_locs:
             short_name = loc.split("|")[-1]
-            self.table.insertRow(i)
+            new_row = self.table.rowCount()
+            self.table.insertRow(new_row)
             item_loc = QtWidgets.QTableWidgetItem(short_name)
-            item_loc.setFlags(item_loc.flags() & ~QtCore.Qt.ItemIsEditable)
+            item_loc.setFlags(item_loc.flags() | QtCore.Qt.ItemIsEditable)
             item_loc.setData(QtCore.Qt.UserRole, loc)
-            self.table.setItem(i, 0, item_loc)
-            self.table.setItem(i, 1, QtWidgets.QTableWidgetItem(""))        # Side — empty by default
-            self.table.setItem(i, 2, QtWidgets.QTableWidgetItem(suffixes[i]))
+            self.table.setItem(new_row, 0, item_loc)
+            self.table.setItem(new_row, 1, QtWidgets.QTableWidgetItem(""))
+            self.table.setItem(new_row, 2, QtWidgets.QTableWidgetItem(""))
+
+        # Recalculate suffixes for the whole table now that row count changed
+        suffixes = self._auto_suffixes(self.table.rowCount())
+        for row in range(self.table.rowCount()):
+            self.table.setItem(row, 2, QtWidgets.QTableWidgetItem(suffixes[row]))
 
         self._update_single_loc_state()
         self._resize_table_to_content()
+        self._combo_split_preset.setCurrentIndex(0)
 
     def _move_row_up(self):
         rows = sorted({idx.row() for idx in self.table.selectedIndexes()})
@@ -6183,6 +7123,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         for row in rows:
             self._swap_rows(row, row - 1)
         self._reselect_rows([r - 1 for r in rows])
+        self._combo_split_preset.setCurrentIndex(0)
 
     def _move_row_down(self):
         rows = sorted({idx.row() for idx in self.table.selectedIndexes()}, reverse=True)
@@ -6191,6 +7132,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         for row in rows:
             self._swap_rows(row, row + 1)
         self._reselect_rows([r + 1 for r in rows])
+        self._combo_split_preset.setCurrentIndex(0)
 
     def _reselect_rows(self, rows):
         self.table.clearSelection()
@@ -6223,6 +7165,16 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         self._update_single_loc_state()
         self._resize_table_to_content()
+        self._combo_split_preset.setCurrentIndex(0)
+
+    def _clear_table(self):
+        """Remove all locators from the table."""
+        if self.table.rowCount() == 0:
+            return
+        self.table.setRowCount(0)
+        self._update_single_loc_state()
+        self._resize_table_to_content()
+        self._combo_split_preset.setCurrentIndex(0)
 
     @undo_chunk
     def _run_link_mirrors(self):
@@ -6305,13 +7257,48 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         try:
             results = get_selected_targets()  # [(bs_node, idx, name), ...]
             if not results:
+                # If a target is in edit mode, show it even without a Shape Editor selection
+                last = getattr(self, '_last_sculpt_hook', None)
+                if last and last[1] >= 0 and cmds.objExists(last[0]):
+                    bs_node_e, idx_e = last[0], last[1]
+                    try:
+                        name_e = cmds.aliasAttr(f"{bs_node_e}.weight[{idx_e}]", query=True) or "?"
+                        self.lbl_top_status.setText(f"{bs_node_e}  ·  {name_e}  (edit)")
+                        self.lbl_top_status.setStyleSheet(
+                            "color: #ff6666; font-size: 11px; padding-top: 4px; padding-bottom: 4px;")
+                        self._cached_phantom_count = 0
+                        self._lbl_active_target.setText(name_e)
+                        self._btn_edit_target.setEnabled(True)
+                        self._apply_edit_btn_style(True)
+                        self._edit_poll_state = (bs_node_e, idx_e, True)
+                        attr_w = f"{bs_node_e}.weight[{idx_e}]"
+                        w_val  = cmds.getAttr(attr_w)
+                        locked = cmds.getAttr(attr_w, lock=True)
+                        driven = bool(cmds.listConnections(
+                            attr_w, source=True, plugs=True, destination=False))
+                        tip = "Locked" if locked else (
+                            "Driven by a connection — cannot be set manually." if driven
+                            else "Target weight")
+                        self._set_weight_widgets(
+                            enabled=not locked and not driven, value=w_val, tip=tip)
+                        return
+                    except Exception:
+                        pass
                 self.lbl_top_status.setText("— no selection —")
                 self.lbl_top_status.setStyleSheet("color: #666666; font-size: 11px; padding-top: 4px; padding-bottom: 4px;")
                 self._cached_phantom_count = 0
                 self._lbl_active_target.setText("—")
+                self._lbl_active_target.setStyleSheet("color: #aaaaaa;")
                 self._btn_edit_target.setEnabled(False)
                 self._apply_edit_btn_style(False)
                 self._edit_poll_state = None
+                self._set_weight_widgets(enabled=False, value=0.0, tip="")
+                self._btn_target_vis.blockSignals(True)
+                self._btn_target_vis.setChecked(False)
+                self._btn_target_vis.blockSignals(False)
+                self._btn_target_vis.setEnabled(False)
+                if not self._pix_tgt_on.isNull():
+                    self._icon_target_lbl.setPixmap(self._pix_tgt_on)
                 return
 
             bs_node = results[0][0]
@@ -6347,9 +7334,34 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             # Update active target label; reset edit state only on target change
             bs_node_r, idx_r, name_r = results[0]
             self._lbl_active_target.setText(name_r)
-            self._btn_edit_target.setEnabled(True)
+            self._btn_target_vis.setEnabled(True)
+            self._btn_edit_target.setEnabled(not self._vis_is_hidden())
+
+            # Weight slider — refresh every time (value may have changed externally)
+            attr_w = f"{bs_node_r}.weight[{idx_r}]"
+            try:
+                w_val  = cmds.getAttr(attr_w)
+                locked = cmds.getAttr(attr_w, lock=True)
+                driven = bool(cmds.listConnections(attr_w, source=True, plugs=True, destination=False))
+                if locked:
+                    tip = "Locked"
+                elif driven:
+                    tip = "Driven by a connection — cannot be set manually."
+                else:
+                    tip = "Target weight"
+                self._set_weight_widgets(enabled=not locked and not driven, value=w_val, tip=tip)
+            except Exception:
+                self._set_weight_widgets(enabled=False, value=0.0, tip="")
+
             current = self._edit_poll_state
             if not current or current[0] != bs_node_r or current[1] != idx_r:
+                # New target selected — reset visibility toggle
+                self._btn_target_vis.blockSignals(True)
+                self._btn_target_vis.setChecked(False)
+                self._btn_target_vis.blockSignals(False)
+                self._lbl_active_target.setStyleSheet("color: #aaaaaa;")
+                if not self._pix_tgt_on.isNull():
+                    self._icon_target_lbl.setPixmap(self._pix_tgt_on)
                 # Consult the last hook event — the hook may have fired before
                 # _edit_poll_state was initialised (e.g. edit activated via native
                 # Shape Editor before the user clicked to trigger _refresh_top_status).
@@ -6374,10 +7386,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         """
         Assembles the final target name from self._nom_token_order and self._nom_prefix.
         Empty tokens are dropped — no double underscores produced.
-          {prefix} → self._nom_prefix
-          {side}   → e.g. "R", "L", "C"  (empty string = token skipped)
-          {target} → base_name
-          {suffix} → e.g. "a", "b", "up"  (empty string = token skipped)
+          {prefix} ->self._nom_prefix
+          {side}   ->e.g. "R", "L", "C"  (empty string = token skipped)
+          {target} ->base_name
+          {suffix} ->e.g. "a", "b", "up"  (empty string = token skipped)
         """
         token_map = {
             "{prefix}": self._nom_prefix,
@@ -6548,15 +7560,68 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         try:
             create_wire_setup(
                 mesh, edges, shape_names,
-                dropoff=self.spin_wire_dropoff.value(),
-                rotation=self.spin_wire_rotation.value(),
-                spans=self.spin_wire_spans.value(),
+                dropoff=float(self.spin_wire_dropoff.text() or "100.0"),
+                rotation=float(self.spin_wire_rotation.text() or "0.0"),
+                spans=int(self.spin_wire_spans.text() or "4"),
                 flat_curve=self.chk_wire_flat.isChecked()
             )
             self._set_status(f"✓ Wire setup created — {len(shape_names)} shape(s)")
         except Exception as e:
             import traceback; traceback.print_exc()
             self._set_status(f"✗ Wire Setup: {e}", error=True)
+
+    def _run_copy_wire_delta(self):
+        """Copy the wire weight of the single selected vertex into the clipboard."""
+        raw_sel = cmds.ls(sl=True, flatten=True) or []
+        vtx_sel = [s for s in raw_sel if ".vtx[" in s]
+        if len(vtx_sel) != 1:
+            self._set_status(
+                f"Copy Wire Weight: select exactly 1 vertex "
+                f"({'none' if not vtx_sel else len(vtx_sel)} selected).",
+                error=True)
+            return
+        vtx_str = vtx_sel[0]
+        mesh = vtx_str.split(".vtx[")[0]
+        vi   = int(vtx_str.split(".vtx[")[1].rstrip("]"))
+        wire_nodes = cmds.ls(cmds.listHistory(mesh) or [], type="wire")
+        if not wire_nodes:
+            self._set_status(
+                f"Copy Wire Weight: no wire deformer found on '{mesh}'.",
+                error=True)
+            return
+        wire_node = wire_nodes[0]
+        weight = cmds.percent(wire_node, vtx_str, q=True, v=True)[0]
+        self._wire_weight_clipboard = {"wire": wire_node, "vi": vi, "weight": weight}
+        self.btn_paste_wire_delta.setEnabled(True)
+        self._set_status(
+            f"Wire weight copied from vtx[{vi}] on '{wire_node}': {weight:.4f}")
+
+    @undo_chunk
+    def _run_paste_wire_delta(self):
+        """Paste the copied wire weight onto all selected vertices."""
+        if not getattr(self, "_wire_weight_clipboard", None):
+            self._set_status(
+                "Paste Wire Weight: clipboard is empty — Copy Wire Weight first.",
+                error=True)
+            return
+        raw_sel = cmds.ls(sl=True, flatten=True) or []
+        vtx_sel = [s for s in raw_sel if ".vtx[" in s]
+        if not vtx_sel:
+            self._set_status("Paste Wire Weight: no vertices selected.", error=True)
+            return
+        mesh = vtx_sel[0].split(".vtx[")[0]
+        wire_nodes = cmds.ls(cmds.listHistory(mesh) or [], type="wire")
+        if not wire_nodes:
+            self._set_status(
+                f"Paste Wire Weight: no wire deformer found on '{mesh}'.",
+                error=True)
+            return
+        wire_node = wire_nodes[0]
+        weight = self._wire_weight_clipboard["weight"]
+        cmds.percent(wire_node, *vtx_sel, v=weight)
+        self._set_status(
+            f"Wire weight {weight:.4f} pasted onto {len(vtx_sel)} vert(s) "
+            f"on '{wire_node}'.")
 
     @undo_chunk
     def _run_bake_wire(self):
@@ -6588,10 +7653,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         try:
             bs_node, baked = bake_wire_to_mesh(mesh, shape_names)
-            if self.chk_wire_delete_after_bake.isChecked():
+            if self._wire_delete_after_bake:
                 if cmds.objExists("wire_setup_grp"):
                     cmds.delete("wire_setup_grp")
-            self._set_status(f"✓ Baked {len(baked)} shape(s) → {bs_node}")
+            self._set_status(f"✓ Baked {len(baked)} shape(s) ->{bs_node}")
         except Exception as e:
             import traceback; traceback.print_exc()
             self._set_status(f"✗ Bake Wire: {e}", error=True)
@@ -6877,7 +7942,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             suffixes.append(sfx.text() if sfx else "")
 
         falloff_func  = CURVE_FUNCTIONS[self.combo_curve.currentText()]
-        radius        = self.spin_radius.value() if self.chk_radius.isChecked() else 0.0
+        radius        = (float(self.spin_radius.text()) if self.chk_radius.isChecked() else 0.0)
         axes          = self._get_axes()
         symmetric     = self.chk_symmetric.isChecked() and self.chk_symmetric.isEnabled()
         loc_positions = [cmds.xform(loc, q=True, ws=True, t=True) for loc in locators]
@@ -6958,7 +8023,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                                 try:
                                     cmds.connectAttr(src, new_attr, force=True)
                                 except Exception as e:
-                                    print(f"  Warning: could not reconnect {src} → {new_attr}: {e}")
+                                    print(f"  Warning: could not reconnect {src} ->{new_attr}: {e}")
 
                     new_indices.append(idx)
                     total += 1
@@ -7490,6 +8555,41 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             traceback.print_exc()
             self._set_status(f"✗ Clean BS: {e}", error=True)
 
+    def _run_clean_deformed_mesh(self):
+        """Remove residual sculpt color sets and bake non-deformer history on selected meshes."""
+        import maya.mel as mel
+        meshes = cmds.ls(sl=True, type="transform")
+        if not meshes:
+            self._set_status("Select at least one mesh first.", error=True)
+            return
+        try:
+            for mesh in meshes:
+                shapes = cmds.listRelatives(mesh, shapes=True, type="mesh") or []
+                if not shapes:
+                    continue
+                # Delete named sculpt color sets
+                for cs in ("SculptFreezeColorTemp", "SculptMaskColorTemp"):
+                    existing = cmds.polyColorSet(mesh, query=True, allColorSets=True) or []
+                    if cs in existing:
+                        cmds.polyColorSet(mesh, delete=True, colorSet=cs)
+                # Delete any remaining unnamed / leftover sets (up to 4 passes)
+                for _ in range(4):
+                    remaining = cmds.polyColorSet(mesh, query=True, allColorSets=True) or []
+                    if not remaining:
+                        break
+                    try:
+                        cmds.polyColorSet(mesh, delete=True,
+                                          colorSet=remaining[0])
+                    except Exception:
+                        break
+            # Bake non-deformer history on the whole selection
+            mel.eval('doBakeNonDefHistory(1, {"prePost"})')
+            names = ", ".join(meshes)
+            self._set_status(f"Clean Deformed Mesh done on: {names}")
+        except Exception as e:
+            traceback.print_exc()
+            self._set_status(f"Clean Deformed Mesh failed: {e}", error=True)
+
     @undo_chunk
     def _run_reset_all_weights(self):
         targets = self._get_targets_or_warn()
@@ -7654,7 +8754,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             self._set_status("✗ Edge Loop Split: Lower vertex is on the seam — pick one clearly below", error=True)
             return
 
-        radius     = max(1, int(self.spin_radius.value())) if self.chk_radius.isChecked() else 1
+        radius     = (max(1, int(float(self.spin_radius.text()))) if self.chk_radius.isChecked() else 1)
         curve_name = self.combo_curve.currentText()
         falloff_fn = CURVE_FUNCTIONS.get(curve_name, linear)
 
@@ -7696,7 +8796,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                     continue
                 seen.add(bs_node)
                 _, name = add_empty_target(bs_node)
-                added.append(f"{bs_node} → {name}")
+                added.append(f"{bs_node} ->{name}")
             self._set_status(f"Added: {', '.join(added)}")
         except Exception as e:
             self._set_status(f"✗ Add Target: {e}", error=True)
@@ -7914,7 +9014,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
             self._set_status(
                 f"✓ Pasted Δ({dx:.4f}, {dy:.4f}, {dz:.4f}) from '{src_name}' "
-                f"onto {len(vtx_sel)} vtx → '{target_name}'")
+                f"onto {len(vtx_sel)} vtx ->'{target_name}'")
 
         except Exception as e:
             traceback.print_exc()
@@ -8042,7 +9142,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Resolve BS node and targets ────────────────────────────────────
         ui_targets = get_selected_targets()
-        auto_mode  = not ui_targets  # True → wrap all targets, then prune near-zero
+        auto_mode  = not ui_targets  # True ->wrap all targets, then prune near-zero
 
         if ui_targets:
             bs_nodes = list({t[0] for t in ui_targets})
@@ -8111,13 +9211,14 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                                 status=f"Extracting onto {receiver.split('|')[-1]}…")
             try:
                 bs_target, log = extract_targets_via_wrap(
-                    bs_node, base_mesh, receiver, targets)
+                    bs_node, base_mesh, receiver, targets,
+                    overwrite=self.chk_wrap_overwrite.isChecked())
 
                 # Prune near-zero targets in auto mode
                 pruned = 0
                 if auto_mode:
-                    for target_name, _ in log:
-                        idx = get_bs_weight_attribute_logical_index(bs_target, target_name)
+                    for _orig, actual_name, _ in log:
+                        idx = get_bs_weight_attribute_logical_index(bs_target, actual_name)
                         if idx is None:
                             continue
                         deltas = get_target_deltas(bs_target, idx)
@@ -8133,11 +9234,15 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 total_pruned += pruned
 
                 if self.chk_connect_targets.isChecked():
-                    names = [name for name, _ in log]
-                    connect_extracted_targets(bs_node, bs_target, names)
+                    # Connect source weight to destination weight — handles renamed targets
+                    for orig_name, actual_name, _ in log:
+                        src_attr = f"{bs_node}.{orig_name}"
+                        dst_attr = f"{bs_target}.{actual_name}"
+                        if cmds.objExists(src_attr) and cmds.objExists(dst_attr):
+                            cmds.connectAttr(src_attr, dst_attr, force=True)
 
                 rec_short = receiver.split(":")[-1].split("|")[-1]
-                n_replaced = sum(1 for _, r in log if r)
+                n_replaced = sum(1 for *_, r in log if r)
                 n_added    = kept - n_replaced
                 detail = f"{rec_short}: {kept} target(s)"
                 if n_added and n_replaced:
@@ -8191,7 +9296,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             grp, extracted = extract_targets_only(bs_node, mesh_target, targets)
             n_total = len(extracted)
             self._set_status(
-                f"✓ Extract Only: {n_total} shape{'s' if n_total > 1 else ''} → '{grp}'")
+                f"✓ Extract Only: {n_total} shape{'s' if n_total > 1 else ''} ->'{grp}'")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ Extract Only: {e}", error=True)
@@ -8220,7 +9325,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             else:
                 self._set_status(
                     f"✓ Connect A→B: {n} target{'s' if n > 1 else ''} connected"
-                    f"  ({bs_A}  →  {bs_B})")
+                    f"  ({bs_A}  -> {bs_B})")
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ Connect A→B: {e}", error=True)

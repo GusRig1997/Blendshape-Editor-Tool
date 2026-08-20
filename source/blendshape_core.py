@@ -276,7 +276,7 @@ def compute_weights(vtx_positions, loc_positions, delta_indices, falloff_func, a
 
     # ── 1 locator — 1D projection ─────────────────────────────────────────────
     # proj1d returns absolute world coordinates.
-    # loc_1d = projected locator position → serves as the center of the zone.
+    # loc_1d = projected locator position ->serves as the center of the zone.
     # in_end / out_start = boundaries of the transition zone around the locator.
     if n_locs == 1:
         ax_x, ax_y, ax_z = get_axes(0)
@@ -568,11 +568,11 @@ def apply_mesh_moves_to_target(bs_node, base_mesh, logical_index, vtx_indices=No
     blendShape target at logical_index, then removes those moves.
 
     Replicates the Maya Shape Editor "Rebuild" workflow:
-      1. sculptTarget(regenerate=True) → regen mesh live with stored target deltas.
+      1. sculptTarget(regenerate=True) ->regen mesh live with stored target deltas.
       2. Sample current output positions (tweaks included) - rest positions,
          write the result into the regen mesh pnts[].
       3. Delete the tweak node (or zero pnts[]) to clean the base mesh.
-      4. Delete the regen mesh → Maya commits the pnts[] back to the target.
+      4. Delete the regen mesh ->Maya commits the pnts[] back to the target.
 
     vtx_indices : optional list of int — restrict the operation to these vertex indices.
                   Unselected vertices keep their existing target deltas and tweaks intact.
@@ -904,8 +904,8 @@ def purge_empty_bs_slots(bs_node):
     Pass 1 — Phantom slots (no alias):
       A slot where weight[N] exists but has no alias.  Shows up as 'w[N]' in the
       Shape Editor with no name.  Common after Maya .shp re-import.
-      - If inputTargetGroup[N] also exists → blendShapeDeleteTargetGroup (full removal)
-      - Otherwise                          → removeMultiInstance on w[N] only
+      - If inputTargetGroup[N] also exists ->blendShapeDeleteTargetGroup (full removal)
+      - Otherwise                          ->removeMultiInstance on w[N] only
 
     Pass 2 — Empty named slots (alias present but no inputTargetGroup or empty ITI):
       Slots that appear in the Shape Editor with a name but carry no deformation data.
@@ -1007,7 +1007,7 @@ def duplicate_target(bs_node, base_mesh, original_index, new_name, reorder=True,
             regen_mesh   = parents[0] if parents else regen_shape
             regen_was_live = True
         else:
-            # Regenerate the original target → live mesh named after the target alias
+            # Regenerate the original target ->live mesh named after the target alias
             regen_mesh = cmds.sculptTarget(bs_node, e=True, target=original_index, regenerate=True)
             if regen_mesh is None:
                 source_alias = (cmds.aliasAttr(f"{bs_node}.w[{original_index}]", q=True)
@@ -1122,7 +1122,7 @@ def create_split_target(bs_node, base_mesh, target_name, source_index, loc_idx, 
     for src in saved_in:
         cmds.connectAttr(src, new_attr, force=True)
 
-    # Regenerate the duplicate → live mesh with full source deltas in pnts[]
+    # Regenerate the duplicate ->live mesh with full source deltas in pnts[]
     saved = _save_shape_editor_selection()
     try:
         regen_mesh = cmds.sculptTarget(bs_node, e=True, target=target_idx, regenerate=True)
@@ -1154,7 +1154,7 @@ def create_split_target(bs_node, base_mesh, target_name, source_index, loc_idx, 
     if not _source_is_in_subgroup(bs_node, source_index):
         _insert_indices_after(bs_node, source_index, [target_idx])
 
-    print(f"  ✓ Created : {target_name}")
+    print(f"Created : {target_name}")
     return target_idx
 
 
@@ -1216,7 +1216,7 @@ def do_flip_target(bs_node, logical_index, base_shape, mirror_direction,
                             symmetryAxis=axis)
         finally:
             cmds.symmetricModelling(e=True, symmetry=was_sym)
-    print(f"  ✓ Flip : {bs_node}.w[{logical_index}] ({symmetry_axis})")
+    print(f"Flip : {bs_node}.w[{logical_index}] ({symmetry_axis})")
 
 
 
@@ -1593,7 +1593,7 @@ def smooth_target_deltas(bs_node, logical_index, opacity, vtx_indices=None):
 
     Uses a single regen mesh for both read and write — no double sculptTarget.
 
-    opacity     : 0.0–1.0  →  1–10 iterative passes.
+    opacity     : 0.0–1.0  -> 1–10 iterative passes.
     vtx_indices : optional list of ints to restrict the operation.
     """
     from maya.api import OpenMaya as om
@@ -2042,7 +2042,7 @@ def average_target_deltas(bs_node, logical_index, vtx_indices, opacity=1.0, mode
                     cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pnty", ny)
                     cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntz", nz)
 
-            print(f"  Average Deltas (volume): opacity={opacity:.2f}, {len(vtx_indices)} vtx → ({mx:.4f}, {my:.4f}, {mz:.4f})")
+            print(f"  Average Deltas (volume): opacity={opacity:.2f}, {len(vtx_indices)} vtx ->({mx:.4f}, {my:.4f}, {mz:.4f})")
 
         if not was_live:
             cmds.delete(tgt_transform)
@@ -2079,7 +2079,7 @@ def _collect_magnitudes(bs_node, logical_index):
 def _ensure_geom_target_connected(bs_node, logical_index, working_mesh):
     """
     After applying a deformer (skinCluster, cluster…) to a regen mesh, Maya can
-    break the shape.outMesh → blendShape.inputGeomTarget connection.
+    break the shape.outMesh ->blendShape.inputGeomTarget connection.
     This helper verifies the connection is still live and force-reconnects it if not.
     """
     geom_plug = (f"{bs_node}.inputTarget[0]"
@@ -2097,7 +2097,7 @@ def _ensure_geom_target_connected(bs_node, logical_index, working_mesh):
                         if not cmds.getAttr(f"{s}.intermediateObject")]
     shape = non_intermediate[0] if non_intermediate else shapes[0]
     cmds.connectAttr(f"{shape}.outMesh", geom_plug, force=True)
-    print(f"  ⚠ Re-connected {shape}.outMesh → {geom_plug}")
+    print(f"  Warning:Re-connected {shape}.outMesh ->{geom_plug}")
 
 
 def _add_empty_bs_target(bs_node, base_mesh, ref_logical_index, new_name):
@@ -2153,7 +2153,7 @@ def create_delta_cluster(bs_node, logical_index, target_name,
     saved = _save_shape_editor_selection()
     try:
         if neutral:
-            # ── Collect magnitudes (regen → read → delete) ──────────────────
+            # ── Collect magnitudes (regen ->read ->delete) ──────────────────
             if _precomputed is None:
                 magnitudes, n_verts = _collect_magnitudes(bs_node, logical_index)
             else:
@@ -2169,7 +2169,7 @@ def create_delta_cluster(bs_node, logical_index, target_name,
             cmds.rename(regen, f"{copy_name}_regenerated")
             working_mesh = f"{copy_name}_regenerated"
         else:
-            # ── Regen primary target → posed live mesh ───────────────────────
+            # ── Regen primary target ->posed live mesh ───────────────────────
             regen = cmds.sculptTarget(bs_node, e=True, target=logical_index, regenerate=True)
             regen = regen if isinstance(regen, str) else regen[0]
             cmds.rename(regen, f"{target_name}_regenerated")
@@ -2229,7 +2229,7 @@ def create_delta_cluster(bs_node, logical_index, target_name,
     )
 
     # ── Reposition cluster handle at delta center (no deformation:
-    #    move handle then update bindPreMatrix → net transform = identity) ───
+    #    move handle then update bindPreMatrix ->net transform = identity) ───
     cx, cy, cz = center
     cmds.xform(cluster_handle, ws=True, t=[cx, cy, cz])
     new_inv = cmds.getAttr(f"{cluster_handle}.worldInverseMatrix[0]")
@@ -2237,7 +2237,7 @@ def create_delta_cluster(bs_node, logical_index, target_name,
 
     mode_label = "neutral (_Copy)" if neutral else "posed"
     grp = cmds.group(working_mesh, cluster_handle, name=f"{rig_name}_deltaCluster_grp")
-    print(f"  ✓ Delta cluster on {mode_label} mesh : {cluster_handle} → {grp}")
+    print(f"Delta cluster on {mode_label} mesh : {cluster_handle} ->{grp}")
     print(f"    Delete '{working_mesh}' when done to bake back into blendShape.")
     return grp, working_mesh, cluster_handle
 
@@ -2319,7 +2319,7 @@ def create_delta_joint(bs_node, logical_index, target_name,
             (bbox[1] + bbox[4]) * 0.5,
             (bbox[2] + bbox[5]) * 0.5,
         )
-        print(f"  ⚠ '{target_name}' has no deltas — joint placed at mesh bbox center.")
+        print(f"  Warning:'{target_name}' has no deltas — joint placed at mesh bbox center.")
 
     # ── Create joints ────────────────────────────────────────────────────────
     cmds.select(clear=True)
@@ -2352,7 +2352,7 @@ def create_delta_joint(bs_node, logical_index, target_name,
     mode_label = "neutral (_Copy)" if neutral else "posed"
     grp = cmds.group(working_mesh, deform_jnt, zero_jnt, name=f"{rig_name}_deltaJoint_grp")
 
-    print(f"  ✓ Delta joint on {mode_label} mesh : {deform_jnt} / {zero_jnt} → {grp}")
+    print(f"Delta joint on {mode_label} mesh : {deform_jnt} / {zero_jnt} ->{grp}")
     print(f"    Delete '{working_mesh}' when done to bake back into blendShape.")
     return grp, working_mesh, deform_jnt, zero_jnt
 
@@ -2387,10 +2387,10 @@ def edge_loop_split_target(bs_node, logical_index, target_name,
 
     Algorithm:
       1. Build LOCAL adjacency (delta_vis + seam_vis), seam edges removed
-      2. BFS from seed_upper blocked by seam_vis  → reachable_upper + distances_upper
-      3. BFS from seed_lower blocked by seam_vis  → reachable_lower + distances_lower
+      2. BFS from seed_upper blocked by seam_vis  ->reachable_upper + distances_upper
+      3. BFS from seed_lower blocked by seam_vis  ->reachable_lower + distances_lower
       4. Assign each delta vertex to the closer seed (by BFS distance)
-      5. Seam vertices → 0.5 / 0.5 blend
+      5. Seam vertices ->0.5 / 0.5 blend
       6. Falloff: weight ramps from 0.5 at seam to 1.0 at falloff_radius hops
 
     Parameters
@@ -2469,7 +2469,7 @@ def edge_loop_split_target(bs_node, logical_index, target_name,
     # ── Side assignment ────────────────────────────────────────────────────
     # Each vertex goes to whichever seed is topologically closer.
     # Seam vertices stay at 0.5 / 0.5.
-    # Unreachable from either seed → default side upper (edge case: isolated island)
+    # Unreachable from either seed ->default side upper (edge case: isolated island)
     side_upper = set()
     side_lower = set()
     for vi in active_vis - seam_vis:
@@ -2560,7 +2560,7 @@ def edge_loop_split_target(bs_node, logical_index, target_name,
             cmds.delete(regen)
         finally:
             _restore_shape_editor_selection(saved)
-        print(f"  ✓ Created : {new_name}")
+        print(f"Created : {new_name}")
         return idx
 
     upper_idx = _write_weighted_target(_els_name(target_name, "upper"), weight_upper)
@@ -2575,9 +2575,9 @@ def link_mirror_locators(L_loc, R_loc):
 
     All channels go through MD nodes so deleting them fully severs every connection.
 
-    _mirror_TRA : input2 = (-1,  1,  1) → R.translateX/Y/Z
-    _mirror_ROT : input2 = (-1, -1,  1) → R.rotateY / R.rotateZ / R.rotateX (passthrough)
-    _mirror_SCL : input2 = ( 1,  1,  1) → R.scaleX/Y/Z (passthrough)
+    _mirror_TRA : input2 = (-1,  1,  1) ->R.translateX/Y/Z
+    _mirror_ROT : input2 = (-1, -1,  1) ->R.rotateY / R.rotateZ / R.rotateX (passthrough)
+    _mirror_SCL : input2 = ( 1,  1,  1) ->R.scaleX/Y/Z (passthrough)
     """
     L_short = L_loc.split("|")[-1]
     R_short = R_loc.split("|")[-1]
@@ -2748,7 +2748,7 @@ def _create_wrap_deformer(driver_mesh, driven_mesh):
     new_transforms   = after_transforms - before_transforms
     base_transform   = list(new_transforms)[0] if new_transforms else None
 
-    print(f"  ✓ Wrap created : {wrap_node}  (base: {base_transform})")
+    print(f"Wrap created : {wrap_node}  (base: {base_transform})")
     return wrap_node, base_transform
 
 
@@ -2775,46 +2775,64 @@ def _capture_target_shapes(bs_node, mesh_target, targets):
         cmds.delete(temp_dup, constructionHistory=True)
         cmds.setAttr(f"{bs_node}.{target_name}", 0.0)
         extracted.append((target_name, temp_dup))
-        print(f"  ✓ Captured: {target_name}")
+        print(f"Captured: {target_name}")
     return extracted
 
 
-def _integrate_extracted_shapes(mesh_target, extracted):
+def _unique_target_name(bs_target, name):
+    """Returns name unchanged if not taken, else appends 1, 2, 3... until unique."""
+    existing = set(cmds.listAttr(f"{bs_target}.w", multi=True) or [])
+    if name not in existing:
+        return name
+    i = 1
+    while True:
+        candidate = f"{name}{i}"
+        if candidate not in existing:
+            return candidate
+        i += 1
+
+
+def _integrate_extracted_shapes(mesh_target, extracted, overwrite=True):
     """
-    Finds or creates a blendShape on mesh_target, then integrates each extracted shape:
-      - Replaces an existing target if the name already exists (logs the replacement).
-      - Adds as new otherwise.
+    Finds or creates a blendShape on mesh_target, then integrates each extracted shape.
+
+    overwrite=True  (default) : replaces an existing target if the name already exists.
+    overwrite=False           : appends a numeric suffix to avoid collision
+                                (e.g. "jaw" ->"jaw1"), like Maya's native behaviour.
+
     Temp meshes are deleted after integration.
-    Returns (bs_target, log) where log = [(target_name, was_replaced), ...].
+    Returns (bs_target, log) where log = [(orig_name, actual_name, was_replaced), ...].
     """
     bs_target = _find_blendshape_on_mesh(mesh_target)
     log = []
 
-    for target_name, temp_mesh in extracted:
+    for orig_name, temp_mesh in extracted:
         was_replaced = False
 
         if bs_target is None:
-            # No blendShape yet — create an empty one, then add the target via edit mode
-            # (using blendShape(temp, base) would keep a live connection; deleting temp
-            # would wipe the target data)
+            # No blendShape yet — create an empty one then add the target via edit mode
             mesh_short = mesh_target.split(":")[-1].split("|")[-1]
             bs_target = cmds.blendShape(mesh_target, frontOfChain=True,
                                         name=f"{mesh_short}_bs")[0]
             cmds.blendShape(bs_target, e=True,
                             target=(mesh_target, 0, temp_mesh, 1.0))
-            cmds.aliasAttr(target_name, f"{bs_target}.w[0]")
-            cmds.setAttr(f"{bs_target}.{target_name}", 0.0)
+            cmds.aliasAttr(orig_name, f"{bs_target}.w[0]")
+            cmds.setAttr(f"{bs_target}.{orig_name}", 0.0)
             cmds.delete(temp_mesh)
-            log.append((target_name, False))
-            print(f"  ✓ Created blendShape '{bs_target}' with '{target_name}'")
+            log.append((orig_name, orig_name, False))
+            print(f"Created blendShape '{bs_target}' with '{orig_name}'")
             continue
 
-        # Replace existing target with the same name
-        existing_shapes = cmds.listAttr(f"{bs_target}.w", multi=True) or []
-        if target_name in existing_shapes:
-            existing_idx = get_bs_weight_attribute_logical_index(bs_target, target_name)
-            mel.eval(f"blendShapeDeleteTargetGroup {bs_target} {existing_idx};")
-            was_replaced = True
+        existing_shapes = set(cmds.listAttr(f"{bs_target}.w", multi=True) or [])
+        actual_name = orig_name
+
+        if orig_name in existing_shapes:
+            if overwrite:
+                existing_idx = get_bs_weight_attribute_logical_index(bs_target, orig_name)
+                mel.eval(f"blendShapeDeleteTargetGroup {bs_target} {existing_idx};")
+                was_replaced = True
+            else:
+                actual_name = _unique_target_name(bs_target, orig_name)
 
         # Add at next available index
         purge_empty_bs_slots(bs_target)
@@ -2822,18 +2840,19 @@ def _integrate_extracted_shapes(mesh_target, extracted):
         next_idx     = (max(used_indices) + 1) if used_indices else 0
 
         cmds.blendShape(bs_target, e=True, target=(mesh_target, next_idx, temp_mesh, 1.0))
-        cmds.aliasAttr(target_name, f"{bs_target}.w[{next_idx}]")
-        cmds.setAttr(f"{bs_target}.{target_name}", 0.0)
+        cmds.aliasAttr(actual_name, f"{bs_target}.w[{next_idx}]")
+        cmds.setAttr(f"{bs_target}.{actual_name}", 0.0)
         cmds.delete(temp_mesh)
 
-        log.append((target_name, was_replaced))
+        log.append((orig_name, actual_name, was_replaced))
         action = "Replaced" if was_replaced else "Added"
-        print(f"  ✓ {action}: '{target_name}' → {bs_target}")
+        suffix = f" (as '{actual_name}')" if actual_name != orig_name else ""
+        print(f"{action}: '{orig_name}'{suffix} ->{bs_target}")
 
     return bs_target, log
 
 
-def extract_targets_via_wrap(bs_node, base_mesh, mesh_target, targets):
+def extract_targets_via_wrap(bs_node, base_mesh, mesh_target, targets, overwrite=True):
     """
     Extracts blendShape targets from bs_node onto mesh_target using a wrap deformer.
 
@@ -2841,8 +2860,10 @@ def extract_targets_via_wrap(bs_node, base_mesh, mesh_target, targets):
     the original mesh_target is never modified. The proxy and wrap are always deleted
     at the end of the operation, whether it succeeds or fails.
 
+    overwrite : passed to _integrate_extracted_shapes (True = replace, False = suffix)
+
     targets : list of (bs_node, logical_index, target_name)
-    Returns : (bs_target, log)  — see _integrate_extracted_shapes
+    Returns : (bs_target, log)  — log = [(orig_name, actual_name, was_replaced), ...]
     """
     bs_state = zero_all_bs_weights(bs_node)
 
@@ -2861,13 +2882,13 @@ def extract_targets_via_wrap(bs_node, base_mesh, mesh_target, targets):
             cmds.delete(proxy)
         restore_all_bs_weights(bs_node, bs_state)
 
-    return _integrate_extracted_shapes(mesh_target, extracted)
+    return _integrate_extracted_shapes(mesh_target, extracted, overwrite=overwrite)
 
 
 def connect_extracted_targets(bs_node, bs_target, target_names):
     """
     Connects matching weight attributes from bs_node to bs_target.
-    bs_node.target_name → bs_target.target_name (direct connectAttr).
+    bs_node.target_name ->bs_target.target_name (direct connectAttr).
     Returns the list of successfully connected target names.
     """
     connected = []
@@ -2877,7 +2898,7 @@ def connect_extracted_targets(bs_node, bs_target, target_names):
         if cmds.objExists(src) and cmds.objExists(dst):
             cmds.connectAttr(src, dst, force=True)
             connected.append(name)
-            print(f"  ✓ Connected: {src} → {dst}")
+            print(f"Connected: {src} ->{dst}")
     return connected
 
 
@@ -2924,12 +2945,12 @@ def extract_targets_only(bs_node, mesh_target, targets):
             if surviving:
                 cmds.rename(surviving[0], target_name)
             extracted.append(temp_dup)
-            print(f"  ✓ Extracted: {target_name}_TEMP  (shape: {target_name})")
+            print(f"Extracted: {target_name}_TEMP  (shape: {target_name})")
 
         grp = None
         if extracted:
             grp = cmds.group(*extracted, name=f"{mesh_short}_extractedShapes_grp", world=True)
-            print(f"  ✓ Grouped at world root: {grp}")
+            print(f"Grouped at world root: {grp}")
 
         return grp, extracted
 
@@ -2973,7 +2994,7 @@ def add_mesh_as_target(source_meshes, target_mesh, delete_source=False):
         if delete_source and cmds.objExists(source_mesh):
             cmds.delete(source_mesh)
 
-        print(f"  ✓ Target '{target_name}' added to {bs_node} at index {new_idx}")
+        print(f"Target '{target_name}' added to {bs_node} at index {new_idx}")
         results.append((new_idx, target_name))
 
     return bs_node, results
@@ -3018,7 +3039,7 @@ def create_corrective_shape(corrective_meshes, target_mesh, delete_corrective=Fa
                             target=(base_mesh, new_idx, inverted, 1.0))
             cmds.aliasAttr(target_name, f"{bs_node}.weight[{new_idx}]")
 
-            print(f"  ✓ Posed target '{target_name}' added to {bs_node} at index {new_idx}")
+            print(f"Posed target '{target_name}' added to {bs_node} at index {new_idx}")
             results.append((new_idx, target_name))
 
         finally:
@@ -3035,7 +3056,7 @@ def connect_targets_A_to_B(mesh_A, mesh_B):
     """
     Finds the blendShape on mesh_A (source) and mesh_B (target), then connects
     every weight attribute that exists on both nodes by name:
-        bs_A.target_name  →  bs_B.target_name  (force=True)
+        bs_A.target_name  -> bs_B.target_name  (force=True)
 
     mesh_A : first selected transform (source)
     mesh_B : second selected transform (target)
@@ -3064,7 +3085,7 @@ def connect_targets_A_to_B(mesh_A, mesh_B):
         dst = f"{bs_B}.{name}"
         cmds.connectAttr(src, dst, force=True)
         connected.append(name)
-        print(f"  ✓ Connected: {src}  →  {dst}")
+        print(f"Connected: {src}  -> {dst}")
 
     return bs_A, bs_B, connected
 
@@ -3164,7 +3185,7 @@ def create_wire_setup(mesh_base, edge_line, shape_names,
         if shp_node:
             cmds.setAttr(f"{shp_node[0]}.alwaysDrawOnTop", 1)
 
-    print(f"  ✓ Wire setup created — {len(shape_names)} shape(s) on {dup_name}")
+    print(f"Wire setup created — {len(shape_names)} shape(s) on {dup_name}")
     return wire_grp
 
 
@@ -3203,11 +3224,11 @@ def check_wire_shapes_have_deltas(shape_names):
 def bake_wire_to_mesh(base_mesh, shape_names):
     """
     For each name in shape_names:
-      1. Set wire_bs.<name> = 1.0  →  wire_setup_msh is in that pose
+      1. Set wire_bs.<name> = 1.0  -> wire_setup_msh is in that pose
       2. Duplicate wire_setup_msh
       3. Add the duplicate as a blendShape target on base_mesh's bs_node
          (no topologyCheck — vertex count mismatch triggers an orange warning)
-      4. If a target with that name already exists → overwrite + warning
+      4. If a target with that name already exists ->overwrite + warning
       5. Reset wire_bs.<name> = 0.0 and delete the duplicate
 
     Returns (bs_node, [baked_name, ...])
@@ -3288,7 +3309,7 @@ def bake_wire_to_mesh(base_mesh, shape_names):
         # Reset pose
         cmds.setAttr(f"{wire_bs}.{shp}", 0.0)
         baked.append(shp)
-        print(f"  ✓ Baked : '{shp}'  →  {bs_node}[{t_idx}]")
+        print(f"Baked : '{shp}'  -> {bs_node}[{t_idx}]")
 
     return bs_node, baked
 
@@ -3343,7 +3364,7 @@ def _get_ordered_loop_verts(mesh, edge_str):
     if not loop_edges:
         raise RuntimeError(f"No edge loop found for {edge_str}")
 
-    # Build adjacency (vertex → [connected vertices]) from edge info
+    # Build adjacency (vertex ->[connected vertices]) from edge info
     adj = {}
     for e in loop_edges:
         tokens = cmds.polyInfo(e, edgeToVertex=True)[0].split()
@@ -3393,7 +3414,7 @@ def _arc_to_curve(mesh, vert_indices, name):
     max_p   = cmds.getAttr(f"{name}.maxValue")
     p_start = cmds.pointOnCurve(name, pr=min_p, p=True)
     p_end   = cmds.pointOnCurve(name, pr=max_p, p=True)
-    if p_start[0] < p_end[0]:  # start is more -X (L side) → reverse to get R→L
+    if p_start[0] < p_end[0]:  # start is more -X (L side) ->reverse to get R→L
         cmds.reverseCurve(name, ch=False, rpo=True)
 
     return name
@@ -3423,13 +3444,13 @@ def _find_corner_local_indices(mesh, vert_indices):
 
 def _split_loop_at_corners(mesh, vert_indices, r_local, l_local):
     """Split ordered loop into (upper_verts, lower_verts), both in R→L order."""
-    # Arc A: r_local → l_local going forward in the list
+    # Arc A: r_local ->l_local going forward in the list
     if r_local <= l_local:
         arc_a = vert_indices[r_local:l_local + 1]
     else:
         arc_a = vert_indices[r_local:] + vert_indices[:l_local + 1]
 
-    # Arc B: l_local → r_local going forward, then reversed to get R→L
+    # Arc B: l_local ->r_local going forward, then reversed to get R→L
     if l_local <= r_local:
         arc_b = list(reversed(vert_indices[l_local:r_local + 1]))
     else:
@@ -3518,7 +3539,7 @@ def build_lip_rig(base_mesh, middle_edge):
         cmds.delete(orig)
     cmds.parent(_LIP_RIG_MSH, rig_grp)
 
-    # ── Middle loop → upper / lower arc curves ─────────────────────────────
+    # ── Middle loop ->upper / lower arc curves ─────────────────────────────
     mid_verts = _get_ordered_loop_verts(base_mesh, middle_edge)
     r_m, l_m  = _find_corner_local_indices(base_mesh, mid_verts)
     upper_mid, lower_mid = _split_loop_at_corners(base_mesh, mid_verts, r_m, l_m)
@@ -3535,7 +3556,7 @@ def build_lip_rig(base_mesh, middle_edge):
     cmds.parent(zero_jnt, rig_grp)
 
     skin_joints = [zero_jnt]
-    created = {}  # bone name → skin_jnt  (corners are shared upper/lower)
+    created = {}  # bone name ->skin_jnt  (corners are shared upper/lower)
 
     # ── Controller + skin joints — orientation baked from motionPath ──────
     for arc_params, crv in [(_UPPER_BONE_PARAMS, upper_crv),
@@ -3665,7 +3686,7 @@ def build_lip_rig(base_mesh, middle_edge):
 
 # ── Rig Connector ─────────────────────────────────────────────────────────────
 
-# Maps transform attr → transformLimits kwarg + enable attribute name
+# Maps transform attr ->transformLimits kwarg + enable attribute name
 # tuple: (tl_kwarg, positive_enable_attr, negative_enable_attr)
 _RC_LIMIT_INFO = {
     "tx": ("tx", "maxTransXLimitEnable", "minTransXLimitEnable"),
@@ -3692,7 +3713,7 @@ def _soft_blend_keys(in_max, partner_in_max):
         return [
             (partner_in_max,        0.0, "linear"),  # opposite full extent, shape=0
             (partner_in_max / 2.0,  0.0, "linear"),  # opposite half extent, dead zone
-            (0.0,                   0.0, "smooth"),   # neutral — smooth tangent → soft dip
+            (0.0,                   0.0, "smooth"),   # neutral — smooth tangent ->soft dip
             (in_max / 2.0,          0.5, "auto"),     # midpoint
             (in_max,                1.0, "linear"),   # full activation
         ]
@@ -3711,9 +3732,9 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
     """
     Per shape, builds the following network:
       offset_{shape}_{i}  (addDoubleLinear, if in_min≠0) : subtracts in_min
-      norm_{shape}_{i}    (multiplyDivide)                : normalizes → [0..1..∞]
+      norm_{shape}_{i}    (multiplyDivide)                : normalizes ->[0..1..∞]
       sum_{shape}         (plusMinusAverage, if >1 driver): additive sum
-      cond_{shape}        (condition)                     : hasLimits → maxR=1 or 1e6
+      cond_{shape}        (condition)                     : hasLimits ->maxR=1 or 1e6
       clamp_{shape}       (clamp)                         : minR=0 always, maxR driven
       gate_{shape}        (multDoubleLinear, if gate≠"")  : multiplies by the gate target weight
 
@@ -3728,7 +3749,7 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
     import re as _re
     from collections import defaultdict
 
-    # Build alias → logical index map
+    # Build alias ->logical index map
     aliases_flat = cmds.aliasAttr(bs_node, query=True) or []
     target_map = {}
     for i in range(0, len(aliases_flat) - 1, 2):
@@ -3739,8 +3760,8 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
             target_map[alias] = int(m.group(1))
 
     results        = []
-    pending_limits = {}  # ctrl → {attr_name: (lim_min, lim_max)}
-    pending_conds  = {}  # ctrl → [cond_name, ...]
+    pending_limits = {}  # ctrl ->{attr_name: (lim_min, lim_max)}
+    pending_conds  = {}  # ctrl ->[cond_name, ...]
 
     # ── Phase 0: wipe custom attrs on involved controllers ────────────────────
     # Delete every user-defined attr (except hasLimits) so the build starts from
@@ -3786,7 +3807,7 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
 
         ctrl_attr_full = f"{ctrl}.{resolved_attr}"
         if not cmds.objExists(ctrl_attr_full):
-            # Attr doesn't exist → create as custom float attr (min/max applied later)
+            # Attr doesn't exist ->create as custom float attr (min/max applied later)
             try:
                 cmds.addAttr(ctrl, longName=resolved_attr, attributeType="float",
                              defaultValue=0.0, keyable=True)
@@ -3804,7 +3825,7 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
     # Aggregate in_min/in_max across all shapes sharing the same custom attr so
     # the slider stops at the activation range — matching transformLimits behaviour
     # for native attrs when hasLimits=ON.
-    _custom_ranges = {}  # (ctrl, attr) → [lo, hi]
+    _custom_ranges = {}  # (ctrl, attr) ->[lo, hi]
     for vr in valid_rows:
         ra = vr["resolved_attr"]
         if ra in _RC_LIMIT_INFO or ra in _SCALE_ATTRS:
@@ -3829,7 +3850,7 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                 pass
 
     # ── Soft blend lookup ─────────────────────────────────────────────────────
-    _soft_pair_map = {}   # shape → partner_shape
+    _soft_pair_map = {}   # shape ->partner_shape
     if soft_blend_pairs:
         for _a, _b in soft_blend_pairs:
             _soft_pair_map[_a] = _b
@@ -3906,7 +3927,7 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                 in_min = vr["in_min"]
                 in_max = vr["in_max"]
 
-                # in_max=0 and in_min=0 → driver disabled, skip
+                # in_max=0 and in_min=0 ->driver disabled, skip
                 if abs(in_max) < 1e-9 and abs(in_min) < 1e-9:
                     continue
 
@@ -3932,7 +3953,7 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                 norm_outputs.append(f"{norm}.outputX")
 
             # ── Additive sum if multiple drivers ──────────────────────────────
-            # All drivers disabled → skip network creation
+            # All drivers disabled ->skip network creation
             if not norm_outputs:
                 for _ in group:
                     results.append({"shape": shape, "status": "skip"})
@@ -3951,8 +3972,8 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
             cond = cmds.createNode("condition", name=f"cond_{shape}")
             cmds.setAttr(f"{cond}.operation",     0)    # equal
             cmds.setAttr(f"{cond}.secondTerm",    1)
-            cmds.setAttr(f"{cond}.colorIfTrueR",  1.0)  # hasLimits=ON  → max=1
-            cmds.setAttr(f"{cond}.colorIfFalseR", 1e6)  # hasLimits=OFF → libre
+            cmds.setAttr(f"{cond}.colorIfTrueR",  1.0)  # hasLimits=ON  ->max=1
+            cmds.setAttr(f"{cond}.colorIfFalseR", 1e6)  # hasLimits=OFF ->libre
 
             # ── Clamp: minR=0 always, maxR driven ────────────────────────────
             clp = cmds.createNode("clamp", name=f"clamp_{shape}")
@@ -3966,12 +3987,12 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
             gate_names = [g.strip() for g in gate_field.split(",") if g.strip()] if gate_field else []
             current_src = f"{clp}.outputR"
             for gi, gname in enumerate(gate_names):
-                # "rev:" prefix → inversion via reverse node
+                # "rev:" prefix ->inversion via reverse node
                 use_reverse = gname.startswith("rev:")
                 if use_reverse:
                     gname = gname[4:].strip()
 
-                # "node.attr" → direct Maya plug; otherwise → bs_node target lookup
+                # "node.attr" ->direct Maya plug; otherwise ->bs_node target lookup
                 if "." in gname:
                     if not cmds.objExists(gname):
                         continue
@@ -4017,7 +4038,7 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                     prev = pending_limits.setdefault(ctrl, {}).get(resolved_attr, (0.0, 0.0))
                     pending_limits[ctrl][resolved_attr] = (min(prev[0], lim_min),
                                                            max(prev[1], lim_max))
-                # Each ctrl has its own hasLimits → register it
+                # Each ctrl has its own hasLimits ->register it
                 if ctrl != primary_ctrl:
                     pending_conds.setdefault(ctrl, [])  # force creation without cond
 
@@ -4039,12 +4060,12 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                 cmds.setAttr(attr_full, lock=False)
             cmds.setAttr(attr_full, keyable=True)
 
-        # Native attrs in use → full range [lim_min, lim_max]
+        # Native attrs in use ->full range [lim_min, lim_max]
         for attr_name, (lim_min, lim_max) in pending_limits.get(ctrl, {}).items():
             tl_kwarg = _RC_LIMIT_INFO[attr_name][0]
             cmds.transformLimits(ctrl, **{tl_kwarg: (lim_min, lim_max)})
 
-        # Unused tx/ty/tz/rx/ry/rz attrs → limit (0,0) + lock and hide
+        # Unused tx/ty/tz/rx/ry/rz attrs ->limit (0,0) + lock and hide
         for attr_name in set(_RC_LIMIT_INFO) - used_native:
             tl_kwarg = _RC_LIMIT_INFO[attr_name][0]
             cmds.transformLimits(ctrl, **{tl_kwarg: (0.0, 0.0)})
@@ -4053,7 +4074,7 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
             cmds.setAttr(attr_full, channelBox=False)
             cmds.setAttr(attr_full, lock=True)
 
-        # Unused scale attrs (sx/sy/sz) → lock and hide (no transformLimits)
+        # Unused scale attrs (sx/sy/sz) ->lock and hide (no transformLimits)
         for attr_name in _SCALE_ATTRS - used_native:
             attr_full = f"{ctrl}.{attr_name}"
             cmds.setAttr(attr_full, keyable=False)
@@ -4073,7 +4094,7 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                          defaultValue=True, keyable=True)
         cmds.setAttr(f"{ctrl}.hasLimits", True)
 
-        # Connect hasLimits → ALL native enable attrs (6 axes × min + max)
+        # Connect hasLimits ->ALL native enable attrs (6 axes × min + max)
         for _, pos_en, neg_en in _RC_LIMIT_INFO.values():
             for en_attr in (pos_en, neg_en):
                 if not cmds.isConnected(f"{ctrl}.hasLimits", f"{ctrl}.{en_attr}"):

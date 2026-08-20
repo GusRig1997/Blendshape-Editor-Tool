@@ -31,8 +31,8 @@ Step-by-step Workflow
 4. Click **Create Wire Setup** — the rig is built in the scene.
 5. **Sculpt** each shape by moving CVs of the target curves in the viewport
    (set the corresponding ``wire_bs`` weight to 1.0 to see the result live).
-6. Click **Bake Wire to Mesh** to transfer all shapes to the base mesh's
-   blendShape node.
+6. Click **Bake Wire to Mesh** (shelf button, right side) to transfer all
+   shapes to the base mesh's blendShape node.
 
 ----
 
@@ -42,7 +42,7 @@ Controls
 Shelf Buttons
 ^^^^^^^^^^^^^
 
-Two paint-utility buttons sit at the top of the Wire Setup group:
+The wire shelf row provides paint and utility buttons. All buttons are 36×36.
 
 .. list-table::
    :widths: 30 70
@@ -52,8 +52,24 @@ Two paint-utility buttons sit at the top of the Wire Setup group:
      - Description
    * - **Paint Wire Weights**
      - Opens Maya's Paint Weights tool for the wire deformer.
+       Double-click or right-click opens Tool Settings.
    * - **Mirror Wire Weights (YZ)**
-     - Mirrors wire deformer weights across the YZ plane.
+     - Mirrors wire deformer weights across the YZ plane (−X to +X).
+   * - **Copy Wire Weight**
+     - Select exactly 1 vertex on a mesh with a wire deformer.
+       Copies its wire weight value into the clipboard.
+   * - **Paste Wire Weight**
+     - Select one or more vertices on a mesh with a wire deformer.
+       Applies the copied weight value to all selected vertices. Undoable.
+       Enabled only after a Copy.
+   * - **Bake Wire to Mesh** *(right side)*
+     - Bakes all wire shapes as blendShape targets on the base mesh.
+       Right-click to toggle **Delete Wire at Bake** (see below).
+
+**Delete Wire at Bake** *(right-click on Bake button)*
+
+When enabled, ``wire_setup_grp`` (and all its children) is deleted from
+the scene automatically after a successful bake.
 
 Base Mesh
 ^^^^^^^^^
@@ -108,9 +124,9 @@ Default entries:
      - Description
    * - **List widget**
      - Shows all registered shape names. Double-click an entry to rename it.
-   * - **Name field + Add**
-     - Type a new shape name and click **Add** to append it to the list.
-   * - **Remove**
+   * - **Name field + + button**
+     - Type a new shape name and press Enter or click **+** to append it.
+   * - **− button**
      - Deletes the selected entry from the list.
 
 Parameters
@@ -140,7 +156,7 @@ Parameters
 Create Wire Setup
 -----------------
 
-Click **Create Wire Setup** to build the rig.
+Click **Create Wire Setup** (``[label][icon]`` row) to build the rig.
 
 **Nodes created in the scene:**
 
@@ -161,7 +177,8 @@ Click **Create Wire Setup** to build the rig.
 Bake Wire to Mesh
 -----------------
 
-Transfers each shaped state of ``wire_setup_msh`` as a blendShape target
+Click the **Bake Wire to Mesh** button (right side of the wire shelf) to
+transfer each shaped state of ``wire_setup_msh`` as a blendShape target
 on the base mesh's blendShape node.
 
 **Pre-bake check — no deltas warning**
@@ -178,7 +195,7 @@ delta. If one or more shapes have no displacement:
 If a target with the same name already exists on the blendShape node,
 it is overwritten and a warning is printed to the Script Editor.
 
-**Delete Wire Setup after Bake** *(checkbox, default OFF)*
+**Delete Wire at Bake** *(right-click on Bake button, default OFF)*
 
-When checked, ``wire_setup_grp`` (and all its children) is deleted from
+When enabled, ``wire_setup_grp`` (and all its children) is deleted from
 the scene automatically after a successful bake.

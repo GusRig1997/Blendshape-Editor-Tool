@@ -119,8 +119,8 @@ Rename Targets
 
 Operates on the targets currently selected in the **Shape Editor**.
 
-Prefix / Suffix
-^^^^^^^^^^^^^^^
+Add Prefix / Suffix
+^^^^^^^^^^^^^^^^^^^
 
 .. list-table::
    :widths: 20 80
@@ -128,10 +128,11 @@ Prefix / Suffix
 
    * - Field
      - Description
-   * - **Set Prfx**
+   * - **Add**
      - Text to prepend to each selected target name.
-   * - **Sufx**
-     - Text to append to each selected target name.
+   * - **_target_**
+     - *(label, centre)* — indicates the existing target name sits between
+       prefix and suffix fields.
 
 Click **Apply** to rename. Both fields are applied simultaneously.
 
@@ -142,11 +143,13 @@ Search & Replace
    :widths: 20 80
    :header-rows: 1
 
-   * - Field
+   * - Field / Button
      - Description
    * - **S&R**
      - String to search for within existing target names.
-   * - **→**
+   * - **⇄**
+     - Swaps the content of the Search and Replace fields.
+   * - *(replace field)*
      - Replacement string. Leave empty to delete the matched substring.
 
 Click **Apply** to process all selected targets.
@@ -154,8 +157,8 @@ Click **Apply** to process all selected targets.
 Swap Target Names
 ^^^^^^^^^^^^^^^^^
 
-Select **exactly two** targets in the Shape Editor, then click
-**Swap Names** to exchange their names.
+Click the **swap icon** (centred in the row) to exchange the names of
+**exactly two** targets selected in the Shape Editor.
 The vertex deltas are untouched — only the name attributes are swapped.
 The operation is fully undoable.
 

@@ -1,5 +1,68 @@
 # Changelog — Blendshape Editor Tool
 
+## v.05.50
+
+**Core — Create Opposite: per-target disconnect**
+
+- `create_opposite_shape` now disconnects only the current source target's weight attribute (`bs_name.w[index]`) before calling `duplicate_target`, instead of all targets — avoids unnecessary disconnect/reconnect of unrelated targets when processing multiple selected targets
+- The already-saved `src_conns` list is reused for the mirror-driver section (no re-read after disconnect)
+- Reconnect happens in a `finally` block to guarantee cleanup even on error
+
+**UI — Shelf: Delta Mush Cleaner**
+
+- **Clean BS Node** removed from the shelf (Row 1) and moved to the **Edit** menu
+- **Delta Mush Cleaner** added to Row 1 in its place (icon: `deltaMush_cleaner.png`)
+- Creates a Delta Mush deformer on the selected mesh with clean defaults: `smoothingIterations=3`, `inwardConstraint=0.5`, `outwardConstraint=0.5`, `distanceWeight=1`
+- Works on any selected mesh transform with a mesh shape
+
+**UI — Edit menu: new actions**
+
+- **Clean Blendshape Node** — moved from shelf to Edit menu; same behaviour as before
+- **Clean Deformed Mesh** — new action; removes residual sculpt color sets (`SculptFreezeColorTemp`, `SculptMaskColorTemp`) and any leftover unnamed sets (up to 4 passes), then runs `doBakeNonDefHistory` on all selected meshes
+
+**UI — Split section: layout overhaul**
+
+- **Split Target** and **Edge Loop Split** buttons now share a single row, each occupying half the width (`[text][icon 36×36]` grouped left, stretch right)
+- Both button pairs are wrapped in a titled QGroupBox for visual grouping
+- Separator line between the locator table and Axis Options removed
+- All icon buttons standardised to 36×36 / icon 34×34 (matching the main shelf)
+
+**UI — Split section: preset locator rename proposal**
+
+- When saving a preset, a **Rename Locators** dialog now appears proposing to rename each locator to `{side}_{preset_name}_loc_{suffix}` (parts omitted if empty, e.g. `R_Zip_loc_e`)
+- Each row is individually checkable; proposed names are editable before confirming
+- **Rename Checked** applies selected renames in Maya and updates the table; **Skip** saves without renaming
+
+**UI — Split section: preset visibility**
+
+- When switching presets from the combo, all sibling preset sub-groups (`*_splitsLocs_grp`) are hidden automatically; only the selected preset's group is made visible
+
+**UI — Wire Setup: shelf overhaul**
+
+- **Copy Wire Weight** and **Paste Wire Weight** buttons added to the wire shelf row (icons: `copy_delta.png`, `paste_delta.png`)
+  - Copy: reads the wire deformer weight of the single selected vertex via `cmds.percent`
+  - Paste: applies the stored weight to all selected vertices (undoable)
+- **Bake Wire to Mesh** moved from the body to the **right side of the wire shelf** (icon-only, 36×36)
+  - Right-click opens a context menu with a checkable **Delete Wire at Bake** option (replaces the old checkbox)
+- **Create Wire Setup** remains in the body as `[label][icon 36×36]` left-aligned
+- All wire shelf buttons standardised to 36×36 / icon 34×34
+- **Create Wire Setup** and **Bake Wire to Mesh** now have custom icons (`create_wire_setup.png`, `bake_wire.png`)
+- Shape list **+** / **−** buttons reduced to 22×22
+
+**UI — Nomenclature section: layout changes**
+
+- "Set Prfx" label renamed to **Add**, "Sufx" label renamed to **_target_** (centered), both left-aligned
+- The `→` label between Search and Replace fields replaced by a **⇄ button** (30×30, font 16px) that swaps the content of both fields
+- **Swap Target Names** button converted to icon-only 36×36, centered with symmetric stretch (no label)
+
+**UI — Tools section: Joints Setup**
+
+- **Joints Setup** section temporarily disabled (`setEnabled(False)`) — greyed out and non-interactive
+
+**Installer**
+
+- `dragDropInstaller.py` renamed to `dragDropInstaller_BSE.py` to avoid conflicts with identically-named installers from other tools
+
 ## v.05.20
 
 **Core — Split / Create Opposite: regen mesh handling**

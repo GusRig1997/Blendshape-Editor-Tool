@@ -143,10 +143,13 @@ Constrains the influence of each locator to a maximum distance.
 
 ----
 
-Split Target
-------------
+Action Buttons
+--------------
 
-**Split Target** button
+**Split Target** and **Edge Loop Split** share a single row, each occupying
+half the available width (``[label][icon]`` left-aligned with stretch).
+
+**Split Target**
   Reads the locator table, computes per-vertex weights for every locator,
   and creates one new target per locator (or per locator pair when
   Symmetric is ON). The original target is preserved unchanged.
@@ -214,3 +217,36 @@ Enable and increase the Radius for a softer transition.
 .. note::
    Seed vertices must not lie on the seam edge loop. If a seed is on
    the seam, the operation raises an error with a clear message.
+
+----
+
+Locator Rename Proposal
+^^^^^^^^^^^^^^^^^^^^^^^
+
+When saving a **new preset**, a **Rename Locators** dialog appears proposing
+to rename each locator in the table to match the preset name.
+
+**Proposed format:** ``{side}_{preset_name}_loc_{suffix}``
+
+Parts are omitted when empty. For example, a preset named *Zip* with
+10 locators in Symmetric mode might produce:
+
+.. code-block:: text
+
+   R_Zip_loc_e  ·  R_Zip_loc_d  ·  …  ·  L_Zip_loc_e
+
+.. list-table::
+   :widths: 25 75
+   :header-rows: 1
+
+   * - Control
+     - Description
+   * - **Current** column
+     - Existing locator name (read-only). Checkbox to include/exclude the row.
+   * - **Proposed** column
+     - Editable — adjust the name before confirming.
+   * - **Rename Checked**
+     - Applies all checked renames in Maya and updates the table, then
+       proceeds to save the preset.
+   * - **Skip**
+     - Saves the preset without renaming any locators.
