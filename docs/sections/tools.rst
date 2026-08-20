@@ -80,3 +80,6 @@ joint chain that can be used to drive blendShape targets or corrective shapes.
 Click **Build Rig** to generate the joint-based rig from the captured middle
 edge. The rig is placed in the scene ready for weight painting and connection
 to the blendShape node.
+
+.. note::
+   **Joints Setup** is currently disabled and will be re-enabled in a future version.

@@ -34,9 +34,13 @@ Row 1 — Sculpt & Visualisation
      -
    * - **Shape Editor**
      - Opens Maya's native Shape Editor window.
-   * - **Clean BS Node**
-     - Removes empty target slots from the blendShape node.
-       See :ref:`clean-bs-node` below.
+   * - **Delta Mush Cleaner**
+     - Creates a Delta Mush deformer on the selected mesh with clean defaults
+       (``smoothingIterations=3``, ``inwardConstraint=0.5``,
+       ``outwardConstraint=0.5``, ``distanceWeight=1``).
+       Primarily used alongside **Bake Deformers** to clean residual deltas
+       on complex meshes. Delete the node once targets are cleaned before
+       publishing the rig.
    * - **Reset All Targets to 0**
      - Sets every target weight on the active blendShape node(s) to 0.
        Useful to return to neutral pose after previewing shapes.
@@ -44,6 +48,9 @@ Row 1 — Sculpt & Visualisation
      -
    * - **Exit Delta View**
      - Restores original vertex colours and disables Delta View.
+
+.. note::
+   **Clean Blendshape Node** has been moved to the **Edit** menu.
 
 ----
 
@@ -85,29 +92,32 @@ Row 2 — Extra Sculpt & Target Utilities
 
 ----
 
-.. _clean-bs-node:
+Edit Menu
+---------
 
-Clean BS Node
--------------
+The **Edit** menu in the menu bar provides additional maintenance operations.
 
-Removes empty or phantom target slots from the blendShape node.
+.. list-table::
+   :widths: 30 70
+   :header-rows: 1
 
-**Sources checked:**
-
-1. **Phantom slots** — weight indices that have no alias attribute (no name).
-2. **Empty named slots** — named targets that have no ``inputTargetGroup``
-   data or an empty ``inputTargetItem`` array. These are typically created
-   by Maya's ``.shp`` import/export round-trip.
-
-**Node resolution:**
-
-- If one or more targets are selected in the **Shape Editor**, the operation
-  runs on the blendShape node(s) associated with those targets.
-- If nothing is selected in the Shape Editor, the operation falls back to the
-  blendShape node currently loaded in the tool (displayed in the top status
-  line).
-
-The total number of slots removed is reported in the status bar.
+   * - Action
+     - Description
+   * - **Reset Default Options**
+     - Restores all split options to their default values.
+   * - **Naming Convention…**
+     - Opens the Naming Convention dialog.
+   * - **Clean Blendshape Node**
+     - Removes empty or phantom target slots from the blendShape node(s)
+       of the selected targets in the Shape Editor. Falls back to the
+       currently loaded blendShape node if nothing is selected.
+   * - **Clean Deformed Mesh**
+     - Removes residual sculpt color sets (``SculptFreezeColorTemp``,
+       ``SculptMaskColorTemp``) and any leftover unnamed sets from the
+       selected mesh(es), then runs **Bake Non-Deformer History**.
+       Useful after sculpting targets that leave color set debris.
+   * - **Documentation**
+     - Opens the online documentation in your web browser.
 
 ----
 
