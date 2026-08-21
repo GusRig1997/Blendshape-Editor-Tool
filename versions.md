@@ -1,5 +1,27 @@
 # Changelog — Blendshape Editor Tool
 
+## v.05.51
+
+**Rig Connector — Bug fix: status dot grayed on primary rows with proxies**
+
+- After Build & Connect, primary rows whose shape also had proxy rows showed a grey (no-info) status dot — the last row sharing the same shape name (the proxy) was winning in the `row_by_shape` dict, overwriting the primary's update
+- Fixed by adding a `_table_row` index to each row dict in `_collect_rows`; `build_and_connect_rig` now propagates `_table_row` through every `results.append` call (Phase 1 validation failures and Phase 3 network build — soft blend, skip, ok, error paths)
+- Status update loops in `_on_build_connect` and `_on_connect_selected` now resolve the table row via `res.get("_table_row")` first, falling back to `row_by_shape` for callers that don't supply the field
+
+**Rig Connector — Min / Max display format**
+
+- `_fmt_inval` now formats values with exactly 2 decimal places (`:.2f`) — trailing zeros are no longer stripped, so `45` displays as `45.00`, `0.5` as `0.50`
+- `QDoubleValidator` locale forced to C (`validator.setLocale(QtCore.QLocale.c())`) so the `.` is always the accepted decimal separator regardless of the OS locale (fixes `,` being accepted on French Windows)
+
+**Rig Connector — Confirmation dialogs on Autofill when table is not empty**
+
+- **Autofill from BS Node**: if the table already contains rows (detected via `_is_placeholder()` rather than the stale `self._shapes` list), a Yes/No dialog asks before overwriting — message shows the count of primary rows (proxies excluded)
+- **Autofill from JSON**: same confirmation added at the top of `_load_mapping_from_path`, before the overlay and file read; `_push_undo` is called only after the user confirms, so cancelling leaves the undo stack untouched
+
+**Rig Connector — Table header rename**
+
+- "Shape" column header renamed to **Target**
+
 ## v.05.50
 
 **Core — Create Opposite: per-target disconnect**

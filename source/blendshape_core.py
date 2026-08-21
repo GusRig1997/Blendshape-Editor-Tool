@@ -831,6 +831,80 @@ def _insert_indices_after(bs_node, source_index, new_indices, source_is_director
 
     return False
 
+
+def get_shape_editor_order(bs_node):
+    """
+    Returns the target names of bs_node in the visual order shown by Maya's
+    Shape Editor, by traversing targetDirectory[d].childIndices recursively.
+
+    Convention used by Maya:
+      - Positive childIndices value  → weight index of a target
+      - Negative childIndices value  → -d  references subdirectory d
+
+    The root directory is the entry whose own index does not appear as a
+    negative reference inside any other directory's childIndices.
+
+    Falls back to plain weight-index order if the targetDirectory structure
+    is missing or empty.
+    """
+    # Build weight_index → alias name mapping
+    w_indices = cmds.getAttr(f"{bs_node}.w", multiIndices=True) or []
+    idx_to_name = {}
+    for i in w_indices:
+        name = cmds.aliasAttr(f"{bs_node}.w[{i}]", q=True)
+        if name:
+            idx_to_name[i] = name
+
+    if not idx_to_name:
+        return []
+
+    # Read all directory entries
+    dir_indices = cmds.getAttr(f"{bs_node}.targetDirectory", multiIndices=True) or []
+    if not dir_indices:
+        return [idx_to_name[i] for i in sorted(idx_to_name)]
+
+    dir_children = {}
+    for d in dir_indices:
+        children = cmds.getAttr(f"{bs_node}.targetDirectory[{d}].childIndices") or []
+        dir_children[d] = list(children)
+
+    # Root = directory index not referenced as a negative child by any other
+    referenced_dirs = set()
+    for children in dir_children.values():
+        for c in children:
+            if c < 0:
+                referenced_dirs.add(-c)
+
+    root_candidates = [d for d in dir_indices if d not in referenced_dirs]
+    root = root_candidates[0] if root_candidates else dir_indices[0]
+
+    # Recursive DFS to collect target names in visual order
+    visited_dirs = set()
+
+    def _collect(d):
+        if d in visited_dirs:
+            return []
+        visited_dirs.add(d)
+        result = []
+        for c in dir_children.get(d, []):
+            if c >= 0:
+                if c in idx_to_name:
+                    result.append(idx_to_name[c])
+            else:
+                result.extend(_collect(-c))
+        return result
+
+    ordered = _collect(root)
+
+    # Safety: append any targets not reached via targetDirectory
+    referenced_targets = {c for children in dir_children.values() for c in children if c >= 0}
+    for i in sorted(idx_to_name):
+        if i not in referenced_targets:
+            ordered.append(idx_to_name[i])
+
+    return ordered
+
+
 def try_set_weight(bs_node, idx, value):
     """
     Sets bs_node.w[idx] to value.
@@ -3788,21 +3862,23 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
         shape         = row.get("shape", "").strip()
         ctrl          = row.get("controller", "").strip()
         resolved_attr = row.get("attr", "ty").strip()
-        in_min        = float(row.get("in_min", 0.0))
-        in_max        = float(row.get("in_max", 1.0))
+        in_min        = float(row.get("min", row.get("in_min", 0.0)))
+        in_max        = float(row.get("max", row.get("in_max", 1.0)))
         gate          = row.get("gate", "").strip()
 
+        _trow = row.get("_table_row")
+
         if not shape or not ctrl or not resolved_attr:
-            results.append({"shape": shape, "status": "skip"})
+            results.append({"shape": shape, "status": "skip", "_table_row": _trow})
             continue
 
         idx = target_map.get(shape)
         if idx is None:
-            results.append({"shape": shape, "status": "no_target"})
+            results.append({"shape": shape, "status": "no_target", "_table_row": _trow})
             continue
 
         if not cmds.objExists(ctrl):
-            results.append({"shape": shape, "status": "no_ctrl"})
+            results.append({"shape": shape, "status": "no_ctrl", "_table_row": _trow})
             continue
 
         ctrl_attr_full = f"{ctrl}.{resolved_attr}"
@@ -3812,9 +3888,10 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                 cmds.addAttr(ctrl, longName=resolved_attr, attributeType="float",
                              defaultValue=0.0, keyable=True)
             except Exception:
-                results.append({"shape": shape, "status": "no_attr"})
+                results.append({"shape": shape, "status": "no_attr", "_table_row": _trow})
                 continue
         valid_rows.append({
+            "_table_row": _trow,
             "shape": shape, "idx": idx, "ctrl": ctrl,
             "ctrl_attr": ctrl_attr_full, "resolved_attr": resolved_attr,
             "in_min": in_min, "in_max": in_max,
@@ -3899,9 +3976,11 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                         keys = _soft_blend_keys(in_max, partner_in_max)
                     for t, v, _ in keys:
                         cmds.setKeyframe(curve, float=t, value=v)
+                    _TANG_TO_MAYA = {"smooth": "spline"}
                     for i, (_, _, tang) in enumerate(keys):
+                        maya_tang = _TANG_TO_MAYA.get(tang, tang)
                         cmds.keyTangent(curve, index=(i, i),
-                                        inTangentType=tang, outTangentType=tang)
+                                        inTangentType=maya_tang, outTangentType=maya_tang)
 
                     cmds.connectAttr(ctrl_attr,         f"{curve}.input",  force=True)
                     cmds.connectAttr(f"{curve}.output", bs_weight_attr,    force=True)
@@ -3917,8 +3996,9 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                     # Register ctrl so hasLimits attr is still created
                     pending_conds.setdefault(ctrl, [])
 
-                    for _ in group:
-                        results.append({"shape": shape, "status": "ok"})
+                    for vr in group:
+                        results.append({"shape": shape, "status": "ok",
+                                        "_table_row": vr.get("_table_row")})
                     continue  # skip standard norm/clamp/cond path
 
             # ── Norm nodes (one per driver) ───────────────────────────────────
@@ -3955,8 +4035,9 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
             # ── Additive sum if multiple drivers ──────────────────────────────
             # All drivers disabled ->skip network creation
             if not norm_outputs:
-                for _ in group:
-                    results.append({"shape": shape, "status": "skip"})
+                for vr in group:
+                    results.append({"shape": shape, "status": "skip",
+                                    "_table_row": vr.get("_table_row")})
                 continue
 
             if len(norm_outputs) == 1:
@@ -4042,12 +4123,14 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                 if ctrl != primary_ctrl:
                     pending_conds.setdefault(ctrl, [])  # force creation without cond
 
-            for _ in group:
-                results.append({"shape": shape, "status": "ok"})
+            for vr in group:
+                results.append({"shape": shape, "status": "ok",
+                                "_table_row": vr.get("_table_row")})
 
         except Exception as e:
-            for _ in group:
-                results.append({"shape": shape, "status": f"error:{e}"})
+            for vr in group:
+                results.append({"shape": shape, "status": f"error:{e}",
+                                "_table_row": vr.get("_table_row")})
 
     # ── Post-loop: hasLimits attr (added last) + connections ─────────────────
     for ctrl in set(pending_limits) | set(pending_conds):

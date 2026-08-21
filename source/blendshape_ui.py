@@ -8,7 +8,7 @@ from blendshape_core import *
 from blendshape_core import (_save_shape_editor_selection, _restore_shape_editor_selection,
                              _collect_magnitudes, _find_blendshape_on_mesh)
 
-import json, os
+import json, os, copy
 
 # Module-level slot called from the MEL wrapper of setSculptTargetIndex
 _sculpt_idx_callback = None
@@ -72,6 +72,64 @@ def _user_naming_prefs_path():
 def _rig_mapping_prefs_path():
     return os.path.join(cmds.internalVar(userPrefDir=True),
                         "blendshape_editor_rig_mapping.json")
+
+
+def _smart_mapping_default(current_path=""):
+    """Return the best default path/directory for mapping file dialogs.
+
+    Priority:
+      1. Directory of the currently loaded mapping file (if any).
+      2. Directory of the current Maya scene file (if one is open).
+      3. Maya user prefs directory (fallback).
+    """
+    if current_path:
+        return current_path
+    try:
+        scene = cmds.file(q=True, sceneName=True) or ""
+        scene_dir = os.path.dirname(scene)
+        if scene_dir and os.path.isdir(scene_dir):
+            return scene_dir
+    except Exception:
+        pass
+    return _rig_mapping_prefs_path()
+
+
+class _NoScrollCombo(QtWidgets.QComboBox):
+    """QComboBox that ignores wheel scroll unless the widget has keyboard focus."""
+    def wheelEvent(self, event):
+        if self.hasFocus():
+            super().wheelEvent(event)
+        else:
+            event.ignore()
+
+
+def _fmt_inval(v):
+    """Format a float for InMin/InMax QLineEdit display (2 decimal places, dot separator)."""
+    try:
+        return f"{float(v):.2f}"
+    except (TypeError, ValueError):
+        return "0.00"
+
+
+def _read_inval(le, default=0.0):
+    """Read a float from an InMin/InMax QLineEdit, returning default on error."""
+    try:
+        return float(le.text())
+    except (ValueError, AttributeError):
+        return default
+
+
+def _make_inval_le(value, tooltip=None):
+    """Create a QLineEdit for InMin/InMax with double validator (dot separator, C locale)."""
+    le = QtWidgets.QLineEdit()
+    le.setAlignment(QtCore.Qt.AlignCenter)
+    validator = QtGui.QDoubleValidator(-9999.0, 9999.0, 2, le)
+    validator.setLocale(QtCore.QLocale.c())
+    le.setValidator(validator)
+    le.setText(_fmt_inval(value))
+    if tooltip:
+        le.setToolTip(tooltip)
+    return le
 
 
 def _check_shapes_default_json_path():
@@ -1460,8 +1518,8 @@ class RigConnectorDialog(QtWidgets.QDialog):
     _COL_SHAPE = 1
     _COL_CTRL  = 2
     _COL_ATTR  = 3
-    _COL_INMIN = 4
-    _COL_INMAX = 5
+    _COL_MIN = 4
+    _COL_MAX = 5
     _COL_GATE  = 6
     _COL_STAT  = 7
 
@@ -1474,19 +1532,103 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.Window)
         self._shapes = []   # list of shape name strings currently in table
         self._min_h_locked = False
+        self._min_w_locked = False
+        self._undo_stack = []      # list of state dicts (rows, pairs, curve)
+        self._redo_stack = []
+        self._undo_restoring = False  # suppress pushes during restore
         self._build_ui()
         self._populate_from_default_json()
+        self._populate_mapping_from_parent()
+        if self._table.rowCount() == 0:
+            self._add_placeholder_row()
 
     def showEvent(self, event):
         super().showEvent(event)
         if not self._min_h_locked:
             self._min_h_locked = True
             QtCore.QTimer.singleShot(50, self._lock_min_height)
+        QtCore.QTimer.singleShot(0, self._update_scale_position)
+        if not self._min_w_locked:
+            self._min_w_locked = True
+            QtCore.QTimer.singleShot(50, self._lock_min_width)
+
+    def keyPressEvent(self, event):
+        """Ctrl+Z = undo, Ctrl+Y = redo. Blocked from reaching Maya."""
+        if event.modifiers() == QtCore.Qt.ControlModifier:
+            if event.key() == QtCore.Qt.Key_Z:
+                self._undo()
+                event.accept()
+                return
+            if event.key() == QtCore.Qt.Key_Y:
+                self._redo()
+                event.accept()
+                return
+        super().keyPressEvent(event)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._update_scale_position()
 
     def _lock_min_height(self):
         h = self.height()
         if h > 0:
             self.setMinimumHeight(h)
+
+    def _lock_min_width(self):
+        w = self.width()
+        if w > 0:
+            self.setMinimumWidth(w)
+
+    def _update_scale_position(self):
+        """Align search field to Shape column right edge; center Scale Factor over InMin+InMax."""
+        hh   = self._table.horizontalHeader()
+        fw   = self._table.frameWidth()
+        sb   = self._table.verticalScrollBar()
+        sb_w = sb.width() if sb.isVisible() else 0
+        sp   = self._search_row.spacing()   # 4 px between every item
+        _Fixed = QtWidgets.QSizePolicy.Fixed
+
+        # ── Filter left spacer: flush left (label+field start at left edge)
+        self._filter_left_spacer.changeSize(0, 0, _Fixed, _Fixed)
+        left_spacer_w = 0
+
+        # ── Filter field: width ends at Shape column right edge, flush against label
+        lbl_w       = self._lbl_filter.sizeHint().width()
+        shape_right = fw + hh.sectionViewportPosition(self._COL_SHAPE) + hh.sectionSize(self._COL_SHAPE)
+        le_left     = sp + lbl_w + sp   # left_spacer_w=0, so lbl_w + 2*sp
+        self._le_search.setFixedWidth(max(40, shape_right - le_left))
+        le_search_w = self._le_search.width()
+
+        # ── Scale Factor block [lbl_scale + (sp+4px+sp) + le_scale]: center over InMin+InMax
+        lbl_scale_w = self._lbl_scale.sizeHint().width()
+        le_scale_w  = self._le_scale.width()         # 44 px
+        inner_gap   = sp + 4 + sp                    # gap between lbl_scale and le_scale
+        block_w     = lbl_scale_w + inner_gap + le_scale_w
+
+        inmin_left  = fw + hh.sectionViewportPosition(self._COL_MIN)
+        inmax_right = fw + hh.sectionViewportPosition(self._COL_MAX) + hh.sectionSize(self._COL_MAX)
+        combined_w  = inmax_right - inmin_left
+        block_left_target = inmin_left + (combined_w - block_w) // 2 - 10
+
+        # x(lbl_scale) = left_spacer_w + sp + lbl_w + sp + le_search_w + sp
+        #                + scale_left_spacer_w + sp
+        #              = left_spacer_w + lbl_w + le_search_w + scale_left_w + 4*sp
+        x_if_zero     = left_spacer_w + lbl_w + le_search_w + 4 * sp
+        scale_left_w  = max(0, block_left_target - x_if_zero)
+        self._scale_left_spacer.changeSize(scale_left_w, 0, _Fixed, _Fixed)
+
+        # ── Scale right spacer: fills remaining space so save buttons sit at right edge
+        # Row items (10 items → 9 gaps of sp):
+        # [left_spacer][lbl_filter][le_search][scale_left][lbl_scale][4px][le_scale][scale_right][save_map][save_plus]
+        save_map_w  = self._btn_save_map.width()
+        save_plus_w = self._btn_save_plus.width()
+        row_w       = hh.width() + 2 * fw + sb_w
+        fixed_sum   = (left_spacer_w + lbl_w + le_search_w + scale_left_w
+                       + lbl_scale_w + 4 + le_scale_w + save_map_w + save_plus_w)
+        scale_right_w = max(0, row_w - fixed_sum - 9 * sp)
+        self._scale_right_spacer.changeSize(scale_right_w, 0, _Fixed, _Fixed)
+
+        self._search_row.invalidate()
 
     # ── UI build ──────────────────────────────────────────────────────────────
 
@@ -1514,44 +1656,34 @@ class RigConnectorDialog(QtWidgets.QDialog):
         _FS = 6  # uniform spacing between label / field / button
 
         # Mapping json
-        files_row.addWidget(QtWidgets.QLabel("Mapping json"))
+        files_row.addWidget(QtWidgets.QLabel("Mapping .json"))
         files_row.addSpacing(_FS)
+        _fm_ss_nopad = _fm_ss.replace("padding: 2px;", "padding: 0px;")
         btn_save_map = QtWidgets.QToolButton()
         btn_save_map.setAutoRaise(True)
-        btn_save_map.setStyleSheet(_fm_ss)
+        btn_save_map.setStyleSheet(_fm_ss_nopad)
         _pix_save_map = QtGui.QPixmap(f"{_idir}/save.png")
         if not _pix_save_map.isNull():
             btn_save_map.setIcon(QtGui.QIcon(_pix_save_map))
-            btn_save_map.setIconSize(QtCore.QSize(34, 34))
+            btn_save_map.setIconSize(QtCore.QSize(38, 38))
         btn_save_map.setFixedSize(36, 36)
         btn_save_map.setToolTip(
-            "Save the current table mapping.\n"
-            "Opens a dialog pre-filled with the loaded path if available.")
+            "Save — overwrite the current file directly.\n"
+            "Opens a browser only if no file is loaded yet.")
         btn_save_map.clicked.connect(self._save_mapping)
-        files_row.addWidget(btn_save_map)
-        files_row.addSpacing(2)
         btn_save_plus = QtWidgets.QToolButton()
         btn_save_plus.setAutoRaise(True)
-        btn_save_plus.setStyleSheet(_fm_ss)
+        btn_save_plus.setStyleSheet(_fm_ss_nopad)
         _pix_save_plus = QtGui.QPixmap(f"{_idir}/save_plus.png")
         if not _pix_save_plus.isNull():
             btn_save_plus.setIcon(QtGui.QIcon(_pix_save_plus))
-            btn_save_plus.setIconSize(QtCore.QSize(34, 34))
+            btn_save_plus.setIconSize(QtCore.QSize(38, 38))
         btn_save_plus.setFixedSize(36, 36)
         btn_save_plus.setToolTip(
             "Save As — increment version.\n"
             "Proposes a new filename with an incremented version number\n"
             "(e.g. mapping_v01.json ->mapping_v02.json).")
         btn_save_plus.clicked.connect(self._save_mapping_increment)
-        files_row.addWidget(btn_save_plus)
-        files_row.addSpacing(_FS)
-        self._le_mapping_path = QtWidgets.QLineEdit()
-        self._le_mapping_path.setReadOnly(True)
-        self._le_mapping_path.setFixedWidth(180)
-        self._le_mapping_path.setFixedHeight(23)
-        self._le_mapping_path.setPlaceholderText("C:/path/to/rig_mapping.json")
-        files_row.addWidget(self._le_mapping_path)
-        files_row.addSpacing(_FS)
         btn_load_map = QtWidgets.QToolButton()
         btn_load_map.setAutoRaise(True)
         btn_load_map.setStyleSheet(_fm_ss)
@@ -1563,18 +1695,31 @@ class RigConnectorDialog(QtWidgets.QDialog):
         btn_load_map.setToolTip("Load a previously saved table mapping from a JSON file")
         btn_load_map.clicked.connect(self._load_mapping)
         files_row.addWidget(btn_load_map)
+        files_row.addSpacing(_FS)
+        self._le_mapping_path = QtWidgets.QLineEdit()
+        self._le_mapping_path.setReadOnly(True)
+        self._le_mapping_path.setMinimumWidth(260)
+        self._le_mapping_path.setFixedHeight(23)
+        self._le_mapping_path.setPlaceholderText("C:/path/to/rig_mapping.json")
+        files_row.addWidget(self._le_mapping_path)
+        files_row.addSpacing(_FS)
+        btn_json_autofill = QtWidgets.QToolButton()
+        btn_json_autofill.setAutoRaise(True)
+        btn_json_autofill.setStyleSheet(_fm_ss)
+        _pix_json_af = QtGui.QPixmap(f"{_idir}/json_autofill.png")
+        if not _pix_json_af.isNull():
+            btn_json_autofill.setIcon(QtGui.QIcon(_pix_json_af))
+            btn_json_autofill.setIconSize(QtCore.QSize(34, 34))
+        btn_json_autofill.setFixedSize(36, 36)
+        btn_json_autofill.setToolTip(
+            "Auto Fill from JSON — reload the table from the currently loaded mapping file.")
+        btn_json_autofill.clicked.connect(self._autofill_from_json)
+        files_row.addWidget(btn_json_autofill)
 
         files_row.addStretch(1)
 
         # BS Node
-        files_row.addWidget(QtWidgets.QLabel("BS Node"))
-        files_row.addSpacing(_FS)
-        self._le_bs_node = QtWidgets.QLineEdit()
-        self._le_bs_node.setReadOnly(True)
-        self._le_bs_node.setFixedWidth(160)
-        self._le_bs_node.setFixedHeight(23)
-        self._le_bs_node.setPlaceholderText("blendShape node")
-        files_row.addWidget(self._le_bs_node)
+        files_row.addWidget(QtWidgets.QLabel("BlendShape Node"))
         files_row.addSpacing(_FS)
         btn_get_bs = QtWidgets.QToolButton()
         btn_get_bs.setAutoRaise(True)
@@ -1584,20 +1729,25 @@ class RigConnectorDialog(QtWidgets.QDialog):
             btn_get_bs.setIcon(QtGui.QIcon(_pix_get_bs))
             btn_get_bs.setIconSize(QtCore.QSize(34, 34))
         btn_get_bs.setFixedSize(36, 36)
-        btn_get_bs.setToolTip("Grab the blendShape node from the current selection")
+        btn_get_bs.setToolTip("Get the blendShape node from the current mesh selection or selected blendshape node")
         btn_get_bs.clicked.connect(self._get_bs_node)
         files_row.addWidget(btn_get_bs)
-
-        files_row.addStretch(1)
-
-        # bs_autofill — right edge
+        files_row.addSpacing(_FS)
+        self._le_bs_node = QtWidgets.QLineEdit()
+        self._le_bs_node.setReadOnly(True)
+        self._le_bs_node.setFixedWidth(160)
+        self._le_bs_node.setFixedHeight(23)
+        self._le_bs_node.setPlaceholderText("blendShape node")
+        files_row.addWidget(self._le_bs_node)
+        files_row.addSpacing(_FS)
         btn_fill_bs = QtWidgets.QToolButton()
         btn_fill_bs.setAutoRaise(True)
         btn_fill_bs.setStyleSheet(_fm_ss)
-        _pix_bs_af = QtGui.QPixmap(f"{_idir}/json_autofill.png")
-        if not _pix_bs_af.isNull():
-            btn_fill_bs.setIcon(QtGui.QIcon(_pix_bs_af))
-            btn_fill_bs.setIconSize(QtCore.QSize(34, 34))
+        _pix_bs_af = QtGui.QPixmap(f"{_idir}/bs_auto-fill.png")
+        if _pix_bs_af.isNull():
+            _pix_bs_af = QtGui.QPixmap(f"{_idir}/json_autofill.png")
+        btn_fill_bs.setIcon(QtGui.QIcon(_pix_bs_af))
+        btn_fill_bs.setIconSize(QtCore.QSize(34, 34))
         btn_fill_bs.setFixedSize(36, 36)
         btn_fill_bs.setToolTip(
             "Auto Fill from BS Node — populate the table with all targets\n"
@@ -1611,44 +1761,76 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         outer.addWidget(grp_files)
 
-        # ── Search ────────────────────────────────────────────────────────────
-        search_row = QtWidgets.QHBoxLayout()
+        # ── Search + Scale Ranges ─────────────────────────────────────────────
+        self._search_row = QtWidgets.QHBoxLayout()
+        search_row = self._search_row
         search_row.setSpacing(4)
-        search_row.addWidget(QtWidgets.QLabel("Filter"))
+        self._filter_left_spacer = QtWidgets.QSpacerItem(
+            0, 0, QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        search_row.addItem(self._filter_left_spacer)
+        self._lbl_filter = QtWidgets.QLabel("Filter")
+        search_row.addWidget(self._lbl_filter)
         self._le_search = QtWidgets.QLineEdit()
         self._le_search.setPlaceholderText("Search shapes…")
         self._le_search.setClearButtonEnabled(True)
         self._le_search.textChanged.connect(self._filter_rows)
         search_row.addWidget(self._le_search)
-        outer.addLayout(search_row)
+
+        self._scale_left_spacer = QtWidgets.QSpacerItem(
+            12, 0, QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        search_row.addItem(self._scale_left_spacer)
+        self._lbl_scale = QtWidgets.QLabel("Scale Factor")
+        search_row.addWidget(self._lbl_scale)
+        search_row.addSpacing(4)
+        self._le_scale = QtWidgets.QLineEdit("2.00")
+        self._le_scale.setAlignment(QtCore.Qt.AlignCenter)
+        self._le_scale.setFixedWidth(44)
+        self._le_scale.setFixedHeight(22)
+        self._le_scale.setToolTip(
+            "Multiplier used when right-clicking In Min / In Max column headers")
+        self._le_scale.editingFinished.connect(self._format_scale_factor)
+        search_row.addWidget(self._le_scale)
+        self._scale_right_spacer = QtWidgets.QSpacerItem(
+            0, 0, QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+        search_row.addItem(self._scale_right_spacer)
+        self._btn_save_map  = btn_save_map
+        self._btn_save_plus = btn_save_plus
+        search_row.addWidget(btn_save_plus)
+        search_row.addWidget(btn_save_map)
+
+        # search_row added below, after sidebar width is known
 
         # ── Table ─────────────────────────────────────────────────────────────
         self._table = QtWidgets.QTableWidget(0, 8)
         self._table.setHorizontalHeaderLabels(
-            ["#", "Shape", "Controller", "Attr",
-             "In Min", "In Max", "Combo Driver", "Status"])
+            ["#", "Target", "Controller", "Attr",
+             "Min", "Max", "Combo Driver", "Status"])
         self._table.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         self._table.customContextMenuRequested.connect(self._show_row_context_menu)
+        self._table.cellDoubleClicked.connect(
+            lambda r, c: self._push_undo() if c == self._COL_SHAPE else None)
         self._table.verticalHeader().setVisible(False)
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self._table.verticalHeader().setDefaultSectionSize(24)
 
         hh = self._table.horizontalHeader()
+        hh.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        hh.customContextMenuRequested.connect(self._show_header_context_menu)
         hh.setSectionResizeMode(self._COL_NUM,   QtWidgets.QHeaderView.Fixed)
         hh.setSectionResizeMode(self._COL_SHAPE, QtWidgets.QHeaderView.Stretch)
         hh.setSectionResizeMode(self._COL_CTRL,  QtWidgets.QHeaderView.Fixed)
         hh.setSectionResizeMode(self._COL_ATTR,  QtWidgets.QHeaderView.Fixed)
-        hh.setSectionResizeMode(self._COL_INMIN, QtWidgets.QHeaderView.Fixed)
-        hh.setSectionResizeMode(self._COL_INMAX, QtWidgets.QHeaderView.Fixed)
+        hh.setSectionResizeMode(self._COL_MIN, QtWidgets.QHeaderView.Fixed)
+        hh.setSectionResizeMode(self._COL_MAX, QtWidgets.QHeaderView.Fixed)
         hh.setSectionResizeMode(self._COL_GATE,  QtWidgets.QHeaderView.Fixed)
         hh.setSectionResizeMode(self._COL_STAT,  QtWidgets.QHeaderView.Fixed)
 
         self._table.setColumnWidth(self._COL_NUM,   28)
         self._table.setColumnWidth(self._COL_CTRL,  140)
         self._table.setColumnWidth(self._COL_ATTR,  90)
-        self._table.setColumnWidth(self._COL_INMIN, 65)
-        self._table.setColumnWidth(self._COL_INMAX, 65)
+        self._table.setColumnWidth(self._COL_MIN, 65)
+        self._table.setColumnWidth(self._COL_MAX, 65)
         self._table.setColumnWidth(self._COL_GATE,  100)
         self._table.setColumnWidth(self._COL_STAT,  50)
 
@@ -1696,12 +1878,13 @@ class RigConnectorDialog(QtWidgets.QDialog):
         btn_dn  = _rc_side_btn("↓", "Move selected rows down by one position",
                                self._move_down)
 
-        btn_opp = _rc_icon_btn(
-            f"{_idir}/opposite_row.png",
+        btn_opp = _rc_side_btn(
+            "L→R",
             "Duplicate the selected row with opposite names:\n"
             "swaps L/R (and other symmetric tokens) in the Shape and Controller fields.\n"
             "The new row is inserted directly below the source row.",
             self._create_opposite_row)
+        btn_opp.setStyleSheet("font-size: 11px; font-weight: bold;")
 
         btn_connect_sel = _rc_icon_btn(
             f"{_idir}/link_locs.png",
@@ -1741,43 +1924,52 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._btn_build.setFixedSize(40, 40)
         self._btn_build.clicked.connect(self._on_build_connect)
 
-        side_col = QtWidgets.QVBoxLayout()
-        side_col.setSpacing(0)
-        side_col.setContentsMargins(0, 0, 0, 0)
-        _side_btns = (btn_opp, btn_add, btn_rm, btn_up, btn_dn,
-                      btn_connect_sel, btn_disc_sel, btn_disc_all, self._btn_build)
-        for _b in _side_btns:
-            side_col.addWidget(_b, 0, QtCore.Qt.AlignHCenter)
-            if _b is not self._btn_build:
-                side_col.addItem(QtWidgets.QSpacerItem(
-                    0, _RC_SP,
-                    QtWidgets.QSizePolicy.Fixed,
-                    QtWidgets.QSizePolicy.Fixed))
-
+        _tbl_row = QtWidgets.QHBoxLayout()
+        _tbl_row.setSpacing(_RC_SP)
+        _tbl_row.setContentsMargins(0, 0, 0, 0)
+        _tbl_row.addWidget(self._table, 1)
         _side_vlay = QtWidgets.QVBoxLayout()
-        _side_vlay.setSpacing(0)
+        _side_vlay.setSpacing(_RC_SP)
         _side_vlay.setContentsMargins(0, 0, 0, 0)
         _side_vlay.addStretch(1)
-        _side_vlay.addLayout(side_col)
+        for _b in (btn_connect_sel, btn_disc_sel, btn_disc_all):
+            _side_vlay.addWidget(_b)
+        _side_vlay.addSpacing(8)
+        _side_vlay.addWidget(self._btn_build)
+        _side_vlay.addStretch(1)
+        _tbl_row.addLayout(_side_vlay)
 
-        _side_widget = QtWidgets.QWidget()
-        _side_widget.setLayout(_side_vlay)
-        _side_widget.setFixedWidth(44)
-        _side_widget.setSizePolicy(QtWidgets.QSizePolicy.Fixed,
-                                   QtWidgets.QSizePolicy.Minimum)
+        # search_row constrained to table width: sidebar (40px) + spacing on the right
+        _sidebar_w = 40 + _RC_SP  # btn fixed size + tbl_row spacing
+        _search_outer = QtWidgets.QHBoxLayout()
+        _search_outer.setContentsMargins(0, 0, 0, 0)
+        _search_outer.setSpacing(0)
+        _search_outer.addLayout(search_row, 1)
+        _search_outer.addSpacing(_sidebar_w)
+        outer.addLayout(_search_outer)
 
-        _tbl_row = QtWidgets.QHBoxLayout()
-        _tbl_row.setSpacing(4)
-        _tbl_row.addWidget(self._table, 1)
-        _tbl_row.addWidget(_side_widget)
         outer.addLayout(_tbl_row, 1)
+
+        grp_row_opts = QtWidgets.QGroupBox("Row Options")
+        grp_row_opts.setStyleSheet("QGroupBox { font-size: 11px; }")
+        side_row = QtWidgets.QHBoxLayout(grp_row_opts)
+        side_row.setSpacing(_RC_SP)
+        side_row.setContentsMargins(8, 4, 8, 4)
+        for _b in (btn_add, btn_rm, btn_up, btn_dn, btn_opp):
+            side_row.addWidget(_b)
+        side_row.addStretch(1)
 
         # ── Auto-stagger ──────────────────────────────────────────────────────
         grp_stagger = QtWidgets.QGroupBox("Auto-stagger")
         grp_stagger.setStyleSheet("QGroupBox { font-size: 11px; }")
-        stagger_row = QtWidgets.QHBoxLayout(grp_stagger)
-        stagger_row.setContentsMargins(8, 4, 8, 4)
+        _stagger_vbox = QtWidgets.QVBoxLayout(grp_stagger)
+        _stagger_vbox.setContentsMargins(8, 4, 8, 4)
+        _stagger_vbox.setSpacing(2)
+
+        stagger_row = QtWidgets.QHBoxLayout()
+        stagger_row.setContentsMargins(0, 0, 0, 0)
         stagger_row.setSpacing(4)
+        _stagger_vbox.addLayout(stagger_row)
 
         self._le_stagger_ctrl = QtWidgets.QLineEdit()
         self._le_stagger_ctrl.setPlaceholderText("controller")
@@ -1825,15 +2017,15 @@ class RigConnectorDialog(QtWidgets.QDialog):
         stagger_row.addWidget(self.btn_stagger_sign)
 
         self._combo_stagger_mode = QtWidgets.QComboBox()
-        self._combo_stagger_mode.addItems(["Linear", "Mirror", "Symmetric"])
+        self._combo_stagger_mode.addItems(["Linear", "Symmetric", "Mirror"])
         self._combo_stagger_mode.setFixedWidth(90)
         self._combo_stagger_mode.setToolTip(
             "Linear   : sequential slots [0→1] for each shape.\n"
-            "Mirror   : centre shape activates last, outer shapes first.\n"
-            "           Same direction for all. Ideal for zip lips.\n"
             "Symmetric: outer shapes activate last, centre shape first.\n"
             "           Left half and right half get opposite directions.\n"
-            "           Ideal for brows and cheekbones.")
+            "           Ideal for brows and cheekbones.\n"
+            "Mirror   : centre shape activates last, outer shapes first.\n"
+            "           Same direction for all. Ideal for zip lips.")
         self._combo_stagger_mode.currentTextChanged.connect(self._on_stagger_mode_changed)
         stagger_row.addWidget(self._combo_stagger_mode)
 
@@ -1876,7 +2068,10 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         stagger_row.addStretch(1)
 
-        stagger_row.addWidget(QtWidgets.QLabel("Create Stagger"))
+        _lbl_create_stagger = QtWidgets.QLabel("Create Stagger")
+        stagger_row.addWidget(_lbl_create_stagger)
+        stagger_row.setAlignment(_lbl_create_stagger, QtCore.Qt.AlignVCenter)
+        stagger_row.setAlignment(self._chk_stagger_proxies, QtCore.Qt.AlignVCenter)
         btn_stagger = QtWidgets.QToolButton()
         btn_stagger.setAutoRaise(True)
         btn_stagger.setStyleSheet("""
@@ -1899,7 +2094,60 @@ class RigConnectorDialog(QtWidgets.QDialog):
         btn_stagger.clicked.connect(self._apply_stagger)
         stagger_row.addWidget(btn_stagger)
 
-        outer.addWidget(grp_stagger)
+        # ── Center row (Mirror / Symmetric only) ──────────────────────────────
+        self._center_row_widget = QtWidgets.QWidget()
+        _cr = QtWidgets.QHBoxLayout(self._center_row_widget)
+        _cr.setContentsMargins(0, 0, 0, 0)
+        _cr.setSpacing(6)
+
+        _cr.addStretch(1)
+        _cr.addWidget(QtWidgets.QLabel("Center"))
+
+        self._stagger_center_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
+        self._stagger_center_slider.setRange(0, 100)
+        self._stagger_center_slider.setValue(50)
+        self._stagger_center_slider.setFixedWidth(120)
+        self._stagger_center_slider.setToolTip(
+            "Shift the peak of the stagger distribution.\n"
+            "0.5 = middle row (default). 0.8 = peak at 80% of the row range.\n"
+            "Applies to Mirror and Symmetric modes only.")
+        _cr.addWidget(self._stagger_center_slider)
+
+        self._stagger_center_le = QtWidgets.QLineEdit("0.50")
+        self._stagger_center_le.setFixedWidth(48)
+        self._stagger_center_le.setAlignment(QtCore.Qt.AlignCenter)
+        _cv = QtGui.QDoubleValidator(0.0, 1.0, 2, self._stagger_center_le)
+        _cv.setLocale(QtCore.QLocale(QtCore.QLocale.English))
+        self._stagger_center_le.setValidator(_cv)
+        self._stagger_center_le.setToolTip(
+            "Center of the stagger distribution (0.0 – 1.0).\n"
+            "0.5 = middle row. 0.8 = peak biased toward the last rows.")
+        _cr.addWidget(self._stagger_center_le)
+        _cr.addStretch(1)
+
+        # Sync slider ↔ line edit
+        def _center_slider_changed(val):
+            self._stagger_center_le.setText(f"{val / 100:.2f}")
+        def _center_le_changed():
+            try:
+                v = max(0.0, min(1.0, float(self._stagger_center_le.text())))
+                self._stagger_center_slider.blockSignals(True)
+                self._stagger_center_slider.setValue(int(round(v * 100)))
+                self._stagger_center_slider.blockSignals(False)
+            except ValueError:
+                pass
+        self._stagger_center_slider.valueChanged.connect(_center_slider_changed)
+        self._stagger_center_le.editingFinished.connect(_center_le_changed)
+
+        self._center_row_widget.setEnabled(False)  # disabled until Mirror/Symmetric selected
+        _stagger_vbox.addWidget(self._center_row_widget)
+
+        opts_row = QtWidgets.QHBoxLayout()
+        opts_row.setSpacing(_RC_SP)
+        opts_row.setContentsMargins(0, 0, 0, 0)
+        opts_row.addWidget(grp_row_opts)
+        opts_row.addWidget(grp_stagger)
+        outer.addLayout(opts_row)
 
         # ── Soft Blend Pairs (collapsible, closed by default) ─────────────────
         _HDR_STYLE = (
@@ -2037,6 +2285,80 @@ class RigConnectorDialog(QtWidgets.QDialog):
             self._le_json.setText(path)
             self._load_shapes_from_json(path)
 
+    def _populate_mapping_from_parent(self):
+        """Pre-fill the mapping path from the parent UI, without loading the table."""
+        parent_ui = self.parent()
+        if parent_ui is None or not hasattr(parent_ui, "line_rig_json"):
+            return
+        path = parent_ui.line_rig_json.text().strip()
+        if path and os.path.exists(path):
+            self._le_mapping_path.setText(path)
+
+    # ── Undo / Redo ───────────────────────────────────────────────────────────
+
+    def _current_state(self):
+        """Capture the full current state of the dialog (rows, pairs, curve)."""
+        rows = []
+        if not self._is_placeholder():
+            for r in range(self._table.rowCount()):
+                rows.append(self._snapshot_row(r))
+        return {
+            "rows":  rows,
+            "pairs": self._collect_soft_blend_pairs(),
+            "curve": copy.deepcopy(self._graph.get_keys()),
+        }
+
+    def _push_undo(self):
+        """Push current state onto the undo stack (called before a change)."""
+        if self._undo_restoring:
+            return
+        state = self._current_state()
+        if self._undo_stack and self._undo_stack[-1] == state:
+            return  # deduplicate identical consecutive states
+        self._undo_stack.append(state)
+        if len(self._undo_stack) > 50:
+            self._undo_stack.pop(0)
+        self._redo_stack.clear()
+
+    def _restore_state(self, state):
+        """Rebuild the dialog from a captured state dict."""
+        self._undo_restoring = True
+        try:
+            self._table.setRowCount(0)
+            for snap in state["rows"]:
+                self._insert_row_data_at(self._table.rowCount(), snap)
+            self._renumber_rows()
+            if self._table.rowCount() == 0:
+                self._add_placeholder_row()
+            self._tbl_pairs.setRowCount(0)
+            for pair in state["pairs"]:
+                if len(pair) == 2:
+                    self._insert_pair_row(pair[0], pair[1])
+            if state.get("curve"):
+                self._graph.set_keys(copy.deepcopy(state["curve"]))
+            self._refresh_key_controls()
+        finally:
+            self._undo_restoring = False
+
+    def _undo(self):
+        if not self._undo_stack:
+            return
+        self._redo_stack.append(self._current_state())
+        self._restore_state(self._undo_stack.pop())
+
+    def _redo(self):
+        if not self._redo_stack:
+            return
+        self._undo_stack.append(self._current_state())
+        self._restore_state(self._redo_stack.pop())
+
+    def eventFilter(self, obj, event):
+        """Push undo when a cell widget gains focus (before user edits it)."""
+        if event.type() == QtCore.QEvent.FocusIn:
+            if isinstance(obj, (QtWidgets.QLineEdit, QtWidgets.QComboBox)):
+                self._push_undo()
+        return False
+
     def _load_shapes_from_json(self, path):
         try:
             with open(path, "r") as f:
@@ -2062,10 +2384,13 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._table.setRowCount(0)
         for i, shape in enumerate(self._shapes):
             self._append_table_row(i + 1, shape, controllers)
+        if self._table.rowCount() == 0:
+            self._add_placeholder_row()
 
     def _append_table_row(self, row_num, shape_name, controllers,
                           ctrl="", attr="ty",
                           in_min=0.0, in_max=1.0, gate=""):
+        self._remove_placeholder()
         row = self._table.rowCount()
         self._table.insertRow(row)
 
@@ -2080,7 +2405,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._table.setItem(row, self._COL_SHAPE, shape_item)
 
         # Col 2 — Controller (editable QComboBox)
-        cb_ctrl = QtWidgets.QComboBox()
+        cb_ctrl = _NoScrollCombo()
         cb_ctrl.setEditable(True)
         cb_ctrl.addItem("")
         cb_ctrl.addItems(controllers)
@@ -2093,7 +2418,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._table.setCellWidget(row, self._COL_CTRL, cb_ctrl)
 
         # Col 3 — Attr (editable combo: pick standard or type custom)
-        cb_attr = QtWidgets.QComboBox()
+        cb_attr = _NoScrollCombo()
         cb_attr.setEditable(True)
         cb_attr.addItems(self._ATTR_ITEMS)
         cb_attr.setCurrentText(attr)
@@ -2101,24 +2426,15 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._table.setCellWidget(row, self._COL_ATTR, cb_attr)
 
         # Col 4 — In Min
-        sb_inmin = QtWidgets.QDoubleSpinBox()
-        sb_inmin.setRange(-9999.0, 9999.0)
-        sb_inmin.setSingleStep(0.1)
-        sb_inmin.setDecimals(3)
-        sb_inmin.setValue(in_min)
-        sb_inmin.setLocale(QtCore.QLocale(QtCore.QLocale.English))
-        self._table.setCellWidget(row, self._COL_INMIN, sb_inmin)
+        le_min = _make_inval_le(in_min)
+        self._table.setCellWidget(row, self._COL_MIN, le_min)
 
         # Col 5 — In Max (negative = negative direction)
-        sb_inmax = QtWidgets.QDoubleSpinBox()
-        sb_inmax.setRange(-9999.0, 9999.0)
-        sb_inmax.setSingleStep(0.1)
-        sb_inmax.setDecimals(3)
-        sb_inmax.setValue(in_max)
-        sb_inmax.setLocale(QtCore.QLocale(QtCore.QLocale.English))
-        sb_inmax.setToolTip("Positive = shape activates as controller goes positive.\n"
-                            "Negative = shape activates as controller goes negative.")
-        self._table.setCellWidget(row, self._COL_INMAX, sb_inmax)
+        le_max = _make_inval_le(
+            in_max,
+            tooltip="Positive = shape activates as controller goes positive.\n"
+                    "Negative = shape activates as controller goes negative.")
+        self._table.setCellWidget(row, self._COL_MAX, le_max)
 
         # Col 8 — Cond.
         le_gate = QtWidgets.QLineEdit()
@@ -2137,6 +2453,10 @@ class RigConnectorDialog(QtWidgets.QDialog):
         lbl_status.setAlignment(QtCore.Qt.AlignCenter)
         lbl_status.setStyleSheet("color: grey;")
         self._table.setCellWidget(row, self._COL_STAT, lbl_status)
+
+        # Install undo event filter on all editable cell widgets
+        for _w in (cb_ctrl, cb_attr, le_min, le_max, le_gate):
+            _w.installEventFilter(self)
 
     # ── Toolbar handlers ──────────────────────────────────────────────────────
 
@@ -2166,6 +2486,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
             self._load_shapes_from_json(path)
 
     def _fill_from_bs_node(self):
+        self._push_undo()
         bs_node = self._le_bs_node.text().strip()
         if not bs_node:
             # Auto-detect from selection
@@ -2182,17 +2503,31 @@ class RigConnectorDialog(QtWidgets.QDialog):
             QtWidgets.QMessageBox.information(
                 self, "Fill from BS", f"No targets found on '{bs_node}'.")
             return
-        if self._shapes:
+        if not self._is_placeholder():
+            n_rows = sum(
+                1 for r in range(self._table.rowCount())
+                if not (self._table.item(r, self._COL_NUM) and
+                        self._table.item(r, self._COL_NUM).text() == "\u21b3"))
             answer = QtWidgets.QMessageBox.question(
-                self, "Fill from BS",
-                f"Replace the current {len(self._shapes)} row(s) with "
-                f"{len(targets)} targets from '{bs_node}'?",
+                self, "Autofill from BS Node",
+                f"The table already contains {n_rows} row(s).\n"
+                f"Replace with {len(targets)} targets from '{bs_node}'?",
                 QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
             if answer != QtWidgets.QMessageBox.Yes:
                 return
         self._le_json.clear()
         self._shapes = targets
+        overlay = QtWidgets.QWidget(self._table)
+        overlay.setGeometry(self._table.rect())
+        overlay.setStyleSheet("background: rgba(0, 0, 0, 80);")
+        overlay.setCursor(QtCore.Qt.WaitCursor)
+        overlay.show()
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        QtWidgets.QApplication.processEvents()
         self._rebuild_table()
+        overlay.hide()
+        overlay.deleteLater()
+        QtWidgets.QApplication.restoreOverrideCursor()
 
     # ── Auto-fill ─────────────────────────────────────────────────────────────
 
@@ -2286,7 +2621,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
             # Fill cells
             cb_ctrl  = self._table.cellWidget(row, self._COL_CTRL)
             cb_attr  = self._table.cellWidget(row, self._COL_ATTR)
-            sb_inmax = self._table.cellWidget(row, self._COL_INMAX)
+            le_max = self._table.cellWidget(row, self._COL_MAX)
             if not (cb_ctrl and cb_attr):
                 continue
 
@@ -2300,8 +2635,8 @@ class RigConnectorDialog(QtWidgets.QDialog):
             cb_attr.setCurrentText(attr)
 
             # Encode direction in sign of in_max
-            if sb_inmax and negative:
-                sb_inmax.setValue(-abs(sb_inmax.value()))
+            if le_max and negative:
+                le_max.setValue(-abs(le_max.value()))
 
     # ── Row management ────────────────────────────────────────────────────────
 
@@ -2316,23 +2651,70 @@ class RigConnectorDialog(QtWidgets.QDialog):
         except Exception:
             return []
 
+    # ── Placeholder row (empty table) ─────────────────────────────────────────
+
+    def _is_placeholder(self):
+        """True when the table contains only the grayed-out example row."""
+        if self._table.rowCount() != 1:
+            return False
+        item = self._table.item(0, self._COL_NUM)
+        return item is not None and item.data(QtCore.Qt.UserRole) == "__placeholder__"
+
+    def _add_placeholder_row(self):
+        """Insert a single non-interactive example row when the table is empty."""
+        if self._table.rowCount() > 0:
+            return
+        grey = QtGui.QColor(105, 105, 105)
+        self._table.insertRow(0)
+        for col, text in (
+            (self._COL_NUM,   "1"),
+            (self._COL_SHAPE, "L_shapeName_sel"),
+            (self._COL_CTRL,  "L_controlName_ctrl"),
+            (self._COL_ATTR,  "ty"),
+            (self._COL_GATE,  "R_comboControl_ctrl"),
+            (self._COL_STAT,  "●"),
+        ):
+            item = QtWidgets.QTableWidgetItem(text)
+            item.setFlags(QtCore.Qt.NoItemFlags)
+            item.setForeground(grey)
+            if col == self._COL_NUM:
+                item.setData(QtCore.Qt.UserRole, "__placeholder__")
+            self._table.setItem(0, col, item)
+        for col, val in ((self._COL_MIN, 0.0), (self._COL_MAX, 1.0)):
+            le = _make_inval_le(val)
+            le.setEnabled(False)
+            le.setStyleSheet("color: rgb(105, 105, 105);")
+            self._table.setCellWidget(0, col, le)
+
+    def _remove_placeholder(self):
+        """Remove the placeholder row if it is the only row in the table."""
+        if self._is_placeholder():
+            self._table.removeRow(0)
+
     def _add_row(self):
         controllers = self._scene_controllers()
-        sel = self._shape_editor_selection()
-        if sel:
-            for name in sel:
-                row_num = self._table.rowCount() + 1
-                self._append_table_row(row_num, name, controllers)
-        else:
-            row_num = self._table.rowCount() + 1
-            self._append_table_row(row_num, "", controllers)
+        sel_rows = sorted(set(idx.row() for idx in self._table.selectedIndexes()))
+        insert_at = (sel_rows[-1] + 1) if sel_rows else self._table.rowCount()
+
+        blank = {"is_proxy": False, "shape": "", "ctrl": "", "attr": "ty",
+                 "min":0.0, "max":1.0, "gate": "",
+                 "stat_text": "\u25cf", "stat_style": "color: grey;", "stat_tip": ""}
+
+        names = self._shape_editor_selection() or [""]
+        for i, name in enumerate(names):
+            snap = dict(blank, shape=name)
+            self._insert_row_data_at(insert_at + i, snap)
+        self._renumber_rows()
 
     def _remove_rows(self):
+        self._push_undo()
         selected = sorted(
             set(idx.row() for idx in self._table.selectedIndexes()), reverse=True)
         for r in selected:
             self._table.removeRow(r)
         self._renumber_rows()
+        if self._table.rowCount() == 0:
+            self._add_placeholder_row()
 
     # ── Row reordering ────────────────────────────────────────────────────────
 
@@ -2351,8 +2733,8 @@ class RigConnectorDialog(QtWidgets.QDialog):
         shape_item = self._table.item(r, self._COL_SHAPE)
         cb_ctrl    = self._table.cellWidget(r, self._COL_CTRL)
         cb_attr    = self._table.cellWidget(r, self._COL_ATTR)
-        sb_inmin   = self._table.cellWidget(r, self._COL_INMIN)
-        sb_inmax   = self._table.cellWidget(r, self._COL_INMAX)
+        le_min   = self._table.cellWidget(r, self._COL_MIN)
+        le_max   = self._table.cellWidget(r, self._COL_MAX)
         le_gate    = self._table.cellWidget(r, self._COL_GATE)
         lbl_stat   = self._table.cellWidget(r, self._COL_STAT)
         is_proxy   = bool(num_item and num_item.text() == "\u21b3")
@@ -2361,8 +2743,8 @@ class RigConnectorDialog(QtWidgets.QDialog):
             "shape":      shape_item.text()      if shape_item else "",
             "ctrl":       cb_ctrl.currentText()  if cb_ctrl    else "",
             "attr":       cb_attr.currentText()  if cb_attr    else "ty",
-            "in_min":     sb_inmin.value()       if sb_inmin   else 0.0,
-            "in_max":     sb_inmax.value()       if sb_inmax   else 1.0,
+            "min":    _read_inval(le_min, 0.0) if le_min else 0.0,
+            "max":    _read_inval(le_max, 1.0) if le_max else 1.0,
             "gate":       le_gate.text().strip() if le_gate    else "",
             "stat_text":  lbl_stat.text()        if lbl_stat   else "\u25cf",
             "stat_style": lbl_stat.styleSheet()  if lbl_stat   else "color: grey;",
@@ -2371,6 +2753,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
     def _insert_row_data_at(self, pos, d):
         """Insert a fully populated row at position pos from a snapshot dict."""
+        self._remove_placeholder()
         controllers = self._scene_controllers()
         self._table.insertRow(pos)
 
@@ -2393,7 +2776,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._table.setItem(pos, self._COL_SHAPE, shape_item)
 
         # Col 2 — Controller
-        cb_ctrl = QtWidgets.QComboBox()
+        cb_ctrl = _NoScrollCombo()
         cb_ctrl.setEditable(True)
         cb_ctrl.addItem("")
         cb_ctrl.addItems(controllers)
@@ -2403,7 +2786,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._table.setCellWidget(pos, self._COL_CTRL, cb_ctrl)
 
         # Col 3 — Attr (editable combo)
-        cb_attr = QtWidgets.QComboBox()
+        cb_attr = _NoScrollCombo()
         cb_attr.setEditable(True)
         cb_attr.addItems(self._ATTR_ITEMS)
         cb_attr.setCurrentText(d["attr"])
@@ -2411,22 +2794,15 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._table.setCellWidget(pos, self._COL_ATTR, cb_attr)
 
         # Col 4 — In Min
-        sb_inmin = QtWidgets.QDoubleSpinBox()
-        sb_inmin.setRange(-9999.0, 9999.0)
-        sb_inmin.setSingleStep(0.1)
-        sb_inmin.setDecimals(3)
-        sb_inmin.setValue(d["in_min"])
-        sb_inmin.setLocale(QtCore.QLocale(QtCore.QLocale.English))
-        self._table.setCellWidget(pos, self._COL_INMIN, sb_inmin)
+        le_min = _make_inval_le(d["min"])
+        self._table.setCellWidget(pos, self._COL_MIN, le_min)
 
         # Col 5 — In Max (negative = negative direction)
-        sb_inmax = QtWidgets.QDoubleSpinBox()
-        sb_inmax.setRange(-9999.0, 9999.0)
-        sb_inmax.setSingleStep(0.1)
-        sb_inmax.setDecimals(3)
-        sb_inmax.setValue(d["in_max"])
-        sb_inmax.setLocale(QtCore.QLocale(QtCore.QLocale.English))
-        self._table.setCellWidget(pos, self._COL_INMAX, sb_inmax)
+        le_max = _make_inval_le(
+            d["max"],
+            tooltip="Positive = shape activates as controller goes positive.\n"
+                    "Negative = shape activates as controller goes negative.")
+        self._table.setCellWidget(pos, self._COL_MAX, le_max)
 
         # Col 8 — Cond.
         le_gate = QtWidgets.QLineEdit()
@@ -2447,10 +2823,14 @@ class RigConnectorDialog(QtWidgets.QDialog):
         lbl_stat.setToolTip(d["stat_tip"])
         self._table.setCellWidget(pos, self._COL_STAT, lbl_stat)
 
+        for _w in (cb_ctrl, cb_attr, le_min, le_max, le_gate):
+            _w.installEventFilter(self)
+
     def _move_block(self, src_rows, target_row):
         """Move src_rows (sorted list of row indices) to before target_row."""
         if not src_rows:
             return
+        self._push_undo()
         src_rows = sorted(src_rows)
 
         # Snapshot source rows
@@ -2471,29 +2851,88 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         self._renumber_rows()
 
-        # Restore selection on moved rows
-        self._table.clearSelection()
+        # Restore selection on all moved rows
+        sel_model = self._table.selectionModel()
+        sel_model.clearSelection()
+        col_count = self._table.columnCount()
         for i in range(len(snapshots)):
-            self._table.selectRow(adj_target + i)
+            top_left     = self._table.model().index(adj_target + i, 0)
+            bottom_right = self._table.model().index(adj_target + i, col_count - 1)
+            sel_model.select(
+                QtCore.QItemSelection(top_left, bottom_right),
+                QtCore.QItemSelectionModel.Select)
 
     def _create_opposite_row(self):
+        self._push_undo()
         sel_rows = sorted(set(idx.row() for idx in self._table.selectedIndexes()))
         if not sel_rows:
             return
+
+        # Build a name→row index map of the current table
+        def _shape_row_map():
+            m = {}
+            for r in range(self._table.rowCount()):
+                it = self._table.item(r, self._COL_SHAPE)
+                if it and it.text():
+                    m[it.text()] = r
+            return m
+
+        overwrite_all = None  # None = not decided, True/False = decided for all
+
         # Process in reverse so inserted rows don't shift subsequent indices
         for src in reversed(sel_rows):
             snap = self._snapshot_row(src)
             opp_shape = _swap_opposite_name(snap["shape"]) or snap["shape"]
             opp_ctrl  = _swap_opposite_name(snap["ctrl"])  or snap["ctrl"]
             opp_gate  = _swap_opposite_name(snap["gate"])  or snap["gate"]
-            new_snap = dict(snap,
-                            shape=opp_shape,
-                            ctrl=opp_ctrl,
-                            gate=opp_gate,
-                            stat_text="\u25cf",
-                            stat_style="color: grey;",
-                            stat_tip="")
-            self._insert_row_data_at(src + 1, new_snap)
+            new_snap  = dict(snap,
+                             shape=opp_shape,
+                             ctrl=opp_ctrl,
+                             gate=opp_gate,
+                             stat_text="\u25cf",
+                             stat_style="color: grey;",
+                             stat_tip="")
+
+            existing = _shape_row_map().get(opp_shape, -1)
+            if existing >= 0:
+                if overwrite_all is None:
+                    box = QtWidgets.QMessageBox(self)
+                    box.setWindowTitle("Overwrite?")
+                    box.setText(f"A row named <b>{opp_shape}</b> already exists.<br>Overwrite it?")
+                    btn_yes     = box.addButton("Yes",        QtWidgets.QMessageBox.YesRole)
+                    btn_yes_all = box.addButton("Yes to All", QtWidgets.QMessageBox.YesRole)
+                    btn_no      = box.addButton("No",         QtWidgets.QMessageBox.NoRole)
+                    btn_no_all  = box.addButton("No to All",  QtWidgets.QMessageBox.NoRole)
+                    box.exec_()
+                    clicked = box.clickedButton()
+                    if clicked is btn_yes_all:
+                        overwrite_all = True
+                    elif clicked is btn_no_all:
+                        overwrite_all = False
+                    do_overwrite = clicked in (btn_yes, btn_yes_all)
+                else:
+                    do_overwrite = overwrite_all
+
+                if not do_overwrite:
+                    continue
+
+                # Overwrite: update widgets in the existing row in place
+                self._table.item(existing, self._COL_SHAPE).setText(opp_shape)
+                cb_ctrl  = self._table.cellWidget(existing, self._COL_CTRL)
+                cb_attr  = self._table.cellWidget(existing, self._COL_ATTR)
+                le_min = self._table.cellWidget(existing, self._COL_MIN)
+                le_max = self._table.cellWidget(existing, self._COL_MAX)
+                le_gate  = self._table.cellWidget(existing, self._COL_GATE)
+                if cb_ctrl:
+                    idx = cb_ctrl.findText(opp_ctrl)
+                    cb_ctrl.setCurrentIndex(idx) if idx >= 0 else cb_ctrl.setEditText(opp_ctrl)
+                if cb_attr:  cb_attr.setCurrentText(new_snap["attr"])
+                if le_min: le_min.setText(_fmt_inval(new_snap["min"]))
+                if le_max: le_max.setText(_fmt_inval(new_snap["max"]))
+                if le_gate:  le_gate.setText(opp_gate)
+            else:
+                self._insert_row_data_at(src + 1, new_snap)
+
         self._renumber_rows()
 
     def _move_up(self):
@@ -2519,16 +2958,17 @@ class RigConnectorDialog(QtWidgets.QDialog):
             is_proxy = bool(num_item and num_item.text() == "\u21b3")
             cb_ctrl  = self._table.cellWidget(r, self._COL_CTRL)
             cb_attr  = self._table.cellWidget(r, self._COL_ATTR)
-            sb_inmin = self._table.cellWidget(r, self._COL_INMIN)
-            sb_inmax = self._table.cellWidget(r, self._COL_INMAX)
+            le_min = self._table.cellWidget(r, self._COL_MIN)
+            le_max = self._table.cellWidget(r, self._COL_MAX)
             le_gate  = self._table.cellWidget(r, self._COL_GATE)
             rows.append({
+                "_table_row": r,
                 "shape":      shape,
                 "proxy":      is_proxy,
                 "controller": cb_ctrl.currentText() if cb_ctrl  else "",
                 "attr":       cb_attr.currentText() if cb_attr  else "ty",
-                "in_min":     sb_inmin.value()      if sb_inmin else 0.0,
-                "in_max":     sb_inmax.value()      if sb_inmax else 1.0,
+                "min":    _read_inval(le_min, 0.0) if le_min else 0.0,
+                "max":    _read_inval(le_max, 1.0) if le_max else 1.0,
                 "gate":       le_gate.text().strip() if le_gate  else "",
             })
         return rows
@@ -2555,18 +2995,42 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._tbl_pairs.setCellWidget(r, 2, btn_rm)
 
     def _remove_pair_row(self, btn):
+        self._push_undo()
         for r in range(self._tbl_pairs.rowCount()):
             if self._tbl_pairs.cellWidget(r, 2) is btn:
                 self._tbl_pairs.removeRow(r)
                 break
 
     def _add_soft_blend_pair(self):
-        shapes = []
+        self._push_undo()
+        # Collect selected rows in order (skip placeholder)
+        sel_rows = sorted(set(idx.row() for idx in self._table.selectedIndexes()))
+        if self._is_placeholder():
+            sel_rows = []
+
+        sel_shapes = []
+        for r in sel_rows:
+            item = self._table.item(r, self._COL_SHAPE)
+            if item and item.text():
+                sel_shapes.append(item.text())
+
+        if sel_shapes:
+            if len(sel_shapes) % 2 != 0:
+                self._set_status(
+                    f"Select an even number of rows to create pairs ({len(sel_shapes)} selected).",
+                    error=True)
+                return
+            for i in range(0, len(sel_shapes), 2):
+                self._insert_pair_row(sel_shapes[i], sel_shapes[i + 1])
+            return
+
+        # No selection → open popup
+        all_shapes = []
         for r in range(self._table.rowCount()):
             item = self._table.item(r, self._COL_SHAPE)
             if item and item.text():
-                shapes.append(item.text())
-        dlg = _AddSoftBlendPairDialog(shapes, self)
+                all_shapes.append(item.text())
+        dlg = _AddSoftBlendPairDialog(all_shapes, self)
         if dlg.exec_() == QtWidgets.QDialog.Accepted:
             a, b = dlg.get_pair()
             if a and b and a != b:
@@ -2622,12 +3086,22 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
     def _save_mapping(self):
         loaded = self._le_mapping_path.text().strip()
-        default = loaded if loaded else _rig_mapping_prefs_path()
-        path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Save Mapping", default, "JSON files (*.json)")
-        if not path:
-            return
-        self._le_mapping_path.setText(path)
+        if loaded and os.path.exists(loaded):
+            ans = QtWidgets.QMessageBox.question(
+                self, "Overwrite?",
+                f"Overwrite the existing file?\n\n{loaded}",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+            if ans != QtWidgets.QMessageBox.Yes:
+                return
+            path = loaded
+        else:
+            default = _smart_mapping_default(loaded)
+            path, _ = QtWidgets.QFileDialog.getSaveFileName(
+                self, "Save Mapping", default, "JSON files (*.json)")
+            if not path:
+                return
+            self._le_mapping_path.setText(path)
+            self._sync_path_to_parent(path)
         data = {
             "connections":       self._collect_rows(),
             "soft_blend_pairs":  self._collect_soft_blend_pairs(),
@@ -2658,12 +3132,13 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 new_stem = f"{stem}_v02"
             default = os.path.join(directory, new_stem + ext)
         else:
-            default = _rig_mapping_prefs_path()
+            default = _smart_mapping_default()
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
             self, "Save Mapping As", default, "JSON files (*.json)")
         if not path:
             return
         self._le_mapping_path.setText(path)
+        self._sync_path_to_parent(path)
         data = {
             "connections":       self._collect_rows(),
             "soft_blend_pairs":  self._collect_soft_blend_pairs(),
@@ -2675,96 +3150,121 @@ class RigConnectorDialog(QtWidgets.QDialog):
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Save Error", str(e))
 
+    def _autofill_from_json(self):
+        """Reload the table from the currently loaded mapping path (no browser)."""
+        path = self._le_mapping_path.text().strip()
+        if not path or not os.path.exists(path):
+            QtWidgets.QMessageBox.warning(
+                self, "No file loaded",
+                "No mapping file is currently loaded.\nUse the browse button to load one first.")
+            return
+        self._load_mapping_from_path(path)
+
+    def _sync_path_to_parent(self, path):
+        """Propagate the mapping path to the parent BlendshapeEditorUI field."""
+        parent_ui = self.parent()
+        if parent_ui is not None and hasattr(parent_ui, "line_rig_json"):
+            parent_ui.line_rig_json.setText(path)
+
     def _load_mapping(self):
-        default = _rig_mapping_prefs_path()
+        default = _smart_mapping_default(self._le_mapping_path.text().strip())
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Load Mapping", default, "JSON files (*.json)")
         if not path or not os.path.exists(path):
             return
         self._le_mapping_path.setText(path)
+        self._sync_path_to_parent(path)
         self._load_mapping_from_path(path)
 
     def _load_mapping_from_path(self, path):
+        if not self._is_placeholder():
+            n_rows = sum(
+                1 for r in range(self._table.rowCount())
+                if not (self._table.item(r, self._COL_NUM) and
+                        self._table.item(r, self._COL_NUM).text() == "\u21b3"))
+            answer = QtWidgets.QMessageBox.question(
+                self, "Autofill from JSON",
+                f"The table already contains {n_rows} row(s).\n"
+                f"Replace with the content of the JSON file?",
+                QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.No)
+            if answer != QtWidgets.QMessageBox.Yes:
+                return
+
+        self._push_undo()
+        # ── Loading overlay ───────────────────────────────────────────────────
+        overlay = QtWidgets.QWidget(self._table)
+        overlay.setGeometry(self._table.rect())
+        overlay.setStyleSheet("background: rgba(0, 0, 0, 80);")
+        overlay.setCursor(QtCore.Qt.WaitCursor)
+        overlay.show()
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        QtWidgets.QApplication.processEvents()
+
         try:
             with open(path, "r") as f:
                 data = json.load(f)
         except Exception as e:
+            overlay.hide(); overlay.deleteLater()
+            QtWidgets.QApplication.restoreOverrideCursor()
             QtWidgets.QMessageBox.warning(self, "Load Error", str(e))
             return
 
         # Support both old format (list) and new format (dict with "connections" key)
         soft_blend_pairs = []
+        soft_blend_curve = None
         if isinstance(data, dict):
             soft_blend_pairs = data.get("soft_blend_pairs", [])
+            soft_blend_curve = data.get("soft_blend_curve")
             data = data.get("connections", [])
 
-        # Split primary and proxy rows
-        primary_data = [rd for rd in data if isinstance(rd, dict) and not rd.get("proxy", False)]
-        proxy_data   = [rd for rd in data if isinstance(rd, dict) and rd.get("proxy", False)]
-
-        # by_shape for primary rows only (no duplicate keys)
-        by_shape    = {rd["shape"]: rd for rd in primary_data}
+        # Full rebuild — clear existing table then insert rows in JSON order
+        self._table.setRowCount(0)
         controllers = self._scene_controllers()
+        row_num = 0
 
         def _resolve_rd(rd):
             """Normalise a row dict — handles old JSON format (direction + custom_attr)."""
             attr    = rd.get("attr", "ty")
-            in_min  = float(rd.get("in_min", 0.0))
-            in_max  = float(rd.get("in_max", 1.0))
-            # Old format: attr=="custom" ->use custom_attr value
+            in_min  = float(rd.get("min", rd.get("in_min", 0.0)))
+            in_max  = float(rd.get("max", rd.get("in_max", 1.0)))
             custom_attr = rd.get("custom_attr", "")
             if attr == "custom" and custom_attr:
                 attr = custom_attr
-            # Old format: direction=="−" ->negate in_max (and in_min if nonzero)
             if rd.get("direction", "+") == "\u2212":
                 in_max = -abs(in_max)
                 if in_min != 0.0:
                     in_min = -abs(in_min)
             return attr, in_min, in_max
 
-        def _apply_row_data(r, rd):
-            cb_ctrl  = self._table.cellWidget(r, self._COL_CTRL)
-            cb_attr  = self._table.cellWidget(r, self._COL_ATTR)
-            sb_inmin = self._table.cellWidget(r, self._COL_INMIN)
-            sb_inmax = self._table.cellWidget(r, self._COL_INMAX)
-            le_gate  = self._table.cellWidget(r, self._COL_GATE)
-            attr, in_min, in_max = _resolve_rd(rd)
-            if cb_ctrl:
-                idx = cb_ctrl.findText(rd.get("controller", ""))
-                if idx >= 0:
-                    cb_ctrl.setCurrentIndex(idx)
-                else:
-                    cb_ctrl.setEditText(rd.get("controller", ""))
-            if cb_attr:
-                cb_attr.setCurrentText(attr)
-            if sb_inmin:
-                sb_inmin.setValue(in_min)
-            if sb_inmax:
-                sb_inmax.setValue(in_max)
-            if le_gate:
-                le_gate.setText(rd.get("gate", ""))
-
-        # ── Pass 1: primary rows ──────────────────────────────────────────────
-        existing_shapes = set()
-        for r in range(self._table.rowCount()):
-            num_item   = self._table.item(r, self._COL_NUM)
-            shape_item = self._table.item(r, self._COL_SHAPE)
-            if not shape_item:
+        for rd in data:
+            if not isinstance(rd, dict):
                 continue
-            if num_item and num_item.text() == "\u21b3":
-                continue  # existing proxy row, handled below
-            sname = shape_item.text()
-            existing_shapes.add(sname)
-            if sname in by_shape:
-                _apply_row_data(r, by_shape[sname])
-
-        # Add primary shapes not yet in the table
-        row_num = self._table.rowCount()
-        for rd in primary_data:
             sname = rd.get("shape", "")
-            if sname and sname not in existing_shapes:
+            if not sname:
+                continue
+            is_proxy = rd.get("proxy", False)
+            attr, in_min, in_max = _resolve_rd(rd)
+            if is_proxy:
+                # Find the last row for this shape to insert the proxy after
+                last_row = -1
+                for check_r in range(self._table.rowCount()):
+                    s_item = self._table.item(check_r, self._COL_SHAPE)
+                    if s_item and s_item.text() == sname:
+                        last_row = check_r
+                if last_row < 0:
+                    continue
+                self._add_proxy_row(last_row, ctrl=rd.get("controller", ""))
+                new_row = last_row + 1
+                cb_attr_w = self._table.cellWidget(new_row, self._COL_ATTR)
+                le_min_w  = self._table.cellWidget(new_row, self._COL_MIN)
+                le_max_w  = self._table.cellWidget(new_row, self._COL_MAX)
+                le_gate_w = self._table.cellWidget(new_row, self._COL_GATE)
+                if cb_attr_w: cb_attr_w.setCurrentText(attr)
+                if le_min_w:  le_min_w.setText(_fmt_inval(in_min))
+                if le_max_w:  le_max_w.setText(_fmt_inval(in_max))
+                if le_gate_w: le_gate_w.setText(rd.get("gate", ""))
+            else:
                 row_num += 1
-                attr, in_min, in_max = _resolve_rd(rd)
                 self._append_table_row(
                     row_num, sname, controllers,
                     ctrl=rd.get("controller", ""),
@@ -2774,40 +3274,6 @@ class RigConnectorDialog(QtWidgets.QDialog):
                     gate=rd.get("gate", ""),
                 )
 
-        # ── Pass 2: proxy rows ────────────────────────────────────────────────
-        for rd in proxy_data:
-            shape        = rd.get("shape", "")
-            proxy_ctrl   = rd.get("controller", "")
-            if not shape:
-                continue
-
-            # Check if this proxy row already exists (same shape + same ctrl)
-            already_exists = False
-            for check_r in range(self._table.rowCount()):
-                n_item = self._table.item(check_r, self._COL_NUM)
-                s_item = self._table.item(check_r, self._COL_SHAPE)
-                cb_chk = self._table.cellWidget(check_r, self._COL_CTRL)
-                if (n_item and n_item.text() == "\u21b3"
-                        and s_item and s_item.text() == shape
-                        and cb_chk and cb_chk.currentText() == proxy_ctrl):
-                    already_exists = True
-                    break
-            if already_exists:
-                continue
-
-            # Find the last row for this shape (primary or proxy) to insert after
-            last_row = -1
-            for check_r in range(self._table.rowCount()):
-                s_item = self._table.item(check_r, self._COL_SHAPE)
-                if s_item and s_item.text() == shape:
-                    last_row = check_r
-            if last_row < 0:
-                continue
-
-            self._add_proxy_row(last_row, ctrl=proxy_ctrl)
-            new_row = last_row + 1
-            _apply_row_data(new_row, rd)
-
         # ── Soft blend pairs ──────────────────────────────────────────────────
         self._tbl_pairs.setRowCount(0)
         for pair in soft_blend_pairs:
@@ -2815,13 +3281,17 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 self._insert_pair_row(pair[0], pair[1])
 
         # ── Soft blend curve ──────────────────────────────────────────────────
-        import copy
-        curve = data.get("soft_blend_curve") if isinstance(data, dict) else None
-        if curve:
-            self._graph.set_keys(curve)
+        if soft_blend_curve:
+            self._graph.set_keys(soft_blend_curve)
         else:
             self._graph.set_keys(copy.deepcopy(_SoftBlendGraphWidget.DEFAULT_KEYS))
         self._refresh_key_controls()
+
+        overlay.hide()
+        overlay.deleteLater()
+        QtWidgets.QApplication.restoreOverrideCursor()
+        if self._table.rowCount() == 0:
+            self._add_placeholder_row()
 
     # ── Search / filter ───────────────────────────────────────────────────────
 
@@ -2832,7 +3302,108 @@ class RigConnectorDialog(QtWidgets.QDialog):
             shape_name = item.text().lower() if item else ""
             self._table.setRowHidden(row, bool(text) and text not in shape_name)
 
-    # ── Context menu ──────────────────────────────────────────────────────────
+    def _format_scale_factor(self):
+        try:
+            self._le_scale.setText(f"{float(self._le_scale.text()):.2f}")
+        except ValueError:
+            self._le_scale.setText("2.00")
+
+    def _scale_ranges(self, col):
+        selected_rows = list({idx.row() for idx in self._table.selectedIndexes()})
+        if not selected_rows:
+            return
+        try:
+            factor = float(self._le_scale.text())
+        except ValueError:
+            return
+        for row in selected_rows:
+            sb = self._table.cellWidget(row, col)
+            if sb is not None:
+                sb.setText(_fmt_inval(_read_inval(sb) * factor))
+
+    # ── Context menus ─────────────────────────────────────────────────────────
+
+    def _show_header_context_menu(self, pos):
+        col = self._table.horizontalHeader().logicalIndexAt(pos)
+        menu = QtWidgets.QMenu(self)
+        if col == self._COL_NUM:
+            act = menu.addAction("Reorder From Shape Editor")
+            act.setToolTip(
+                "Reorder the table rows to match the visual order shown in Maya's Shape Editor.\n"
+                "Reads the targetDirectory structure of the BS node to respect custom groupings\n"
+                "and manual reordering done inside the Shape Editor.\n"
+                "Proxy rows follow their primary row. Unmatched rows are appended at the end.")
+            act.triggered.connect(self._reorder_from_bs_node)
+        elif col in (self._COL_MIN, self._COL_MAX):
+            act = menu.addAction(f"Multiply selected rows by Scale Factor  ({self._le_scale.text()})")
+            act.triggered.connect(lambda: self._scale_ranges(col))
+        else:
+            return
+        menu.exec_(self._table.horizontalHeader().mapToGlobal(pos))
+
+    def _reorder_from_bs_node(self):
+        """Reorder table rows to match the visual order shown in Maya's Shape Editor."""
+        self._push_undo()
+        bs_node = self._le_bs_node.text().strip()
+        if not bs_node:
+            self._get_bs_node()
+            bs_node = self._le_bs_node.text().strip()
+        if not bs_node:
+            self._set_status("No BlendShape node set.", error=True)
+            return
+        try:
+            targets = get_shape_editor_order(bs_node)
+        except Exception as e:
+            self._set_status(f"Reorder failed: {e}", error=True)
+            return
+        if not targets:
+            self._set_status(f"No targets found on '{bs_node}'.", error=True)
+            return
+
+        order = {name: i for i, name in enumerate(targets)}
+
+        # Snapshot all rows, skip placeholder
+        if self._is_placeholder():
+            return
+        snapshots = [self._snapshot_row(r) for r in range(self._table.rowCount())]
+
+        # Group into blocks: each primary row followed by its proxy rows
+        blocks = []
+        for snap in snapshots:
+            if snap.get("is_proxy", False):
+                if blocks:
+                    blocks[-1].append(snap)
+                else:
+                    blocks.append([snap])
+            else:
+                blocks.append([snap])
+
+        # Sort blocks by primary row's position in BS node order;
+        # shapes not found in BS node go to the end, preserving their relative order
+        not_found = [b for b in blocks if b[0].get("shape", "") not in order]
+        found     = [b for b in blocks if b[0].get("shape", "") in order]
+        found.sort(key=lambda b: order[b[0]["shape"]])
+        sorted_blocks = found + not_found
+
+        # Rebuild table with loading overlay
+        overlay = QtWidgets.QWidget(self._table)
+        overlay.setGeometry(self._table.rect())
+        overlay.setStyleSheet("background: rgba(0, 0, 0, 80);")
+        overlay.setCursor(QtCore.Qt.WaitCursor)
+        overlay.show()
+        QtWidgets.QApplication.setOverrideCursor(QtCore.Qt.WaitCursor)
+        QtWidgets.QApplication.processEvents()
+        self._table.setRowCount(0)
+        for block in sorted_blocks:
+            for snap in block:
+                self._insert_row_data_at(self._table.rowCount(), snap)
+        self._renumber_rows()
+        overlay.hide()
+        overlay.deleteLater()
+        QtWidgets.QApplication.restoreOverrideCursor()
+        self._set_status(
+            f"Rows reordered to Shape Editor order of '{bs_node}' "
+            f"({len(found)} matched, {len(not_found)} unmatched appended).")
 
     def _show_row_context_menu(self, pos):
         row = self._table.rowAt(pos.y())
@@ -2853,9 +3424,9 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         # Read source row parameters (attr, in_max)
         cb_attr  = self._table.cellWidget(source_row, self._COL_ATTR)
-        sb_inmax = self._table.cellWidget(source_row, self._COL_INMAX)
+        le_max = self._table.cellWidget(source_row, self._COL_MAX)
         attr   = cb_attr.currentText()  if cb_attr  else "ty"
-        in_max = in_max_override if in_max_override is not None else (sb_inmax.value() if sb_inmax else 1.0)
+        in_max = in_max_override if in_max_override is not None else (_read_inval(le_max, 1.0) if le_max else 1.0)
 
         controllers = self._scene_controllers()
         insert_row  = source_row + 1
@@ -2871,7 +3442,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         shape_proxy.setForeground(QtGui.QColor("#888888"))
         self._table.setItem(insert_row, self._COL_SHAPE, shape_proxy)
 
-        cb_ctrl_new = QtWidgets.QComboBox()
+        cb_ctrl_new = _NoScrollCombo()
         cb_ctrl_new.setEditable(True)
         cb_ctrl_new.addItem("")
         cb_ctrl_new.addItems(controllers)
@@ -2879,30 +3450,21 @@ class RigConnectorDialog(QtWidgets.QDialog):
             cb_ctrl_new.setCurrentText(ctrl)
         self._table.setCellWidget(insert_row, self._COL_CTRL, cb_ctrl_new)
 
-        cb_attr_new = QtWidgets.QComboBox()
+        cb_attr_new = _NoScrollCombo()
         cb_attr_new.setEditable(True)
         cb_attr_new.addItems(self._ATTR_ITEMS)
         cb_attr_new.setCurrentText(attr)
         cb_attr_new.setToolTip("Standard attribute or type a custom attribute name directly.")
         self._table.setCellWidget(insert_row, self._COL_ATTR, cb_attr_new)
 
-        sb_inmin_new = QtWidgets.QDoubleSpinBox()
-        sb_inmin_new.setRange(-9999.0, 9999.0)
-        sb_inmin_new.setSingleStep(0.1)
-        sb_inmin_new.setDecimals(3)
-        sb_inmin_new.setValue(0.0)
-        sb_inmin_new.setLocale(QtCore.QLocale(QtCore.QLocale.English))
-        self._table.setCellWidget(insert_row, self._COL_INMIN, sb_inmin_new)
+        le_min_new = _make_inval_le(0.0)
+        self._table.setCellWidget(insert_row, self._COL_MIN, le_min_new)
 
-        sb_inmax_new = QtWidgets.QDoubleSpinBox()
-        sb_inmax_new.setRange(-9999.0, 9999.0)
-        sb_inmax_new.setSingleStep(0.1)
-        sb_inmax_new.setDecimals(3)
-        sb_inmax_new.setValue(in_max)
-        sb_inmax_new.setLocale(QtCore.QLocale(QtCore.QLocale.English))
-        sb_inmax_new.setToolTip("Positive = shape activates as controller goes positive.\n"
-                                "Negative = shape activates as controller goes negative.")
-        self._table.setCellWidget(insert_row, self._COL_INMAX, sb_inmax_new)
+        le_max_new = _make_inval_le(
+            in_max,
+            tooltip="Positive = shape activates as controller goes positive.\n"
+                    "Negative = shape activates as controller goes negative.")
+        self._table.setCellWidget(insert_row, self._COL_MAX, le_max_new)
 
         le_gate_new = QtWidgets.QLineEdit()
         le_gate_new.setPlaceholderText("shape name")
@@ -2919,24 +3481,29 @@ class RigConnectorDialog(QtWidgets.QDialog):
         lbl_status.setStyleSheet("color: grey;")
         self._table.setCellWidget(insert_row, self._COL_STAT, lbl_status)
 
+        for _w in (cb_ctrl_new, cb_attr_new, le_min_new, le_max_new, le_gate_new):
+            _w.installEventFilter(self)
+
     # ── Auto-stagger ──────────────────────────────────────────────────────────
 
     def _on_stagger_mode_changed(self, text):
         self.btn_stagger_sign.setEnabled(text == "Symmetric")
+        self._center_row_widget.setEnabled(text == "Symmetric")
 
     def _apply_stagger(self):
         """Apply stagger In Min / In Max to the selected primary rows.
 
         Linear    : shape k gets slot [k/N, (k+1)/N] × in_max_ref.
+        Symmetric : outer peak — outer shapes activate last, centre shape first.
+                    Left half gets negative Max, right half positive (or reversed via +/−).
         Mirror    : centre peak — centre shape activates last, outer shapes first.
                     All shapes same direction. Ideal for zip lips.
-        Symmetric : outer peak — outer shapes activate last, centre shape first.
-                    Left half gets negative In Max, right half positive (or reversed via +/−).
                     Ideal for brows and cheekbones.
         Smooth    : each slot extended by ±smooth (clamped to [0, in_max_ref]).
         Proxies ON : creates / updates a proxy sub-row per shape.
         Proxies OFF: writes values directly on the selected rows.
         """
+        self._push_undo()
         master_ctrl   = self._le_stagger_ctrl.text().strip()
         axis          = self._combo_stagger_axis.currentText()
         in_max_ref    = float(self._sb_stagger_inmax.text() or "0")
@@ -2944,6 +3511,10 @@ class RigConnectorDialog(QtWidgets.QDialog):
         mode          = self._combo_stagger_mode.currentText()   # "Linear"/"Mirror"/"Symmetric"
         use_mirror    = (mode == "Mirror")
         use_symmetric = (mode == "Symmetric")
+        try:
+            center_bias = max(0.0, min(1.0, float(self._stagger_center_le.text())))
+        except ValueError:
+            center_bias = 0.5
         positive_left = self._stagger_sign > 0
         use_proxies   = self._chk_stagger_proxies.isChecked()
 
@@ -2952,11 +3523,21 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 self, "Auto-stagger", "Enter the stagger controller name.")
             return
 
-        # Primary rows only, table order preserved
+        # Collect selected rows
         selected = sorted(set(idx.row() for idx in self._table.selectedIndexes()))
-        primary_selected = [r for r in selected
-                            if not (self._table.item(r, self._COL_NUM) and
-                                    self._table.item(r, self._COL_NUM).text() == "\u21b3")]
+
+        def _is_proxy(r):
+            it = self._table.item(r, self._COL_NUM)
+            return bool(it and it.text() == "\u21b3")
+
+        # If the entire selection is proxy rows, operate on them directly
+        proxy_only = bool(selected) and all(_is_proxy(r) for r in selected)
+
+        if proxy_only:
+            primary_selected = selected  # proxy rows ARE the targets
+        else:
+            primary_selected = [r for r in selected if not _is_proxy(r)]
+
         if not primary_selected:
             QtWidgets.QMessageBox.information(
                 self, "Auto-stagger", "Select rows in the table first.")
@@ -2967,17 +3548,19 @@ class RigConnectorDialog(QtWidgets.QDialog):
         # ── Slot formula ──────────────────────────────────────────────────────
         if use_mirror:
             # Centre shape gets highest slot; outer shapes share lower slots (zip lips)
+            c = (n - 1) / 2.0
             num_slots  = (n + 1) // 2
             slot_width = in_max_ref / num_slots if num_slots > 0 else 0.0
             def _slot(k):
-                dist = abs(k - (n - 1) / 2.0)
-                return int((n - 1) / 2.0 - dist + 1e-9)
+                dist = abs(k - c)
+                return int(c - dist + 1e-9)
         elif use_symmetric:
             # Outer shapes get highest slot; centre shape gets lowest slot (brows/cheekbones)
-            num_slots  = (n + 1) // 2
+            c = center_bias * (n - 1)
+            num_slots  = int(max(c, (n - 1) - c) + 1e-9) + 1
             slot_width = in_max_ref / num_slots if num_slots > 0 else 0.0
             def _slot(k):
-                return int(abs(k - (n - 1) / 2.0) + 1e-9)
+                return int(abs(k - c) + 1e-9)
         else:
             num_slots  = n
             slot_width = in_max_ref / n if n > 0 else 0.0
@@ -3015,7 +3598,10 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 in_min_val = base_min
                 in_max_val = base_max
 
-            if use_proxies:
+            if proxy_only:
+                # Selected row is already the proxy target — write directly
+                target_row = r
+            elif use_proxies:
                 # Find or create a proxy row for this shape + master ctrl
                 target_row = -1
                 for check_r in range(self._table.rowCount()):
@@ -3039,14 +3625,14 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
             # Apply axis / in_min / in_max (direction is encoded in sign of in_max)
             cb_attr_w  = self._table.cellWidget(target_row, self._COL_ATTR)
-            sb_inmin_w = self._table.cellWidget(target_row, self._COL_INMIN)
-            sb_inmax_w = self._table.cellWidget(target_row, self._COL_INMAX)
+            le_min_w = self._table.cellWidget(target_row, self._COL_MIN)
+            le_max_w = self._table.cellWidget(target_row, self._COL_MAX)
             if cb_attr_w:
                 cb_attr_w.setCurrentText(axis)
-            if sb_inmin_w:
-                sb_inmin_w.setValue(in_min_val)
-            if sb_inmax_w:
-                sb_inmax_w.setValue(in_max_val)
+            if le_min_w:
+                le_min_w.setText(_fmt_inval(in_min_val))
+            if le_max_w:
+                le_max_w.setText(_fmt_inval(in_max_val))
 
     # ── Build & Connect ───────────────────────────────────────────────────────
 
@@ -3087,7 +3673,9 @@ class RigConnectorDialog(QtWidgets.QDialog):
         for res in results:
             shape  = res["shape"]
             status = res["status"]
-            r = row_by_shape.get(shape)
+            r = res.get("_table_row")
+            if r is None:
+                r = row_by_shape.get(shape)
             if r is not None:
                 lbl = self._table.cellWidget(r, self._COL_STAT)
                 if lbl:
@@ -3132,7 +3720,9 @@ class RigConnectorDialog(QtWidgets.QDialog):
         for res in results:
             shape  = res["shape"]
             status = res["status"]
-            r = row_by_shape.get(shape)
+            r = res.get("_table_row")
+            if r is None:
+                r = row_by_shape.get(shape)
             if r is not None:
                 lbl = self._table.cellWidget(r, self._COL_STAT)
                 if lbl:
@@ -3605,6 +4195,22 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         _bse_mod._sculpt_idx_callback = self._on_sculpt_idx_changed
         self._install_sculpt_hook()
 
+
+    def keyPressEvent(self, event):
+        """Route Ctrl+Z / Ctrl+Y to focused QLineEdit; block Maya undo."""
+        focused = QtWidgets.QApplication.focusWidget()
+        if event.modifiers() == QtCore.Qt.ControlModifier:
+            if event.key() == QtCore.Qt.Key_Z:
+                if isinstance(focused, QtWidgets.QLineEdit):
+                    focused.undo()
+                event.accept()
+                return
+            if event.key() == QtCore.Qt.Key_Y:
+                if isinstance(focused, QtWidgets.QLineEdit):
+                    focused.redo()
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
     def closeEvent(self, event):
         self._uninstall_sculpt_hook()
@@ -4102,6 +4708,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         scroll.setFrameShape(QtWidgets.QFrame.NoFrame)
 
         inner = QtWidgets.QWidget()
+        _app_pal   = QtWidgets.QApplication.palette()
+        _inner_pal = QtGui.QPalette(_app_pal)
+        _inner_pal.setColor(QtGui.QPalette.Window, QtGui.QColor("#404040"))
+        inner.setPalette(_inner_pal)
+        inner.setAutoFillBackground(True)
         root = QtWidgets.QVBoxLayout(inner)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(10)
@@ -4109,6 +4720,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # ── Maya Tools Shelf ──────────────────────────────────────────────
         shelf_frame = QtWidgets.QFrame()
         shelf_frame.setFrameShape(QtWidgets.QFrame.NoFrame)
+        shelf_frame.setPalette(_app_pal)
+        shelf_frame.setAutoFillBackground(True)
         shelf_frame.setFixedHeight(80)
         shelf_vlay = QtWidgets.QVBoxLayout(shelf_frame)
         shelf_vlay.setContentsMargins(4, 3, 4, 3)
@@ -4753,16 +5366,16 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         preset_row.setContentsMargins(0, 0, 0, 0)
 
         btn_load_preset = QtWidgets.QToolButton()
-        btn_load_preset.setFixedHeight(22)
+        btn_load_preset.setFixedSize(32, 32)
         btn_load_preset.setAutoRaise(True)
         btn_load_preset.setStyleSheet(_ICON_BTN_STYLE)
         btn_load_preset.setToolTip(
             "Select a locator group in the scene and click to load its presets into the list.")
-        _px_lp = QtGui.QPixmap(f"{_icons_dir}/load_preset.png")
+        _px_lp = QtGui.QPixmap(f"{_icons_dir}/path.png")
         if not _px_lp.isNull():
             btn_load_preset.setIcon(QtGui.QIcon(_px_lp.scaled(
-                16, 16, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
-            btn_load_preset.setIconSize(QtCore.QSize(16, 16))
+                30, 30, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
+            btn_load_preset.setIconSize(QtCore.QSize(30, 30))
         else:
             btn_load_preset.setText("Load")
         btn_load_preset.clicked.connect(self._on_load_split_preset_grp)
@@ -4774,21 +5387,28 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._combo_split_preset.activated.connect(self._on_split_preset_activated)
 
         btn_save_preset = QtWidgets.QToolButton()
-        btn_save_preset.setFixedSize(_side_w, 22)
+        btn_save_preset.setFixedSize(_side_w, 32)
         btn_save_preset.setAutoRaise(True)
         btn_save_preset.setStyleSheet(_ICON_BTN_STYLE)
         btn_save_preset.setToolTip(
             "Save the current locators and settings into the selected preset group\n"
             "(or create a new preset group if none is selected).\n"
             "Locators are parented to the preset sub-group inside the locs_grp.")
-        _px_sp = QtGui.QPixmap(f"{_icons_dir}/save_preset.png")
+        _px_sp = QtGui.QPixmap(f"{_icons_dir}/save.png")
         if not _px_sp.isNull():
             btn_save_preset.setIcon(QtGui.QIcon(_px_sp.scaled(
-                16, 16, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
-            btn_save_preset.setIconSize(QtCore.QSize(16, 16))
+                30, 30, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
+            btn_save_preset.setIconSize(QtCore.QSize(30, 30))
         else:
             btn_save_preset.setText("Save")
         btn_save_preset.clicked.connect(self._on_save_split_preset)
+
+        btn_load_preset.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        btn_load_preset.customContextMenuRequested.connect(
+            lambda pos: self._on_load_preset_context_menu(btn_load_preset, pos))
+        btn_save_preset.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        btn_save_preset.customContextMenuRequested.connect(
+            lambda pos: self._on_save_preset_context_menu(btn_save_preset, pos))
 
         preset_row.addWidget(btn_load_preset)
         preset_row.addWidget(self._combo_split_preset, 1)
@@ -6360,6 +6980,22 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._combo_split_preset.blockSignals(False)
         self._set_status(f"✓ Split preset saved: '{name}'")
 
+    def _on_load_preset_context_menu(self, btn, pos):
+        menu = QtWidgets.QMenu(self)
+        act = menu.addAction("Browse from JSON file…")
+        act.setToolTip("Import split presets from a JSON file previously exported.\n"
+                       "Recreates Splits_locs_grp, preset sub-groups and locators.")
+        act.triggered.connect(self._on_import_splits_from_json)
+        menu.exec_(btn.mapToGlobal(pos))
+
+    def _on_save_preset_context_menu(self, btn, pos):
+        menu = QtWidgets.QMenu(self)
+        act = menu.addAction("Save to JSON file…")
+        act.setToolTip("Export all split presets and locator positions to a JSON file\n"
+                       "so they can be recreated in another scene.")
+        act.triggered.connect(self._on_export_splits_to_json)
+        menu.exec_(btn.mapToGlobal(pos))
+
     def _on_delete_split_preset(self):
         """Remove the selected preset from the combo (clears bse_split_data, keeps group)."""
         idx = self._combo_split_preset.currentIndex()
@@ -6380,6 +7016,150 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._combo_split_preset.setCurrentIndex(0)
         self._combo_split_preset.blockSignals(False)
         self._set_status(f"Preset '{name}' removed (group kept in scene)")
+
+    # ── Export / Import presets to/from JSON file ─────────────────────────────
+
+    def _on_export_splits_to_json(self):
+        """Export all presets in Splits_locs_grp to a JSON file with locator transforms."""
+        locs_grp = None
+        if self._current_locs_grp and cmds.objExists(self._current_locs_grp):
+            locs_grp = self._current_locs_grp
+        else:
+            matches = cmds.ls(self._LOCS_GRP_NAME, long=True, type="transform")
+            if matches:
+                locs_grp = matches[0]
+        if not locs_grp:
+            QtWidgets.QMessageBox.warning(
+                self, "Export Split Presets",
+                f"'{self._LOCS_GRP_NAME}' not found in scene.\n"
+                "Create and save at least one preset first.")
+            return
+
+        children = cmds.listRelatives(
+            locs_grp, children=True, type="transform", fullPath=True) or []
+        preset_nodes = [c for c in children
+                        if cmds.attributeQuery(self._BSE_ATTR, node=c, exists=True)]
+        if not preset_nodes:
+            QtWidgets.QMessageBox.warning(
+                self, "Export Split Presets", "No presets found in the scene.")
+            return
+
+        _sfx = "_splitsLocs_grp"
+        presets_out = []
+        for preset_node in preset_nodes:
+            short = preset_node.split("|")[-1]
+            name  = short[:-len(_sfx)] if short.endswith(_sfx) else short
+            settings = self._preset_read(preset_node) or {}
+
+            loc_children = cmds.listRelatives(
+                preset_node, children=True, type="transform", fullPath=True) or []
+            loc_children = [l for l in loc_children
+                            if cmds.listRelatives(l, shapes=True, type="locator")]
+            locs_out = []
+            for loc in loc_children:
+                t = cmds.getAttr(f"{loc}.translate")[0]
+                r = cmds.getAttr(f"{loc}.rotate")[0]
+                s = cmds.getAttr(f"{loc}.scale")[0]
+                locs_out.append({
+                    "name": loc.split("|")[-1],
+                    "t": [round(v, 6) for v in t],
+                    "r": [round(v, 6) for v in r],
+                    "s": [round(v, 6) for v in s],
+                })
+
+            presets_out.append({
+                "name":      name,
+                "settings":  settings,
+                "locators":  locs_out,
+            })
+
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export Split Presets", "", "JSON files (*.json)")
+        if not path:
+            return
+        if not path.endswith(".json"):
+            path += ".json"
+
+        try:
+            with open(path, "w") as fh:
+                json.dump({"bse_version": 1, "presets": presets_out}, fh, indent=2)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Export Error", str(e))
+            return
+
+        self._set_status(
+            f"✓ {len(presets_out)} preset(s) exported to {os.path.basename(path)}")
+
+    def _on_import_splits_from_json(self):
+        """Import split presets from a JSON file, recreating groups and locators."""
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Import Split Presets", "", "JSON files (*.json)")
+        if not path or not os.path.exists(path):
+            return
+
+        try:
+            with open(path, "r") as fh:
+                data = json.load(fh)
+        except Exception as e:
+            QtWidgets.QMessageBox.warning(self, "Import Error", str(e))
+            return
+
+        if not isinstance(data, dict) or "presets" not in data:
+            QtWidgets.QMessageBox.warning(
+                self, "Import Error", "Invalid file: missing 'presets' key.")
+            return
+
+        locs_grp  = self._ensure_locs_grp()
+        n_created = 0
+
+        for preset in data["presets"]:
+            name = preset.get("name", "").strip()
+            if not name:
+                continue
+
+            node_name = f"{name}_splitsLocs_grp"
+            children  = cmds.listRelatives(
+                locs_grp, children=True, type="transform", fullPath=True) or []
+            preset_node = next(
+                (c for c in children if c.split("|")[-1] == node_name), None)
+            if preset_node is None:
+                result      = cmds.group(empty=True, name=node_name, parent=locs_grp)
+                preset_node = cmds.ls(result, long=True)[0]
+
+            # Recreate / reposition locators
+            for ld in preset.get("locators", []):
+                loc_name = ld.get("name", "").strip()
+                if not loc_name:
+                    continue
+                existing = cmds.ls(loc_name, long=True)
+                if existing:
+                    loc_long = existing[0]
+                    cur_parent = (cmds.listRelatives(
+                        loc_long, parent=True, fullPath=True) or [None])[0]
+                    if cur_parent != preset_node:
+                        cmds.parent(loc_long, preset_node)
+                        loc_long = cmds.ls(loc_name, long=True)[0]
+                else:
+                    new_loc  = cmds.spaceLocator(name=loc_name)[0]
+                    cmds.parent(new_loc, preset_node)
+                    loc_long = cmds.ls(loc_name, long=True)[0]
+
+                if "t" in ld:
+                    cmds.setAttr(f"{loc_long}.translate", *ld["t"], type="double3")
+                if "r" in ld:
+                    cmds.setAttr(f"{loc_long}.rotate", *ld["r"], type="double3")
+                if "s" in ld:
+                    cmds.setAttr(f"{loc_long}.scale", *ld["s"], type="double3")
+
+            settings = preset.get("settings", {})
+            if settings:
+                self._preset_write(preset_node, settings)
+
+            n_created += 1
+
+        self._refresh_preset_combo()
+        self._set_status(
+            f"✓ {n_created} preset(s) imported from {os.path.basename(path)}")
 
     def _capture_split_state(self):
         """Snapshot the current locator table and split settings into a dict."""
@@ -7037,6 +7817,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         try:
             dm_nodes = cmds.deltaMush(mesh)
             dm = dm_nodes[0]
+            mesh_base = mesh.split(":")[-1]
+            dm = cmds.rename(dm, f"{mesh_base}_cleaner_dm")
             cmds.setAttr(f"{dm}.smoothingIterations", 3)
             cmds.setAttr(f"{dm}.inwardConstraint",    0.5)
             cmds.setAttr(f"{dm}.outwardConstraint",   0.5)
@@ -7698,7 +8480,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     def _browse_rig_json(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Load Rig Mapping", _rig_mapping_prefs_path(), "JSON files (*.json)")
+            self, "Load Rig Mapping",
+            _smart_mapping_default(self.line_rig_json.text().strip()),
+            "JSON files (*.json)")
         if path:
             self.line_rig_json.setText(path)
 
@@ -7728,7 +8512,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             return
 
         # Support both old format (list) and new format (dict with "connections" key)
+        soft_blend_pairs = []
+        soft_blend_curve = None
         if isinstance(data, dict):
+            soft_blend_pairs = data.get("soft_blend_pairs", [])
+            soft_blend_curve = data.get("soft_blend_curve")
             data = data.get("connections", [])
 
         # Normalize rows (handles old JSON format with direction / custom_attr)
@@ -7737,8 +8525,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             if not isinstance(rd, dict):
                 continue
             attr        = rd.get("attr", "ty")
-            in_min      = float(rd.get("in_min", 0.0))
-            in_max      = float(rd.get("in_max", 1.0))
+            in_min      = float(rd.get("min", rd.get("in_min", 0.0)))
+            in_max      = float(rd.get("max", rd.get("in_max", 1.0)))
             custom_attr = rd.get("custom_attr", "")
             if attr == "custom" and custom_attr:
                 attr = custom_attr
@@ -7751,12 +8539,16 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 "proxy":      rd.get("proxy", False),
                 "controller": rd.get("controller", ""),
                 "attr":       attr,
-                "in_min":     in_min,
-                "in_max":     in_max,
+                "min":        in_min,
+                "max":        in_max,
                 "gate":       rd.get("gate", ""),
             })
 
-        results = build_and_connect_rig(bs_node, rows)
+        results = build_and_connect_rig(
+            bs_node, rows,
+            soft_blend_pairs=soft_blend_pairs,
+            soft_blend_curve=soft_blend_curve,
+        )
         ok      = sum(1 for r in results if r["status"] in ("ok", "ok:direct"))
         missing = sum(1 for r in results if r["status"] == "no_target")
         skp     = sum(1 for r in results if r["status"] in ("skip", "no_ctrl", "no_attr"))
