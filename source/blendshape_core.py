@@ -3838,8 +3838,10 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
     pending_conds  = {}  # ctrl ->[cond_name, ...]
 
     # ── Phase 0: wipe custom attrs on involved controllers ────────────────────
-    # Delete every user-defined attr (except hasLimits) so the build starts from
-    # a clean state: no stale locks, no leftover attrs from old mappings.
+    # Delete every user-defined attr (including hasLimits) so the build starts
+    # from a clean state: no stale locks, no leftover attrs from old mappings.
+    # hasLimits is recreated in Phase 0.5 — BEFORE custom attrs — so it lands
+    # immediately after the native visibility attribute in the Channel Box.
     _native_attrs = set(_RC_LIMIT_INFO) | _SCALE_ATTRS
     _ctrls_in_build = {r.get("controller", "").strip() for r in rows
                        if r.get("controller", "").strip()}
@@ -3847,7 +3849,7 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
         if not cmds.objExists(_ctrl):
             continue
         for _attr in (cmds.listAttr(_ctrl, userDefined=True) or []):
-            if _attr == "hasLimits" or _attr in _native_attrs:
+            if _attr in _native_attrs:
                 continue
             _full = f"{_ctrl}.{_attr}"
             if cmds.objExists(_full):
@@ -3855,6 +3857,17 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                     cmds.deleteAttr(_full)
                 except Exception:
                     pass
+
+    # ── Phase 0.5: create hasLimits FIRST (before custom attrs) ──────────────
+    # Excludes controllers flagged as no_limits — they get no hasLimits at all.
+    _ctrls_no_limits_raw = {r.get("controller", "").strip() for r in rows
+                            if r.get("no_limits") and r.get("controller", "").strip()}
+    for _ctrl in _ctrls_in_build - _ctrls_no_limits_raw:
+        if not cmds.objExists(_ctrl):
+            continue
+        cmds.addAttr(_ctrl, longName="hasLimits", attributeType="bool",
+                     defaultValue=True, keyable=True)
+        cmds.setAttr(f"{_ctrl}.hasLimits", True)
 
     # ── Phase 1: validation + custom attr creation ───────────────────────────
     valid_rows = []
@@ -3896,7 +3909,11 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
             "ctrl_attr": ctrl_attr_full, "resolved_attr": resolved_attr,
             "in_min": in_min, "in_max": in_max,
             "gate": gate,
+            "no_limits": bool(row.get("no_limits", False)),
         })
+
+    # Controllers that must NOT receive a hasLimits attr (user opted out per-row)
+    no_limits_ctrls = {vr["ctrl"] for vr in valid_rows if vr.get("no_limits")}
 
     # ── Apply physical slider limits to custom attrs ───────────────────────────
     # Aggregate in_min/in_max across all shapes sharing the same custom attr so
@@ -4134,6 +4151,34 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
 
     # ── Post-loop: hasLimits attr (added last) + connections ─────────────────
     for ctrl in set(pending_limits) | set(pending_conds):
+        # ── no_limits controllers: skip transformLimits + hasLimits entirely ──
+        if ctrl in no_limits_ctrls:
+            # hasLimits was already wiped in Phase 0 and not recreated in Phase 0.5.
+            # Disable all limit enables (they may retain True from a previous build)
+            for _, pos_en, neg_en in _RC_LIMIT_INFO.values():
+                for en_attr in (pos_en, neg_en):
+                    try:
+                        cmds.setAttr(f"{ctrl}.{en_attr}", False)
+                    except Exception:
+                        pass
+            # Restore any native attrs that a previous build may have locked/hidden
+            for attr_name in _RC_LIMIT_INFO:
+                attr_full = f"{ctrl}.{attr_name}"
+                try:
+                    if cmds.getAttr(attr_full, lock=True):
+                        cmds.setAttr(attr_full, lock=False)
+                    cmds.setAttr(attr_full, keyable=True)
+                except Exception:
+                    pass
+            # Condition nodes still exist — fix firstTerm=1 so weight stays capped at 1.0
+            for cond_name in pending_conds.get(ctrl, []):
+                if cmds.objExists(cond_name):
+                    try:
+                        cmds.setAttr(f"{cond_name}.firstTerm", 1)
+                    except Exception:
+                        pass
+            continue
+
         used_native = set(pending_limits.get(ctrl, {}).keys())
 
         # Unlock/unhide native attrs in use (a previous build may have locked them)
@@ -4164,17 +4209,8 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
             cmds.setAttr(attr_full, channelBox=False)
             cmds.setAttr(attr_full, lock=True)
 
-        # hasLimits attr — must always be the last attribute on the ctrl.
-        # Technique: delete it then immediately undo the delete.
-        # Maya's undo restores the attribute at the END of the list while keeping
-        # all existing connections intact (including any custom user connections).
-        # On first build the attribute simply does not exist yet, so we add it fresh.
-        if cmds.attributeQuery("hasLimits", node=ctrl, exists=True):
-            cmds.deleteAttr(f"{ctrl}.hasLimits")
-            cmds.undo()  # restores attribute last in the list with connections intact
-        else:
-            cmds.addAttr(ctrl, longName="hasLimits", attributeType="bool",
-                         defaultValue=True, keyable=True)
+        # hasLimits was created in Phase 0.5, before custom attrs, so it already
+        # sits right after the native visibility attribute in the Channel Box.
         cmds.setAttr(f"{ctrl}.hasLimits", True)
 
         # Connect hasLimits ->ALL native enable attrs (6 axes × min + max)

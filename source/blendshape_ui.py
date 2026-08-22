@@ -132,6 +132,14 @@ def _make_inval_le(value, tooltip=None):
     return le
 
 
+def _apply_ctrl_no_limits_style(cb, no_limits):
+    """Tint the controller combobox to indicate that hasLimits will NOT be created."""
+    if no_limits:
+        cb.setStyleSheet("QComboBox { background-color: #3a2800; }")
+    else:
+        cb.setStyleSheet("")
+
+
 def _check_shapes_default_json_path():
     """Returns the path to the default check_shapes JSON shipped with the tool."""
     src_dir  = os.path.dirname(os.path.abspath(__file__))
@@ -2389,7 +2397,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
     def _append_table_row(self, row_num, shape_name, controllers,
                           ctrl="", attr="ty",
-                          in_min=0.0, in_max=1.0, gate=""):
+                          in_min=0.0, in_max=1.0, gate="", no_limits=False):
         self._remove_placeholder()
         row = self._table.rowCount()
         self._table.insertRow(row)
@@ -2415,6 +2423,9 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 cb_ctrl.setCurrentIndex(idx)
             else:
                 cb_ctrl.setEditText(ctrl)
+        if no_limits:
+            cb_ctrl.setProperty("no_limits", True)
+        _apply_ctrl_no_limits_style(cb_ctrl, no_limits)
         self._table.setCellWidget(row, self._COL_CTRL, cb_ctrl)
 
         # Col 3 — Attr (editable combo: pick standard or type custom)
@@ -2746,6 +2757,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
             "min":    _read_inval(le_min, 0.0) if le_min else 0.0,
             "max":    _read_inval(le_max, 1.0) if le_max else 1.0,
             "gate":       le_gate.text().strip() if le_gate    else "",
+            "no_limits":  bool(cb_ctrl.property("no_limits")) if cb_ctrl else False,
             "stat_text":  lbl_stat.text()        if lbl_stat   else "\u25cf",
             "stat_style": lbl_stat.styleSheet()  if lbl_stat   else "color: grey;",
             "stat_tip":   lbl_stat.toolTip()     if lbl_stat   else "",
@@ -2783,6 +2795,10 @@ class RigConnectorDialog(QtWidgets.QDialog):
         if d["ctrl"]:
             idx = cb_ctrl.findText(d["ctrl"])
             cb_ctrl.setCurrentIndex(idx) if idx >= 0 else cb_ctrl.setEditText(d["ctrl"])
+        no_lim = d.get("no_limits", False)
+        if no_lim:
+            cb_ctrl.setProperty("no_limits", True)
+        _apply_ctrl_no_limits_style(cb_ctrl, no_lim)
         self._table.setCellWidget(pos, self._COL_CTRL, cb_ctrl)
 
         # Col 3 — Attr (editable combo)
@@ -2970,6 +2986,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 "min":    _read_inval(le_min, 0.0) if le_min else 0.0,
                 "max":    _read_inval(le_max, 1.0) if le_max else 1.0,
                 "gate":       le_gate.text().strip() if le_gate  else "",
+                "no_limits":  bool(cb_ctrl.property("no_limits")) if cb_ctrl else False,
             })
         return rows
 
@@ -3255,6 +3272,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
                     continue
                 self._add_proxy_row(last_row, ctrl=rd.get("controller", ""))
                 new_row = last_row + 1
+                cb_ctrl_w = self._table.cellWidget(new_row, self._COL_CTRL)
                 cb_attr_w = self._table.cellWidget(new_row, self._COL_ATTR)
                 le_min_w  = self._table.cellWidget(new_row, self._COL_MIN)
                 le_max_w  = self._table.cellWidget(new_row, self._COL_MAX)
@@ -3263,6 +3281,11 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 if le_min_w:  le_min_w.setText(_fmt_inval(in_min))
                 if le_max_w:  le_max_w.setText(_fmt_inval(in_max))
                 if le_gate_w: le_gate_w.setText(rd.get("gate", ""))
+                if cb_ctrl_w:
+                    no_lim = rd.get("no_limits", False)
+                    if no_lim:
+                        cb_ctrl_w.setProperty("no_limits", True)
+                    _apply_ctrl_no_limits_style(cb_ctrl_w, no_lim)
             else:
                 row_num += 1
                 self._append_table_row(
@@ -3272,6 +3295,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
                     in_min=in_min,
                     in_max=in_max,
                     gate=rd.get("gate", ""),
+                    no_limits=rd.get("no_limits", False),
                 )
 
         # ── Soft blend pairs ──────────────────────────────────────────────────
@@ -3308,6 +3332,19 @@ class RigConnectorDialog(QtWidgets.QDialog):
         except ValueError:
             self._le_scale.setText("2.00")
 
+    def _set_has_limits_selection(self, enabled):
+        """Enable or disable hasLimits creation for selected rows (enabled=False = no hasLimits)."""
+        sel_rows = list({idx.row() for idx in self._table.selectedIndexes()})
+        if not sel_rows:
+            return
+        self._push_undo()
+        no_lim = not enabled
+        for r in sel_rows:
+            cb_ctrl = self._table.cellWidget(r, self._COL_CTRL)
+            if cb_ctrl is not None:
+                cb_ctrl.setProperty("no_limits", no_lim)
+                _apply_ctrl_no_limits_style(cb_ctrl, no_lim)
+
     def _scale_ranges(self, col):
         selected_rows = list({idx.row() for idx in self._table.selectedIndexes()})
         if not selected_rows:
@@ -3334,6 +3371,11 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 "and manual reordering done inside the Shape Editor.\n"
                 "Proxy rows follow their primary row. Unmatched rows are appended at the end.")
             act.triggered.connect(self._reorder_from_bs_node)
+        elif col == self._COL_CTRL:
+            act_off = menu.addAction("Disable Has Limits  —  selected rows")
+            act_on  = menu.addAction("Re-enable Has Limits  —  selected rows")
+            act_off.triggered.connect(lambda: self._set_has_limits_selection(False))
+            act_on.triggered.connect(lambda:  self._set_has_limits_selection(True))
         elif col in (self._COL_MIN, self._COL_MAX):
             act = menu.addAction(f"Multiply selected rows by Scale Factor  ({self._le_scale.text()})")
             act.triggered.connect(lambda: self._scale_ranges(col))
@@ -4160,7 +4202,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
 class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     TOOL_NAME = "BlendshapeEditorUI"
-    VERSION   = "v.05.20"
+    VERSION   = "v.05.52"
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -8542,6 +8584,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 "min":        in_min,
                 "max":        in_max,
                 "gate":       rd.get("gate", ""),
+                "no_limits":  rd.get("no_limits", False),
             })
 
         results = build_and_connect_rig(
