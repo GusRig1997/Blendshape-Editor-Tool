@@ -1,5 +1,29 @@
 # Changelog — Blendshape Editor Tool
 
+## v.05.52
+
+**Rig Connector — Per-row "Disable Has Limits" option**
+
+- Right-click on the **Controller** column header → two new actions: *Disable Has Limits — selected rows* and *Re-enable Has Limits — selected rows*
+- When disabled, the controller combobox is tinted orange-brown as a visual indicator
+- The `no_limits` flag is persisted in the mapping JSON and restored on load (both normal rows and proxy rows)
+- The main UI "Build & Connect" button also reads the flag from JSON (it builds rows manually, the key was missing)
+
+**Build & Connect — Has Limits now created first in the Channel Box**
+
+- `hasLimits` is now created in a new **Phase 0.5**, immediately after Phase 0 wipes all user attrs, so it lands right below the native `visibility` attribute — before any custom blendshape attrs
+- Removed the old delete+undo trick that was used to push it to the last position
+- Phase 0 now also wipes `hasLimits` (previously preserved), since it is always recreated fresh in the correct position
+
+**Build & Connect — no_limits controllers**
+
+- Controllers flagged as `no_limits` are skipped entirely in Phase 0.5 (no `hasLimits` created)
+- In the post-loop: `transformLimits` not applied, native attrs not locked/hidden, previously locked attrs restored, condition node `firstTerm` hardcoded to 1 (weight still capped at 1.0)
+
+**Version label fix**
+
+- `BlendshapeEditorUI.VERSION` constant was stuck at `v.05.20` — corrected to `v.05.52`
+
 ## v.05.51
 
 **Rig Connector — Bug fix: status dot grayed on primary rows with proxies**
