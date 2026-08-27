@@ -103,6 +103,16 @@ class _NoScrollCombo(QtWidgets.QComboBox):
             event.ignore()
 
 
+class _ClickableLabel(QtWidgets.QLabel):
+    """QLabel that emits clicked() on left mouse press."""
+    clicked = QtCore.Signal()
+
+    def mousePressEvent(self, ev):
+        if ev.button() == QtCore.Qt.LeftButton:
+            self.clicked.emit()
+        super().mousePressEvent(ev)
+
+
 def _fmt_inval(v):
     """Format a float for InMin/InMax QLineEdit display (2 decimal places, dot separator)."""
     try:
@@ -132,10 +142,10 @@ def _make_inval_le(value, tooltip=None):
     return le
 
 
-def _apply_ctrl_no_limits_style(cb, no_limits):
-    """Tint the controller combobox to indicate that hasLimits will NOT be created."""
-    if no_limits:
-        cb.setStyleSheet("QComboBox { background-color: #3a2800; }")
+def _apply_ctrl_skinning_style(cb, skinning_ctrl):
+    """Tint the controller combobox to indicate this is also a skinning controller."""
+    if skinning_ctrl:
+        cb.setStyleSheet("QComboBox { background-color: #002a3a; }")
     else:
         cb.setStyleSheet("")
 
@@ -347,6 +357,9 @@ def create_opposite_shape(symmetry_axis="Topology", topo_edge=None):
         dup_idx          = None
         duplicated_shape = f"{shape}_Copy"
 
+        # Read combination info before touching any connections
+        source_combo_info = get_combination_info(bs_name, index)
+
         # Temporarily disconnect only the source target's incoming connections so
         # sculptTarget -regenerate can set the weight freely.  Other targets are
         # left untouched — disconnecting all of them on every iteration is
@@ -448,6 +461,27 @@ def create_opposite_shape(symmetry_axis="Topology", topo_edge=None):
                     new_weight = f"{bs_name}.weight[{dup_idx}]"
                     cmds.connectAttr(opp_plug, new_weight, force=True)
                     print(f"Driver mirrored : {opp_plug} ->{new_weight}")
+
+            # Mirror combination drive — only for freshly created targets.
+            # Overwrite path already restored the old slot's incoming connections above.
+            if was_fresh and source_combo_info:
+                mirrored_drivers = []
+                for driver_name in source_combo_info["driver_names"]:
+                    tokens   = driver_name.split("_")
+                    opp_name = None
+                    for duo in (primary_duos + fallback_duos):
+                        for i, tok in enumerate(tokens):
+                            if tok in duo:
+                                opp_tokens    = tokens[:]
+                                opp_tokens[i] = duo[1] if tok == duo[0] else duo[0]
+                                opp_name      = "_".join(opp_tokens)
+                                break
+                        if opp_name:
+                            break
+                    mirrored_drivers.append(opp_name or driver_name)
+                mirrored_combo = {"driver_names": mirrored_drivers,
+                                  "method": source_combo_info["method"]}
+                apply_combination(bs_name, opposite_shape, mirrored_combo)
 
         except Exception:
             # Clean up the _Copy slot so it doesn't become a phantom target
@@ -1515,6 +1549,43 @@ class _AddSoftBlendPairDialog(QtWidgets.QDialog):
         return self._cb_a.currentText().strip(), self._cb_b.currentText().strip()
 
 
+def _normalize_connection_rows(raw_data):
+    """Convert raw JSON connection data to the canonical row-dict format expected
+    by build_and_connect_rig.  This is the single source of truth for that
+    conversion — every code path that builds rows from JSON must go through here.
+
+    Canonical keys (mirrors what RigConnectorDialog._collect_rows produces):
+        shape, proxy, controller, attr, min, max, gate, skinning_ctrl
+    """
+    rows = []
+    for rd in raw_data:
+        if not isinstance(rd, dict):
+            continue
+        attr   = rd.get("attr", "ty")
+        in_min = float(rd.get("min", rd.get("in_min", 0.0)))
+        in_max = float(rd.get("max", rd.get("in_max", 1.0)))
+        # Old format: attr=="custom" + custom_attr field
+        custom_attr = rd.get("custom_attr", "")
+        if attr == "custom" and custom_attr:
+            attr = custom_attr
+        # Old format: explicit direction field (− = negative)
+        if rd.get("direction", "+") == "\u2212":
+            in_max = -abs(in_max)
+            if in_min != 0.0:
+                in_min = -abs(in_min)
+        rows.append({
+            "shape":         rd.get("shape", ""),
+            "proxy":         bool(rd.get("proxy", False)),
+            "controller":    rd.get("controller", ""),
+            "attr":          attr,
+            "min":           in_min,
+            "max":           in_max,
+            "gate":          rd.get("gate", ""),
+            "skinning_ctrl": bool(rd.get("skinning_ctrl", False)),
+        })
+    return rows
+
+
 class RigConnectorDialog(QtWidgets.QDialog):
     """
     Maps FK rig controllers to blendShape targets.
@@ -1795,7 +1866,13 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._le_scale.setFixedWidth(44)
         self._le_scale.setFixedHeight(22)
         self._le_scale.setToolTip(
-            "Multiplier used when right-clicking In Min / In Max column headers")
+            "Multiplier applied when right-clicking In Min / In Max column headers.\n"
+            "Examples:\n"
+            "  2.0  →  double\n"
+            "  0.5  →  halve\n"
+            "  -1.0 →  flip sign\n"
+            "  1.5  →  scale up by 50%"
+        )
         self._le_scale.editingFinished.connect(self._format_scale_factor)
         search_row.addWidget(self._le_scale)
         self._scale_right_spacer = QtWidgets.QSpacerItem(
@@ -2047,6 +2124,19 @@ class RigConnectorDialog(QtWidgets.QDialog):
         _inmax_v.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self._sb_stagger_inmax.setValidator(_inmax_v)
         stagger_row.addWidget(self._sb_stagger_inmax)
+
+        stagger_row.addStretch(1)
+
+        self._combo_stagger_curve = QtWidgets.QComboBox()
+        self._combo_stagger_curve.addItems(["Uniform", "Ease In", "Ease Out", "Smooth"])
+        self._combo_stagger_curve.setFixedWidth(82)
+        self._combo_stagger_curve.setToolTip(
+            "Interpolation curve applied to the slot positions.\n"
+            "Uniform  : uniform spacing (default).\n"
+            "Ease In  : slots cluster at the start, spread toward In Max  (t²).\n"
+            "Ease Out : slots spread quickly then compress toward In Max  (1−(1−t)²).\n"
+            "Smooth   : S-curve, slow at both ends, fast in the middle  (3t²−2t³).")
+        stagger_row.addWidget(self._combo_stagger_curve)
 
         stagger_row.addStretch(1)
 
@@ -2397,7 +2487,8 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
     def _append_table_row(self, row_num, shape_name, controllers,
                           ctrl="", attr="ty",
-                          in_min=0.0, in_max=1.0, gate="", no_limits=False):
+                          in_min=0.0, in_max=1.0, gate="",
+                          skinning_ctrl=False):
         self._remove_placeholder()
         row = self._table.rowCount()
         self._table.insertRow(row)
@@ -2423,9 +2514,9 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 cb_ctrl.setCurrentIndex(idx)
             else:
                 cb_ctrl.setEditText(ctrl)
-        if no_limits:
-            cb_ctrl.setProperty("no_limits", True)
-        _apply_ctrl_no_limits_style(cb_ctrl, no_limits)
+        if skinning_ctrl:
+            cb_ctrl.setProperty("skinning_ctrl", True)
+        _apply_ctrl_skinning_style(cb_ctrl, skinning_ctrl)
         self._table.setCellWidget(row, self._COL_CTRL, cb_ctrl)
 
         # Col 3 — Attr (editable combo: pick standard or type custom)
@@ -2750,17 +2841,17 @@ class RigConnectorDialog(QtWidgets.QDialog):
         lbl_stat   = self._table.cellWidget(r, self._COL_STAT)
         is_proxy   = bool(num_item and num_item.text() == "\u21b3")
         return {
-            "is_proxy":   is_proxy,
-            "shape":      shape_item.text()      if shape_item else "",
-            "ctrl":       cb_ctrl.currentText()  if cb_ctrl    else "",
-            "attr":       cb_attr.currentText()  if cb_attr    else "ty",
-            "min":    _read_inval(le_min, 0.0) if le_min else 0.0,
-            "max":    _read_inval(le_max, 1.0) if le_max else 1.0,
-            "gate":       le_gate.text().strip() if le_gate    else "",
-            "no_limits":  bool(cb_ctrl.property("no_limits")) if cb_ctrl else False,
-            "stat_text":  lbl_stat.text()        if lbl_stat   else "\u25cf",
-            "stat_style": lbl_stat.styleSheet()  if lbl_stat   else "color: grey;",
-            "stat_tip":   lbl_stat.toolTip()     if lbl_stat   else "",
+            "is_proxy":      is_proxy,
+            "shape":         shape_item.text()      if shape_item else "",
+            "ctrl":          cb_ctrl.currentText()  if cb_ctrl    else "",
+            "attr":          cb_attr.currentText()  if cb_attr    else "ty",
+            "min":           _read_inval(le_min, 0.0) if le_min else 0.0,
+            "max":           _read_inval(le_max, 1.0) if le_max else 1.0,
+            "gate":          le_gate.text().strip() if le_gate    else "",
+            "skinning_ctrl": bool(cb_ctrl.property("skinning_ctrl")) if cb_ctrl else False,
+            "stat_text":     lbl_stat.text()        if lbl_stat   else "\u25cf",
+            "stat_style":    lbl_stat.styleSheet()  if lbl_stat   else "color: grey;",
+            "stat_tip":      lbl_stat.toolTip()     if lbl_stat   else "",
         }
 
     def _insert_row_data_at(self, pos, d):
@@ -2795,10 +2886,10 @@ class RigConnectorDialog(QtWidgets.QDialog):
         if d["ctrl"]:
             idx = cb_ctrl.findText(d["ctrl"])
             cb_ctrl.setCurrentIndex(idx) if idx >= 0 else cb_ctrl.setEditText(d["ctrl"])
-        no_lim = d.get("no_limits", False)
-        if no_lim:
-            cb_ctrl.setProperty("no_limits", True)
-        _apply_ctrl_no_limits_style(cb_ctrl, no_lim)
+        skin_c = d.get("skinning_ctrl", False)
+        if skin_c:
+            cb_ctrl.setProperty("skinning_ctrl", True)
+        _apply_ctrl_skinning_style(cb_ctrl, skin_c)
         self._table.setCellWidget(pos, self._COL_CTRL, cb_ctrl)
 
         # Col 3 — Attr (editable combo)
@@ -2986,7 +3077,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 "min":    _read_inval(le_min, 0.0) if le_min else 0.0,
                 "max":    _read_inval(le_max, 1.0) if le_max else 1.0,
                 "gate":       le_gate.text().strip() if le_gate  else "",
-                "no_limits":  bool(cb_ctrl.property("no_limits")) if cb_ctrl else False,
+                "skinning_ctrl": bool(cb_ctrl.property("skinning_ctrl")) if cb_ctrl else False,
             })
         return rows
 
@@ -3282,10 +3373,10 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 if le_max_w:  le_max_w.setText(_fmt_inval(in_max))
                 if le_gate_w: le_gate_w.setText(rd.get("gate", ""))
                 if cb_ctrl_w:
-                    no_lim = rd.get("no_limits", False)
-                    if no_lim:
-                        cb_ctrl_w.setProperty("no_limits", True)
-                    _apply_ctrl_no_limits_style(cb_ctrl_w, no_lim)
+                    skin_c = rd.get("skinning_ctrl", False)
+                    if skin_c:
+                        cb_ctrl_w.setProperty("skinning_ctrl", True)
+                    _apply_ctrl_skinning_style(cb_ctrl_w, skin_c)
             else:
                 row_num += 1
                 self._append_table_row(
@@ -3295,7 +3386,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
                     in_min=in_min,
                     in_max=in_max,
                     gate=rd.get("gate", ""),
-                    no_limits=rd.get("no_limits", False),
+                    skinning_ctrl=rd.get("skinning_ctrl", False),
                 )
 
         # ── Soft blend pairs ──────────────────────────────────────────────────
@@ -3332,18 +3423,17 @@ class RigConnectorDialog(QtWidgets.QDialog):
         except ValueError:
             self._le_scale.setText("2.00")
 
-    def _set_has_limits_selection(self, enabled):
-        """Enable or disable hasLimits creation for selected rows (enabled=False = no hasLimits)."""
+    def _set_skinning_ctrl_selection(self, enabled):
+        """Enable or disable the skinning controller flag for selected rows."""
         sel_rows = list({idx.row() for idx in self._table.selectedIndexes()})
         if not sel_rows:
             return
         self._push_undo()
-        no_lim = not enabled
         for r in sel_rows:
             cb_ctrl = self._table.cellWidget(r, self._COL_CTRL)
             if cb_ctrl is not None:
-                cb_ctrl.setProperty("no_limits", no_lim)
-                _apply_ctrl_no_limits_style(cb_ctrl, no_lim)
+                cb_ctrl.setProperty("skinning_ctrl", enabled)
+                _apply_ctrl_skinning_style(cb_ctrl, enabled)
 
     def _scale_ranges(self, col):
         selected_rows = list({idx.row() for idx in self._table.selectedIndexes()})
@@ -3372,10 +3462,16 @@ class RigConnectorDialog(QtWidgets.QDialog):
                 "Proxy rows follow their primary row. Unmatched rows are appended at the end.")
             act.triggered.connect(self._reorder_from_bs_node)
         elif col == self._COL_CTRL:
-            act_off = menu.addAction("Disable Has Limits  —  selected rows")
-            act_on  = menu.addAction("Re-enable Has Limits  —  selected rows")
-            act_off.triggered.connect(lambda: self._set_has_limits_selection(False))
-            act_on.triggered.connect(lambda:  self._set_has_limits_selection(True))
+            sel_rows = list({idx.row() for idx in self._table.selectedIndexes()})
+            all_on = bool(sel_rows) and all(
+                bool(self._table.cellWidget(r, self._COL_CTRL) and
+                     self._table.cellWidget(r, self._COL_CTRL).property("skinning_ctrl"))
+                for r in sel_rows
+            )
+            act_skin = menu.addAction("Is Skinning Controller  —  selected rows")
+            act_skin.setCheckable(True)
+            act_skin.setChecked(all_on)
+            act_skin.triggered.connect(self._set_skinning_ctrl_selection)
         elif col in (self._COL_MIN, self._COL_MAX):
             act = menu.addAction(f"Multiply selected rows by Scale Factor  ({self._le_scale.text()})")
             act.triggered.connect(lambda: self._scale_ranges(col))
@@ -3550,6 +3646,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         axis          = self._combo_stagger_axis.currentText()
         in_max_ref    = float(self._sb_stagger_inmax.text() or "0")
         smooth        = float(self._sb_stagger_falloff.text() or "0")
+        curve = self._combo_stagger_curve.currentText()
         mode          = self._combo_stagger_mode.currentText()   # "Linear"/"Mirror"/"Symmetric"
         use_mirror    = (mode == "Mirror")
         use_symmetric = (mode == "Symmetric")
@@ -3631,8 +3728,15 @@ class RigConnectorDialog(QtWidgets.QDialog):
             direction = _direction(k)   # "+", "−", or None
 
             # Compute signed in_min / in_max (Symmetric ->negative side gets negated values)
-            base_min = max(0.0, slot * slot_width - smooth)
-            base_max = min(in_max_ref, (slot + 1) * slot_width + smooth)
+            def _crv(t):
+                if curve == "Ease In":  return t * t
+                if curve == "Ease Out": return 1.0 - (1.0 - t) * (1.0 - t)
+                if curve == "Smooth":   return t * t * (3.0 - 2.0 * t)
+                return t  # Uniform
+            t_min = _crv(slot / num_slots) if num_slots > 0 else 0.0
+            t_max = _crv((slot + 1) / num_slots) if num_slots > 0 else 1.0
+            base_min = max(0.0, t_min * in_max_ref - smooth)
+            base_max = min(in_max_ref, t_max * in_max_ref + smooth)
             if direction == "\u2212":
                 in_min_val = -base_min
                 in_max_val = -base_max
@@ -4202,7 +4306,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
 class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     TOOL_NAME = "BlendshapeEditorUI"
-    VERSION   = "v.05.52"
+    VERSION   = "v.05.53"
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -5070,13 +5174,15 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._icon_target_lbl.setFixedSize(22, 22)
         self._icon_target_lbl.setAlignment(QtCore.Qt.AlignCenter)
         _icon_lbl = self._icon_target_lbl
-        self._lbl_active_target = QtWidgets.QLabel("—")
+        self._lbl_active_target = _ClickableLabel("—")
         self._lbl_active_target.setStyleSheet("color: #aaaaaa;")
         self._lbl_active_target.setSizePolicy(
             QtWidgets.QSizePolicy.Preferred, QtWidgets.QSizePolicy.Fixed)
         self._lbl_active_target.setToolTip(
             "Currently selected target in the Shape Editor.\n"
+            "Click to re-select it in the Shape Editor.\n"
             "Updates automatically when the selection changes.")
+        self._lbl_active_target.clicked.connect(self._select_active_target_in_shape_editor)
         self._slider_target_weight = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self._slider_target_weight.setMinimum(0)
         self._slider_target_weight.setMaximum(1000)
@@ -6464,38 +6570,6 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.btn_paste_wire_delta.clicked.connect(self._run_paste_wire_delta)
         _wire_shelf_row.addWidget(self.btn_paste_wire_delta)
 
-        _wire_shelf_row.addStretch(1)
-
-        self._wire_delete_after_bake = False
-        btn_bake_wire_shelf = QtWidgets.QToolButton()
-        btn_bake_wire_shelf.setFixedSize(36, 36)
-        btn_bake_wire_shelf.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
-        btn_bake_wire_shelf.setToolTip(
-            "Bake Wire to Mesh\n"
-            "For each shape curve, poses wire_setup_msh and adds the result\n"
-            "as a blendShape target on the base mesh's bs_node.\n"
-            "Existing targets with the same name are overwritten.")
-        btn_bake_wire_shelf.setStyleSheet("""
-            QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
-            QToolButton:hover { background-color: rgba(255,255,255,30); }
-            QToolButton:pressed { background-color: rgba(0,0,0,40); }
-        """)
-        _bw_px = QtGui.QPixmap(f"{_icons_dir}/bake_wire.png")
-        if not _bw_px.isNull():
-            btn_bake_wire_shelf.setIcon(QtGui.QIcon(_bw_px))
-            btn_bake_wire_shelf.setIconSize(QtCore.QSize(34, 34))
-        btn_bake_wire_shelf.clicked.connect(self._run_bake_wire)
-        btn_bake_wire_shelf.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
-        def _bake_wire_ctx_menu(pos):
-            menu = QtWidgets.QMenu(btn_bake_wire_shelf)
-            act_del = menu.addAction("Delete Wire at Bake")
-            act_del.setCheckable(True)
-            act_del.setChecked(self._wire_delete_after_bake)
-            act_del.toggled.connect(lambda v: setattr(self, "_wire_delete_after_bake", v))
-            menu.exec_(btn_bake_wire_shelf.mapToGlobal(pos))
-        btn_bake_wire_shelf.customContextMenuRequested.connect(_bake_wire_ctx_menu)
-        _wire_shelf_row.addWidget(btn_bake_wire_shelf)
-
         lay_wire.addLayout(_wire_shelf_row)
 
         # Base Mesh
@@ -6633,9 +6707,289 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         btn_create_wire.clicked.connect(self._run_create_wire_setup)
         row_create_wire.addWidget(btn_create_wire)
         row_create_wire.addStretch(1)
+        row_create_wire.addWidget(QtWidgets.QLabel("Bake Wire to Mesh"))
+        self._wire_delete_after_bake = False
+        btn_bake_wire = QtWidgets.QToolButton()
+        btn_bake_wire.setFixedSize(36, 36)
+        btn_bake_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        btn_bake_wire.setToolTip(
+            "Bake Wire to Mesh\n"
+            "For each shape curve, poses wire_setup_msh and adds the result\n"
+            "as a blendShape target on the base mesh's bs_node.\n"
+            "Existing targets with the same name are overwritten.\n\n"
+            "Right-click to toggle Delete Wire at Bake.")
+        btn_bake_wire.setStyleSheet(_wire_action_ss)
+        _bw_px = QtGui.QPixmap(f"{_icons_dir}/bake_wire.png")
+        if not _bw_px.isNull():
+            btn_bake_wire.setIcon(QtGui.QIcon(_bw_px))
+            btn_bake_wire.setIconSize(QtCore.QSize(34, 34))
+        btn_bake_wire.clicked.connect(self._run_bake_wire)
+        btn_bake_wire.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        def _bake_wire_ctx_menu(pos):
+            menu = QtWidgets.QMenu(btn_bake_wire)
+            act_del = menu.addAction("Delete Wire at Bake")
+            act_del.setCheckable(True)
+            act_del.setChecked(self._wire_delete_after_bake)
+            act_del.toggled.connect(lambda v: setattr(self, "_wire_delete_after_bake", v))
+            menu.exec_(btn_bake_wire.mapToGlobal(pos))
+        btn_bake_wire.customContextMenuRequested.connect(_bake_wire_ctx_menu)
+        row_create_wire.addWidget(btn_bake_wire)
         lay_wire.addLayout(row_create_wire)
 
         lay_tools.addWidget(grp_wire)
+
+        # ── Cluster to Joint ───────────────────────────────────────────────
+        grp_ctj, _body_ctj, lay_ctj = self._collapsible_section(
+            "Cluster to Joint", two_state=True, initial_state=0)
+        lay_ctj.setSpacing(6)
+
+        # Shelf row — Paint / Mirror / Copy / Paste cluster weights
+        _ctj_shelf_row = QtWidgets.QHBoxLayout()
+        _ctj_shelf_ss = """
+            QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
+            QToolButton:hover { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """
+        _ctj_shelf_ss_dis = _ctj_shelf_ss + "QToolButton:disabled { opacity: 0.4; }"
+
+        btn_paint_ctj = QtWidgets.QToolButton()
+        btn_paint_ctj.setFixedSize(36, 36)
+        btn_paint_ctj.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        btn_paint_ctj.setToolTip(
+            "Paint Cluster Weights\n"
+            "Selects the mesh and opens the Paint Attributes tool on cluster.weights.\n"
+            "Right-click or double-click to open Tool Settings.")
+        btn_paint_ctj.setStyleSheet(_ctj_shelf_ss)
+        _pctj_px = QtGui.QPixmap(f"{_icons_dir}/paint_cluster.png")
+        if not _pctj_px.isNull():
+            btn_paint_ctj.setIcon(QtGui.QIcon(_pctj_px))
+            btn_paint_ctj.setIconSize(QtCore.QSize(34, 34))
+        btn_paint_ctj.clicked.connect(self._run_paint_ctj)
+        btn_paint_ctj.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        btn_paint_ctj.customContextMenuRequested.connect(lambda _: self._open_tool_settings())
+        _f_pctj = _DblClickFilter(self._open_tool_settings, btn_paint_ctj)
+        btn_paint_ctj.installEventFilter(_f_pctj)
+        _ctj_shelf_row.addWidget(btn_paint_ctj)
+
+        btn_mirror_ctj = QtWidgets.QToolButton()
+        btn_mirror_ctj.setFixedSize(36, 36)
+        btn_mirror_ctj.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        btn_mirror_ctj.setToolTip(
+            "Mirror Cluster Weights (YZ)\n"
+            "Mirrors cluster weights from -X to +X.\n\n"
+            "WARNING: Mesh must be symmetrical and in neutral pose.\n"
+            "Right-click to open Mirror Deformer Weights options.")
+        btn_mirror_ctj.setStyleSheet(_ctj_shelf_ss)
+        _mctj_px = QtGui.QPixmap(f"{_icons_dir}/mirror_wire.png")
+        if not _mctj_px.isNull():
+            btn_mirror_ctj.setIcon(QtGui.QIcon(_mctj_px))
+            btn_mirror_ctj.setIconSize(QtCore.QSize(34, 34))
+        btn_mirror_ctj.clicked.connect(self._run_mirror_ctj)
+        btn_mirror_ctj.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        btn_mirror_ctj.customContextMenuRequested.connect(
+            lambda _: cmds.MirrorDeformerWeightsOptions())
+        _ctj_shelf_row.addWidget(btn_mirror_ctj)
+
+        self.btn_copy_ctj_weight = QtWidgets.QToolButton()
+        self.btn_copy_ctj_weight.setFixedSize(36, 36)
+        self.btn_copy_ctj_weight.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        self.btn_copy_ctj_weight.setToolTip(
+            "Copy Cluster Weight\n"
+            "Select exactly 1 vertex on the mesh.\n"
+            "Copies its cluster weight value into the clipboard.")
+        self.btn_copy_ctj_weight.setStyleSheet(_ctj_shelf_ss_dis)
+        _cpctj_px = QtGui.QPixmap(f"{_icons_dir}/copy_delta.png")
+        if not _cpctj_px.isNull():
+            self.btn_copy_ctj_weight.setIcon(QtGui.QIcon(_cpctj_px))
+            self.btn_copy_ctj_weight.setIconSize(QtCore.QSize(34, 34))
+        self.btn_copy_ctj_weight.clicked.connect(self._run_copy_ctj_weight)
+        _ctj_shelf_row.addWidget(self.btn_copy_ctj_weight)
+
+        self.btn_paste_ctj_weight = QtWidgets.QToolButton()
+        self.btn_paste_ctj_weight.setFixedSize(36, 36)
+        self.btn_paste_ctj_weight.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        self.btn_paste_ctj_weight.setToolTip(
+            "Paste Cluster Weight\n"
+            "Select one or more vertices.\n"
+            "Applies the copied weight to all selected vertices. Undoable.")
+        self.btn_paste_ctj_weight.setStyleSheet(_ctj_shelf_ss_dis)
+        self.btn_paste_ctj_weight.setEnabled(False)
+        _ppctj_px = QtGui.QPixmap(f"{_icons_dir}/paste_delta.png")
+        if not _ppctj_px.isNull():
+            self.btn_paste_ctj_weight.setIcon(QtGui.QIcon(_ppctj_px))
+            self.btn_paste_ctj_weight.setIconSize(QtCore.QSize(34, 34))
+        self.btn_paste_ctj_weight.clicked.connect(self._run_paste_ctj_weight)
+        _ctj_shelf_row.addWidget(self.btn_paste_ctj_weight)
+
+        lay_ctj.addLayout(_ctj_shelf_row)
+
+        # Mesh
+        row_ctj_mesh = QtWidgets.QHBoxLayout()
+        lbl_ctj_mesh = QtWidgets.QLabel("Mesh")
+        lbl_ctj_mesh.setFixedWidth(60)
+        self.edit_ctj_mesh = QtWidgets.QLineEdit()
+        self.edit_ctj_mesh.setPlaceholderText("mesh transform")
+        self.edit_ctj_mesh.setToolTip("Mesh that has the cluster deformer")
+        self.edit_ctj_mesh.textChanged.connect(self._ctj_refresh_clusters)
+        btn_ctj_pick = QtWidgets.QPushButton("Pick")
+        btn_ctj_pick.setFixedWidth(40)
+        btn_ctj_pick.setToolTip("Use currently selected object as mesh")
+        btn_ctj_pick.clicked.connect(self._ctj_pick_mesh)
+        row_ctj_mesh.addWidget(lbl_ctj_mesh)
+        row_ctj_mesh.addWidget(self.edit_ctj_mesh, 1)
+        row_ctj_mesh.addWidget(btn_ctj_pick)
+        lay_ctj.addLayout(row_ctj_mesh)
+
+        # Cluster
+        row_ctj_cls = QtWidgets.QHBoxLayout()
+        lbl_ctj_cls = QtWidgets.QLabel("Cluster")
+        lbl_ctj_cls.setFixedWidth(60)
+        self.combo_ctj_cluster = QtWidgets.QComboBox()
+        self.combo_ctj_cluster.setToolTip("Cluster deformer on the mesh above")
+        row_ctj_cls.addWidget(lbl_ctj_cls)
+        row_ctj_cls.addWidget(self.combo_ctj_cluster, 1)
+        lay_ctj.addLayout(row_ctj_cls)
+
+        # Setup button
+        _ctj_action_ss = """
+            QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
+            QToolButton:hover { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """
+        row_ctj_setup = QtWidgets.QHBoxLayout()
+        row_ctj_setup.setSpacing(4)
+        row_ctj_setup.addWidget(QtWidgets.QLabel("Cluster to Joint Setup"))
+        btn_ctj_setup = QtWidgets.QToolButton()
+        btn_ctj_setup.setFixedSize(36, 36)
+        btn_ctj_setup.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        btn_ctj_setup.setToolTip(
+            "Copy cluster weights to a new joint+skinCluster.\n"
+            "The cluster is disabled so you can paint skin weights freely.")
+        btn_ctj_setup.setStyleSheet(_ctj_action_ss)
+        _ctj_px = QtGui.QPixmap(f"{_icons_dir}/cluster_to_joint.png")
+        if not _ctj_px.isNull():
+            btn_ctj_setup.setIcon(QtGui.QIcon(_ctj_px))
+            btn_ctj_setup.setIconSize(QtCore.QSize(34, 34))
+        btn_ctj_setup.clicked.connect(self._run_ctj_setup)
+        row_ctj_setup.addWidget(btn_ctj_setup)
+        row_ctj_setup.addStretch(1)
+        row_ctj_setup.addWidget(QtWidgets.QLabel("Bake to Cluster"))
+        btn_ctj_bake = QtWidgets.QToolButton()
+        btn_ctj_bake.setFixedSize(36, 36)
+        btn_ctj_bake.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        btn_ctj_bake.setToolTip(
+            "Write the current skinCluster joint weights back into the cluster\n"
+            "and re-enable the cluster deformer.")
+        btn_ctj_bake.setStyleSheet(_ctj_action_ss)
+        _ctj_bake_px = QtGui.QPixmap(f"{_icons_dir}/bake_to_cluster.png")
+        if not _ctj_bake_px.isNull():
+            btn_ctj_bake.setIcon(QtGui.QIcon(_ctj_bake_px))
+            btn_ctj_bake.setIconSize(QtCore.QSize(34, 34))
+        btn_ctj_bake.clicked.connect(self._run_ctj_bake)
+        row_ctj_setup.addWidget(btn_ctj_bake)
+        lay_ctj.addLayout(row_ctj_setup)
+
+        # Delete Joint Setup at Bake toggle
+        row_ctj_opts = QtWidgets.QHBoxLayout()
+        self.chk_ctj_delete_joints = QtWidgets.QCheckBox("Delete Joint Setup at Bake")
+        self.chk_ctj_delete_joints.setToolTip(
+            "When checked, the skinCluster, joints and their group are deleted after baking.\n"
+            "When unchecked, they are kept.")
+        row_ctj_opts.addWidget(self.chk_ctj_delete_joints)
+        row_ctj_opts.addStretch(1)
+        lay_ctj.addLayout(row_ctj_opts)
+
+        lay_tools.addWidget(grp_ctj)
+
+        # ── Copy Deformer Weights ──────────────────────────────────────────
+        grp_cdw, _body_cdw, lay_cdw = self._collapsible_section(
+            "Copy Deformer Weights", two_state=True, initial_state=0)
+        lay_cdw.setSpacing(6)
+
+        # Source label
+        lbl_cdw_src_hdr = QtWidgets.QLabel("Source")
+        lbl_cdw_src_hdr.setStyleSheet("color: #aaaaaa; font-size: 10px;")
+        lay_cdw.addWidget(lbl_cdw_src_hdr)
+
+        # Source Mesh
+        row_cdw_src_mesh = QtWidgets.QHBoxLayout()
+        lbl_cdw_sm = QtWidgets.QLabel("Mesh")
+        lbl_cdw_sm.setFixedWidth(60)
+        self.edit_cdw_src_mesh = QtWidgets.QLineEdit()
+        self.edit_cdw_src_mesh.setPlaceholderText("source mesh")
+        self.edit_cdw_src_mesh.setToolTip("Mesh that holds the source deformer")
+        self.edit_cdw_src_mesh.textChanged.connect(
+            lambda: self._cdw_refresh_deformers(src=True))
+        btn_cdw_pick_src = QtWidgets.QPushButton("Pick")
+        btn_cdw_pick_src.setFixedWidth(40)
+        btn_cdw_pick_src.setToolTip("Use sel[0] as source mesh")
+        btn_cdw_pick_src.clicked.connect(self._cdw_pick_source)
+        row_cdw_src_mesh.addWidget(lbl_cdw_sm)
+        row_cdw_src_mesh.addWidget(self.edit_cdw_src_mesh, 1)
+        row_cdw_src_mesh.addWidget(btn_cdw_pick_src)
+        lay_cdw.addLayout(row_cdw_src_mesh)
+
+        # Source Deformer
+        row_cdw_src_def = QtWidgets.QHBoxLayout()
+        lbl_cdw_sd = QtWidgets.QLabel("Deformer")
+        lbl_cdw_sd.setFixedWidth(60)
+        self.combo_cdw_src_deformer = QtWidgets.QComboBox()
+        self.combo_cdw_src_deformer.setToolTip("Source deformer (auto-populated from mesh above)")
+        row_cdw_src_def.addWidget(lbl_cdw_sd)
+        row_cdw_src_def.addWidget(self.combo_cdw_src_deformer, 1)
+        lay_cdw.addLayout(row_cdw_src_def)
+
+        _cdw_sep1 = QtWidgets.QFrame()
+        _cdw_sep1.setFrameShape(QtWidgets.QFrame.HLine)
+        lay_cdw.addWidget(_cdw_sep1)
+
+        # Target label
+        lbl_cdw_tgt_hdr = QtWidgets.QLabel("Target")
+        lbl_cdw_tgt_hdr.setStyleSheet("color: #aaaaaa; font-size: 10px;")
+        lay_cdw.addWidget(lbl_cdw_tgt_hdr)
+
+        # Target Mesh
+        row_cdw_tgt_mesh = QtWidgets.QHBoxLayout()
+        lbl_cdw_tm = QtWidgets.QLabel("Mesh")
+        lbl_cdw_tm.setFixedWidth(60)
+        self.edit_cdw_tgt_mesh = QtWidgets.QLineEdit()
+        self.edit_cdw_tgt_mesh.setReadOnly(True)
+        self.edit_cdw_tgt_mesh.setPlaceholderText("target mesh(es)")
+        self.edit_cdw_tgt_mesh.setToolTip("One or more target meshes")
+        btn_cdw_pick_tgt = QtWidgets.QPushButton("Pick")
+        btn_cdw_pick_tgt.setFixedWidth(40)
+        btn_cdw_pick_tgt.setToolTip(
+            "Pick target mesh(es) from selection.\n"
+            "If source is already set and is first in selection, uses sel[1:].")
+        btn_cdw_pick_tgt.clicked.connect(self._cdw_pick_targets)
+        row_cdw_tgt_mesh.addWidget(lbl_cdw_tm)
+        row_cdw_tgt_mesh.addWidget(self.edit_cdw_tgt_mesh, 1)
+        row_cdw_tgt_mesh.addWidget(btn_cdw_pick_tgt)
+        lay_cdw.addLayout(row_cdw_tgt_mesh)
+
+        # Target Deformer
+        row_cdw_tgt_def = QtWidgets.QHBoxLayout()
+        lbl_cdw_td = QtWidgets.QLabel("Deformer")
+        lbl_cdw_td.setFixedWidth(60)
+        self.combo_cdw_tgt_deformer = QtWidgets.QComboBox()
+        self.combo_cdw_tgt_deformer.setToolTip(
+            "Target deformer (auto-populated from first target mesh).\n"
+            "Can be the same node as the source (e.g. one cluster on multiple meshes).")
+        row_cdw_tgt_def.addWidget(lbl_cdw_td)
+        row_cdw_tgt_def.addWidget(self.combo_cdw_tgt_deformer, 1)
+        lay_cdw.addLayout(row_cdw_tgt_def)
+
+        # Copy button
+        btn_cdw_copy = QtWidgets.QPushButton("Copy Weights")
+        btn_cdw_copy.setToolTip(
+            "Copy per-vertex weights from source deformer to target deformer.\n"
+            "Same vertex count → direct 1:1 copy.\n"
+            "Different topology → closest-surface-point spatial transfer.\n\n"
+            "Note: skinCluster and blendShape are not supported.")
+        btn_cdw_copy.clicked.connect(self._run_copy_deformer_weights)
+        lay_cdw.addWidget(btn_cdw_copy)
+
+        lay_tools.addWidget(grp_cdw)
 
         # ── Joints Setup ──────────────────────────────────────────────────
         grp_joints, _body_joints, lay_joints = self._collapsible_section(
@@ -8092,6 +8446,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                             "color: #ff6666; font-size: 11px; padding-top: 4px; padding-bottom: 4px;")
                         self._cached_phantom_count = 0
                         self._lbl_active_target.setText(name_e)
+                        self._lbl_active_target.setCursor(QtCore.Qt.PointingHandCursor)
                         self._btn_edit_target.setEnabled(True)
                         self._apply_edit_btn_style(True)
                         self._edit_poll_state = (bs_node_e, idx_e, True)
@@ -8113,6 +8468,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 self._cached_phantom_count = 0
                 self._lbl_active_target.setText("—")
                 self._lbl_active_target.setStyleSheet("color: #aaaaaa;")
+                self._lbl_active_target.setCursor(QtCore.Qt.ArrowCursor)
                 self._btn_edit_target.setEnabled(False)
                 self._apply_edit_btn_style(False)
                 self._edit_poll_state = None
@@ -8158,6 +8514,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             # Update active target label; reset edit state only on target change
             bs_node_r, idx_r, name_r = results[0]
             self._lbl_active_target.setText(name_r)
+            self._lbl_active_target.setCursor(QtCore.Qt.PointingHandCursor)
             self._btn_target_vis.setEnabled(True)
             self._btn_edit_target.setEnabled(not self._vis_is_hidden())
 
@@ -8202,6 +8559,17 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             cmds.warning("Please select at least one target in the Shape Editor.")
             return []
         return results
+
+    def _select_active_target_in_shape_editor(self):
+        """Re-select the displayed active target in the Shape Editor."""
+        state = self._edit_poll_state
+        if not state:
+            return
+        bs_node, idx = state[0], state[1]
+        try:
+            mel.eval(f'shapeEditorTreeviewSelect "{bs_node}.{idx}";')
+        except Exception as e:
+            cmds.warning(f"Could not select target in Shape Editor: {e}")
 
     def _update_nom_preview(self):
         pass  # Preview is now shown inside the Naming Convention dialog
@@ -8512,6 +8880,223 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             import traceback; traceback.print_exc()
             self._set_status(f"✗ Build Rig: {e}", error=True)
 
+    # ── Cluster to Joint callbacks ─────────────────────────────────────────
+
+    def _ctj_pick_mesh(self):
+        sel = cmds.ls(selection=True, transforms=True)
+        if not sel:
+            self._set_status("✗ Cluster to Joint: select a mesh transform first", error=True)
+            return
+        self.edit_ctj_mesh.setText(sel[0])
+
+    def _ctj_refresh_clusters(self):
+        self.combo_ctj_cluster.clear()
+        mesh = self.edit_ctj_mesh.text().strip()
+        if not mesh or not cmds.objExists(mesh):
+            return
+        history = cmds.listHistory(mesh, pruneDagObjects=True) or []
+        cluster_nodes = cmds.ls(history, type="cluster") or []
+        for c in cluster_nodes:
+            self.combo_ctj_cluster.addItem(c)
+
+    def _run_ctj_setup(self):
+        mesh = self.edit_ctj_mesh.text().strip()
+        cluster = self.combo_ctj_cluster.currentText()
+        if not mesh or not cmds.objExists(mesh):
+            self._set_status("✗ Cluster to Joint: set Mesh first", error=True)
+            return
+        if not cluster or not cmds.objExists(cluster):
+            self._set_status("✗ Cluster to Joint: select a cluster", error=True)
+            return
+        cmds.undoInfo(openChunk=True, chunkName="Cluster to Joint Setup")
+        try:
+            skin, djnt, zjnt, nverts = cluster_to_joint_setup(mesh, cluster)
+            self._ctj_skin_node    = skin
+            self._ctj_cluster_node = cluster
+            self._ctj_mesh         = mesh
+            self._ctj_deform_jnt   = djnt
+            self._ctj_zero_jnt     = zjnt
+            self._ctj_n_verts      = nverts
+            self._set_status(f"✓ Cluster to Joint: {djnt}  |  Paint weights, then Bake")
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            self._set_status(f"✗ Cluster to Joint Setup: {e}", error=True)
+        finally:
+            cmds.undoInfo(closeChunk=True)
+
+    def _run_ctj_bake(self):
+        skin    = getattr(self, "_ctj_skin_node",    None)
+        cluster = getattr(self, "_ctj_cluster_node", None)
+        mesh    = getattr(self, "_ctj_mesh",         None)
+        djnt    = getattr(self, "_ctj_deform_jnt",   None)
+        zjnt    = getattr(self, "_ctj_zero_jnt",     None)
+        nverts  = getattr(self, "_ctj_n_verts",      None)
+        if not all([skin, cluster, mesh, djnt, zjnt, nverts]):
+            self._set_status("✗ Bake to Cluster: run Setup first", error=True)
+            return
+        if not cmds.objExists(skin):
+            self._set_status("✗ Bake to Cluster: skinCluster no longer exists", error=True)
+            return
+        keep = not self.chk_ctj_delete_joints.isChecked()
+        cmds.undoInfo(openChunk=True, chunkName="Bake to Cluster")
+        try:
+            bake_joint_weights_to_cluster(skin, cluster, mesh, nverts, djnt, zjnt,
+                                          keep_skin=keep)
+            if not keep:
+                self._ctj_skin_node  = None
+                self._ctj_deform_jnt = None
+                self._ctj_zero_jnt   = None
+            self._set_status(f"✓ Baked joint weights -> '{cluster}'  (cluster re-enabled)")
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            self._set_status(f"✗ Bake to Cluster: {e}", error=True)
+        finally:
+            cmds.undoInfo(closeChunk=True)
+
+    # ── Cluster to Joint shelf callbacks ──────────────────────────────────────
+
+    def _run_paint_ctj(self):
+        cluster = self.combo_ctj_cluster.currentText()
+        mesh    = self.edit_ctj_mesh.text().strip()
+        if not cluster or not cmds.objExists(cluster):
+            self._set_status("✗ Paint Cluster: set Mesh and select a cluster first", error=True)
+            return
+        if not mesh or not cmds.objExists(mesh):
+            self._set_status("✗ Paint Cluster: set Mesh first", error=True)
+            return
+        sel = cmds.ls(sl=True, transforms=True)
+        if mesh not in sel:
+            cmds.select(mesh, replace=True)
+        mel.eval(f'artSetToolAndSelectAttr "artAttrCtx" "cluster.{cluster}.weights"')
+        mel.eval('artAttrInitPaintableAttr')
+        mel.eval('toolPropertyShow')
+        self._set_status(f"✓ Paint Cluster tool opened — {cluster}")
+
+    def _run_mirror_ctj(self):
+        cluster = self.combo_ctj_cluster.currentText()
+        mesh    = self.edit_ctj_mesh.text().strip()
+        if not cluster or not cmds.objExists(cluster):
+            self._set_status("✗ Mirror Cluster: set Mesh and select a cluster first", error=True)
+            return
+        if not mesh or not cmds.objExists(mesh):
+            self._set_status("✗ Mirror Cluster: set Mesh first", error=True)
+            return
+        mel.eval(
+            f'copyDeformerWeights -sd {cluster} -ss {mesh} -ds {mesh}'
+            f' -mirrorMode YZ -surfaceAssociation closestPoint'
+        )
+        self._set_status(f"✓ Cluster weights mirrored (YZ) — {cluster}")
+
+    def _run_copy_ctj_weight(self):
+        raw_sel = cmds.ls(sl=True, flatten=True) or []
+        vtx_sel = [s for s in raw_sel if ".vtx[" in s]
+        if len(vtx_sel) != 1:
+            self._set_status(
+                f"Copy Cluster Weight: select exactly 1 vertex "
+                f"({'none' if not vtx_sel else len(vtx_sel)} selected).",
+                error=True)
+            return
+        vtx_str = vtx_sel[0]
+        cluster = self.combo_ctj_cluster.currentText()
+        if not cluster or not cmds.objExists(cluster):
+            mesh = vtx_str.split(".vtx[")[0]
+            found = cmds.ls(cmds.listHistory(mesh) or [], type="cluster") or []
+            if not found:
+                self._set_status("Copy Cluster Weight: no cluster found.", error=True)
+                return
+            cluster = found[0]
+        vi     = int(vtx_str.split(".vtx[")[1].rstrip("]"))
+        weight = cmds.percent(cluster, vtx_str, q=True, v=True)[0]
+        self._ctj_weight_clipboard = {"cluster": cluster, "vi": vi, "weight": weight}
+        self.btn_paste_ctj_weight.setEnabled(True)
+        self._set_status(f"Cluster weight copied from vtx[{vi}] on '{cluster}': {weight:.4f}")
+
+    @undo_chunk
+    def _run_paste_ctj_weight(self):
+        if not getattr(self, "_ctj_weight_clipboard", None):
+            self._set_status(
+                "Paste Cluster Weight: clipboard empty — Copy Cluster Weight first.",
+                error=True)
+            return
+        raw_sel = cmds.ls(sl=True, flatten=True) or []
+        vtx_sel = [s for s in raw_sel if ".vtx[" in s]
+        if not vtx_sel:
+            self._set_status("Paste Cluster Weight: no vertices selected.", error=True)
+            return
+        cluster = self._ctj_weight_clipboard["cluster"]
+        weight  = self._ctj_weight_clipboard["weight"]
+        cmds.percent(cluster, *vtx_sel, v=weight)
+        self._set_status(
+            f"Cluster weight {weight:.4f} pasted onto {len(vtx_sel)} vert(s) on '{cluster}'.")
+
+    # ── Copy Deformer Weights callbacks ───────────────────────────────────────
+
+    def _cdw_pick_source(self):
+        sel = cmds.ls(selection=True, transforms=True)
+        if not sel:
+            self._set_status("✗ Copy Deformer Weights: select a source mesh", error=True)
+            return
+        self.edit_cdw_src_mesh.setText(sel[0])   # textChanged triggers _cdw_refresh_deformers
+
+    def _cdw_pick_targets(self):
+        sel = cmds.ls(selection=True, transforms=True)
+        src = self.edit_cdw_src_mesh.text().strip()
+        # if the source mesh is the first item, skip it automatically
+        if src and sel and sel[0] == src:
+            sel = sel[1:]
+        if not sel:
+            self._set_status("✗ Copy Deformer Weights: select target mesh(es)", error=True)
+            return
+        self._cdw_tgt_meshes = sel
+        self.edit_cdw_tgt_mesh.setText(sel[0] if len(sel) == 1 else f"{len(sel)} meshes")
+        self._cdw_refresh_deformers(src=False)
+
+    def _cdw_refresh_deformers(self, src=True):
+        combo = self.combo_cdw_src_deformer if src else self.combo_cdw_tgt_deformer
+        if src:
+            mesh = self.edit_cdw_src_mesh.text().strip()
+        else:
+            mesh = (getattr(self, "_cdw_tgt_meshes", [None]) or [None])[0] or ""
+        combo.clear()
+        if not mesh or not cmds.objExists(mesh):
+            return
+        _skip = {"tweak", "skinCluster", "blendShape"}
+        history = cmds.listHistory(mesh, pruneDagObjects=True) or []
+        deformers = [n for n in cmds.ls(history, type="geometryFilter")
+                     if cmds.nodeType(n) not in _skip]
+        for d in deformers:
+            combo.addItem(d)
+
+    def _run_copy_deformer_weights(self):
+        src_mesh   = self.edit_cdw_src_mesh.text().strip()
+        src_def    = self.combo_cdw_src_deformer.currentText()
+        tgt_meshes = getattr(self, "_cdw_tgt_meshes", [])
+        tgt_def    = self.combo_cdw_tgt_deformer.currentText()
+
+        if not src_mesh or not cmds.objExists(src_mesh):
+            self._set_status("✗ Copy Deformer Weights: set source mesh", error=True)
+            return
+        if not src_def or not cmds.objExists(src_def):
+            self._set_status("✗ Copy Deformer Weights: pick source deformer", error=True)
+            return
+        if not tgt_meshes:
+            self._set_status("✗ Copy Deformer Weights: pick target mesh(es)", error=True)
+            return
+        if not tgt_def or not cmds.objExists(tgt_def):
+            self._set_status("✗ Copy Deformer Weights: pick target deformer", error=True)
+            return
+        cmds.undoInfo(openChunk=True, chunkName="Copy Deformer Weights")
+        try:
+            copy_deformer_weights(src_mesh, src_def, tgt_meshes, tgt_def)
+            n = len(tgt_meshes)
+            self._set_status(
+                f"✓ Copy Deformer Weights: {src_def} -> {tgt_def}  ({n} mesh{'es' if n > 1 else ''})")
+        except Exception as e:
+            import traceback; traceback.print_exc()
+            self._set_status(f"✗ Copy Deformer Weights: {e}", error=True)
+        finally:
+            cmds.undoInfo(closeChunk=True)
+
     def _open_check_shapes(self):
         dlg = CheckShapesDialog(parent=self)
         dlg.show()
@@ -8561,31 +9146,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             soft_blend_curve = data.get("soft_blend_curve")
             data = data.get("connections", [])
 
-        # Normalize rows (handles old JSON format with direction / custom_attr)
-        rows = []
-        for rd in data:
-            if not isinstance(rd, dict):
-                continue
-            attr        = rd.get("attr", "ty")
-            in_min      = float(rd.get("min", rd.get("in_min", 0.0)))
-            in_max      = float(rd.get("max", rd.get("in_max", 1.0)))
-            custom_attr = rd.get("custom_attr", "")
-            if attr == "custom" and custom_attr:
-                attr = custom_attr
-            if rd.get("direction", "+") == "\u2212":
-                in_max = -abs(in_max)
-                if in_min != 0.0:
-                    in_min = -abs(in_min)
-            rows.append({
-                "shape":      rd.get("shape", ""),
-                "proxy":      rd.get("proxy", False),
-                "controller": rd.get("controller", ""),
-                "attr":       attr,
-                "min":        in_min,
-                "max":        in_max,
-                "gate":       rd.get("gate", ""),
-                "no_limits":  rd.get("no_limits", False),
-            })
+        rows = _normalize_connection_rows(data)
 
         results = build_and_connect_rig(
             bs_node, rows,
