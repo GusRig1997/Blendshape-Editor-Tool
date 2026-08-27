@@ -1,5 +1,31 @@
 # Changelog — Blendshape Editor Tool
 
+## v.05.54
+
+**Wire Setup — Hammer Wire Weights**
+
+- New shelf button: Hammer Wire Weights (`hammer_wire.png`)
+- Pure Laplacian smooth on selected vertices: each vertex converges to the uniform average of its edge-connected neighbours' wire deformer weights
+- Wire node auto-detected from mesh history (`listHistory` → `type="wire"`)
+- Adjacency built once per call; all weights snapshotted before any write — no propagation artefacts
+
+**Cluster to Joint — Hammer Cluster Weights**
+
+- New shelf button: Hammer Cluster Weights (`hammer_cluster.png`)
+- Same Laplacian approach as Wire hammer; weights read/written via `cmds.percent`
+- Cluster auto-detected from mesh history if the combo is empty
+
+**Cluster to Joint — Auto-detect existing setup on UI reopen**
+
+- `combo_ctj_cluster.currentTextChanged` now triggers `_ctj_try_restore_setup`
+- If `{cluster}_ctj_skin`, `{cluster}_jnt` and `{cluster}_zero_jnt` all exist in scene, the CTJ state variables are restored automatically — Bake is available without re-running Setup
+- Status bar confirms detection: "existing setup detected — {djnt} | Bake when ready"
+
+**Wire Setup / Cluster to Joint — Copy/Paste Weight icons**
+
+- Copy Weight and Paste Weight buttons in Wire Setup and Cluster to Joint now use `copy_weight.png` / `paste_weight.png`
+- Modify Deltas copy/paste buttons unchanged (`copy_delta.png` / `paste_delta.png`)
+
 ## v.05.53
 
 **Rig Connector — skinning_ctrl: renamed from no_limits, full behaviour overhaul**

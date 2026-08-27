@@ -4306,7 +4306,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
 class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     TOOL_NAME = "BlendshapeEditorUI"
-    VERSION   = "v.05.53"
+    VERSION   = "v.05.54"
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -6547,7 +6547,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Select exactly 1 vertex on a mesh with a wire deformer.\n"
             "Copies the wire weight value of that vertex into the clipboard.")
         self.btn_copy_wire_delta.setStyleSheet(_wire_btn_ss2)
-        _cpw_px = QtGui.QPixmap(f"{_icons_dir}/copy_delta.png")
+        _cpw_px = QtGui.QPixmap(f"{_icons_dir}/copy_weight.png")
         if not _cpw_px.isNull():
             self.btn_copy_wire_delta.setIcon(QtGui.QIcon(_cpw_px))
             self.btn_copy_wire_delta.setIconSize(QtCore.QSize(34, 34))
@@ -6563,12 +6563,32 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Applies the copied weight value to all selected vertices. Undoable.")
         self.btn_paste_wire_delta.setStyleSheet(_wire_btn_ss2)
         self.btn_paste_wire_delta.setEnabled(False)
-        _ppw_px = QtGui.QPixmap(f"{_icons_dir}/paste_delta.png")
+        _ppw_px = QtGui.QPixmap(f"{_icons_dir}/paste_weight.png")
         if not _ppw_px.isNull():
             self.btn_paste_wire_delta.setIcon(QtGui.QIcon(_ppw_px))
             self.btn_paste_wire_delta.setIconSize(QtCore.QSize(34, 34))
         self.btn_paste_wire_delta.clicked.connect(self._run_paste_wire_delta)
         _wire_shelf_row.addWidget(self.btn_paste_wire_delta)
+
+        btn_hammer_wire = QtWidgets.QToolButton()
+        btn_hammer_wire.setFixedSize(36, 36)
+        btn_hammer_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        btn_hammer_wire.setToolTip(
+            "Hammer Wire Weights\n"
+            "Select vertices on the mesh, then click.\n"
+            "Averages each selected vertex's wire weight\n"
+            "with its topological 1-ring neighbours.")
+        btn_hammer_wire.setStyleSheet("""
+            QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
+            QToolButton:hover { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """)
+        _hw_px = QtGui.QPixmap(f"{_icons_dir}/hammer_wire.png")
+        if not _hw_px.isNull():
+            btn_hammer_wire.setIcon(QtGui.QIcon(_hw_px))
+            btn_hammer_wire.setIconSize(QtCore.QSize(34, 34))
+        btn_hammer_wire.clicked.connect(self._run_hammer_wire_weights)
+        _wire_shelf_row.addWidget(btn_hammer_wire)
 
         lay_wire.addLayout(_wire_shelf_row)
 
@@ -6798,7 +6818,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Select exactly 1 vertex on the mesh.\n"
             "Copies its cluster weight value into the clipboard.")
         self.btn_copy_ctj_weight.setStyleSheet(_ctj_shelf_ss_dis)
-        _cpctj_px = QtGui.QPixmap(f"{_icons_dir}/copy_delta.png")
+        _cpctj_px = QtGui.QPixmap(f"{_icons_dir}/copy_weight.png")
         if not _cpctj_px.isNull():
             self.btn_copy_ctj_weight.setIcon(QtGui.QIcon(_cpctj_px))
             self.btn_copy_ctj_weight.setIconSize(QtCore.QSize(34, 34))
@@ -6814,12 +6834,28 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Applies the copied weight to all selected vertices. Undoable.")
         self.btn_paste_ctj_weight.setStyleSheet(_ctj_shelf_ss_dis)
         self.btn_paste_ctj_weight.setEnabled(False)
-        _ppctj_px = QtGui.QPixmap(f"{_icons_dir}/paste_delta.png")
+        _ppctj_px = QtGui.QPixmap(f"{_icons_dir}/paste_weight.png")
         if not _ppctj_px.isNull():
             self.btn_paste_ctj_weight.setIcon(QtGui.QIcon(_ppctj_px))
             self.btn_paste_ctj_weight.setIconSize(QtCore.QSize(34, 34))
         self.btn_paste_ctj_weight.clicked.connect(self._run_paste_ctj_weight)
         _ctj_shelf_row.addWidget(self.btn_paste_ctj_weight)
+
+        btn_hammer_ctj = QtWidgets.QToolButton()
+        btn_hammer_ctj.setFixedSize(36, 36)
+        btn_hammer_ctj.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        btn_hammer_ctj.setToolTip(
+            "Hammer Cluster Weights\n"
+            "Select vertices on the mesh, then click.\n"
+            "Averages each selected vertex's cluster weight\n"
+            "with its topological 1-ring neighbours.")
+        btn_hammer_ctj.setStyleSheet(_ctj_shelf_ss)
+        _hctj_px = QtGui.QPixmap(f"{_icons_dir}/hammer_cluster.png")
+        if not _hctj_px.isNull():
+            btn_hammer_ctj.setIcon(QtGui.QIcon(_hctj_px))
+            btn_hammer_ctj.setIconSize(QtCore.QSize(34, 34))
+        btn_hammer_ctj.clicked.connect(self._run_hammer_ctj_weights)
+        _ctj_shelf_row.addWidget(btn_hammer_ctj)
 
         lay_ctj.addLayout(_ctj_shelf_row)
 
@@ -6846,6 +6882,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lbl_ctj_cls.setFixedWidth(60)
         self.combo_ctj_cluster = QtWidgets.QComboBox()
         self.combo_ctj_cluster.setToolTip("Cluster deformer on the mesh above")
+        self.combo_ctj_cluster.currentTextChanged.connect(self._ctj_try_restore_setup)
         row_ctj_cls.addWidget(lbl_ctj_cls)
         row_ctj_cls.addWidget(self.combo_ctj_cluster, 1)
         lay_ctj.addLayout(row_ctj_cls)
@@ -8816,6 +8853,52 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             f"on '{wire_node}'.")
 
     @undo_chunk
+    def _run_hammer_wire_weights(self):
+        """Pure Laplacian smooth of wire weights on selected vertices.
+        Each selected vertex converges to the uniform average of its edge-connected
+        neighbours' weights (same principle as the blendshape surface hammer)."""
+        raw_sel = cmds.ls(sl=True, flatten=True) or []
+        vtx_sel = [s for s in raw_sel if ".vtx[" in s]
+        if not vtx_sel:
+            self._set_status("✗ Hammer Wire Weights: select vertices first", error=True)
+            return
+        mesh = vtx_sel[0].split(".vtx[")[0]
+        wire_nodes = cmds.ls(cmds.listHistory(mesh) or [], type="wire")
+        if not wire_nodes:
+            self._set_status(
+                f"✗ Hammer Wire Weights: no wire deformer found on '{mesh}'", error=True)
+            return
+        wire_node = wire_nodes[0]
+        sel_indices = set(int(v.split(".vtx[")[1].rstrip("]")) for v in vtx_sel)
+
+        # Build adjacency map once for all selected vertices
+        adj = {}
+        for vi in sel_indices:
+            edges = cmds.polyListComponentConversion(
+                f"{mesh}.vtx[{vi}]", fromVertex=True, toEdge=True)
+            ring = cmds.ls(
+                cmds.filterExpand(
+                    cmds.polyListComponentConversion(edges, fromEdge=True, toVertex=True),
+                    selectionMask=31) or [],
+                flatten=True)
+            adj[vi] = [int(v.split(".vtx[")[1].rstrip("]")) for v in ring if v != f"{mesh}.vtx[{vi}]"]
+
+        # Read all weights needed (selected + their neighbours) before writing
+        needed = sel_indices | {nb for nbs in adj.values() for nb in nbs}
+        w_snap = {vi: cmds.percent(wire_node, f"{mesh}.vtx[{vi}]", q=True, v=True)[0]
+                  for vi in needed}
+
+        # Pure Laplacian: replace each selected vertex with average of neighbours only
+        for vi in sel_indices:
+            nbrs = adj.get(vi, [])
+            if not nbrs:
+                continue
+            cmds.percent(wire_node, f"{mesh}.vtx[{vi}]",
+                         v=sum(w_snap[nb] for nb in nbrs) / len(nbrs))
+        self._set_status(
+            f"✓ Hammer Wire Weights — {len(sel_indices)} vtx on '{wire_node}'")
+
+    @undo_chunk
     def _run_bake_wire(self):
         mesh = self.edit_wire_base.text().strip()
         if not mesh:
@@ -8898,6 +8981,38 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         cluster_nodes = cmds.ls(history, type="cluster") or []
         for c in cluster_nodes:
             self.combo_ctj_cluster.addItem(c)
+        # Auto-detection triggered via currentTextChanged signal
+
+    def _ctj_try_restore_setup(self, cluster=""):
+        """If a CTJ skinCluster already exists for this cluster, restore state variables."""
+        cluster = cluster or self.combo_ctj_cluster.currentText()
+        mesh    = self.edit_ctj_mesh.text().strip()
+        if not cluster:
+            return
+        skin_name  = f"{cluster}_ctj_skin"
+        djnt_name  = f"{cluster}_jnt"
+        zjnt_name  = f"{cluster}_zero_jnt"
+        if (cmds.objExists(skin_name) and
+                cmds.objExists(djnt_name) and
+                cmds.objExists(zjnt_name)):
+            self._ctj_skin_node    = skin_name
+            self._ctj_cluster_node = cluster
+            self._ctj_mesh         = mesh
+            self._ctj_deform_jnt   = djnt_name
+            self._ctj_zero_jnt     = zjnt_name
+            self._ctj_n_verts      = (cmds.polyEvaluate(mesh, vertex=True)
+                                      if mesh and cmds.objExists(mesh) else 0)
+            self._set_status(
+                f"✓ Cluster to Joint: existing setup detected — {djnt_name}  |  Bake when ready")
+        else:
+            # Clear stale state if the cluster changed and no setup found
+            if getattr(self, "_ctj_cluster_node", None) == cluster:
+                return  # same cluster, setup may have just been run — don't clear
+            self._ctj_skin_node    = None
+            self._ctj_cluster_node = None
+            self._ctj_deform_jnt   = None
+            self._ctj_zero_jnt     = None
+            self._ctj_n_verts      = 0
 
     def _run_ctj_setup(self):
         mesh = self.edit_ctj_mesh.text().strip()
@@ -9028,6 +9143,54 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         cmds.percent(cluster, *vtx_sel, v=weight)
         self._set_status(
             f"Cluster weight {weight:.4f} pasted onto {len(vtx_sel)} vert(s) on '{cluster}'.")
+
+    @undo_chunk
+    def _run_hammer_ctj_weights(self):
+        """Pure Laplacian smooth of cluster weights on selected vertices.
+        Each selected vertex converges to the uniform average of its edge-connected
+        neighbours' weights (same principle as the blendshape surface hammer)."""
+        raw_sel = cmds.ls(sl=True, flatten=True) or []
+        vtx_sel = [s for s in raw_sel if ".vtx[" in s]
+        if not vtx_sel:
+            self._set_status("✗ Hammer Cluster Weights: select vertices first", error=True)
+            return
+        mesh = vtx_sel[0].split(".vtx[")[0]
+        cluster = self.combo_ctj_cluster.currentText()
+        if not cluster or not cmds.objExists(cluster):
+            found = cmds.ls(cmds.listHistory(mesh) or [], type="cluster") or []
+            if not found:
+                self._set_status(
+                    "✗ Hammer Cluster Weights: no cluster found — set Mesh first", error=True)
+                return
+            cluster = found[0]
+        sel_indices = set(int(v.split(".vtx[")[1].rstrip("]")) for v in vtx_sel)
+
+        # Build adjacency map once for all selected vertices
+        adj = {}
+        for vi in sel_indices:
+            edges = cmds.polyListComponentConversion(
+                f"{mesh}.vtx[{vi}]", fromVertex=True, toEdge=True)
+            ring = cmds.ls(
+                cmds.filterExpand(
+                    cmds.polyListComponentConversion(edges, fromEdge=True, toVertex=True),
+                    selectionMask=31) or [],
+                flatten=True)
+            adj[vi] = [int(v.split(".vtx[")[1].rstrip("]")) for v in ring if v != f"{mesh}.vtx[{vi}]"]
+
+        # Read all weights needed (selected + their neighbours) before writing
+        needed = sel_indices | {nb for nbs in adj.values() for nb in nbs}
+        w_snap = {vi: cmds.percent(cluster, f"{mesh}.vtx[{vi}]", q=True, v=True)[0]
+                  for vi in needed}
+
+        # Pure Laplacian: replace each selected vertex with average of neighbours only
+        for vi in sel_indices:
+            nbrs = adj.get(vi, [])
+            if not nbrs:
+                continue
+            cmds.percent(cluster, f"{mesh}.vtx[{vi}]",
+                         v=sum(w_snap[nb] for nb in nbrs) / len(nbrs))
+        self._set_status(
+            f"✓ Hammer Cluster Weights — {len(sel_indices)} vtx on '{cluster}'")
 
     # ── Copy Deformer Weights callbacks ───────────────────────────────────────
 
