@@ -970,6 +970,67 @@ def restore_all_bs_weights(bs_node, state):
             cmds.setAttr(attr, info["value"])
 
 
+def get_combination_info(bs_node, idx):
+    """
+    If weight[idx] on bs_node is driven by a combinationShape node, returns:
+      {"driver_names": [str, ...], "method": int}
+    where driver_names are the blendShape weight aliases of the input drivers.
+    Returns None if the target has no combination drive.
+    """
+    attr = f"{bs_node}.weight[{idx}]"
+    combo_nodes = cmds.listConnections(attr, source=True, type="combinationShape")
+    if not combo_nodes:
+        return None
+    combo_node = combo_nodes[0]
+    input_plugs = cmds.listConnections(f"{combo_node}.inputWeight",
+                                       source=True, plugs=True) or []
+    # Each plug is like "blendShape1.jaw_dn" — extract the alias part
+    driver_names = [p.split(".")[-1] for p in input_plugs]
+    method = cmds.getAttr(f"{combo_node}.combinationMethod")
+    return {"driver_names": driver_names, "method": method}
+
+
+def apply_combination(bs_node, target_name, combo_info):
+    """
+    Creates a combinationShape node that drives target_name on bs_node,
+    replicating the setup described by combo_info (from get_combination_info).
+
+    The node is named  {bs_node}_{target_name}_combo  so it is easy to identify
+    (Maya's default is a plain numeric suffix like 'combinationShape3').
+
+    Drivers from combo_info that don't exist on bs_node are skipped with a warning.
+    Returns True if the combination was created successfully, False otherwise.
+    """
+    existing = set(cmds.listAttr(f"{bs_node}.w", multi=True) or [])
+    valid   = [d for d in combo_info["driver_names"] if d in existing]
+    missing = [d for d in combo_info["driver_names"] if d not in existing]
+    if missing:
+        cmds.warning(
+            f"Combination for '{target_name}': driver(s) {missing} "
+            f"not found on '{bs_node}' — skipped."
+        )
+    if len(valid) < 2:
+        cmds.warning(
+            f"Cannot create combination for '{target_name}': "
+            f"fewer than 2 valid drivers on '{bs_node}'."
+        )
+        return False
+
+    # Sanitise the bs_node name for use inside a DAG name (strip namespace + pipes)
+    bs_short   = bs_node.split(":")[-1].split("|")[-1]
+    combo_node = cmds.createNode(
+        "combinationShape", name=f"{bs_short}_{target_name}_combo"
+    )
+    cmds.setAttr(f"{combo_node}.combinationMethod", combo_info["method"])
+    for i, driver in enumerate(valid):
+        cmds.connectAttr(f"{bs_node}.{driver}",
+                         f"{combo_node}.inputWeight[{i}]", force=True)
+    cmds.connectAttr(f"{combo_node}.outputWeight",
+                     f"{bs_node}.{target_name}", force=True)
+    print(f"Combination created : {combo_node}  ({' × '.join(valid)} → {target_name})")
+    return True
+
+
 def purge_empty_bs_slots(bs_node):
     """
     Removes phantom and empty target slots from a blendShape node and cleans up
@@ -2431,6 +2492,222 @@ def create_delta_joint(bs_node, logical_index, target_name,
     return grp, working_mesh, deform_jnt, zero_jnt
 
 
+def cluster_to_joint_setup(mesh, cluster_node):
+    """
+    Copy cluster weights to a two-joint skinCluster and disable the cluster.
+
+    Creates:
+      {cluster_node}_jnt              – deform joint, placed at the cluster handle position
+      {cluster_node}_zero_jnt         – zero joint, same position
+      {cluster_node}_ctj_skin         – skinCluster binding both joints to *mesh*
+      {cluster_node}_Cluster2Joint_grp – group containing both joints
+
+    The cluster envelope is set to 0 so only the skinCluster deforms the mesh
+    while the user paints skin weights.
+
+    Returns (skin_node, deform_jnt, zero_jnt, n_verts).
+    """
+    n_verts = cmds.polyEvaluate(mesh, vertex=True)
+    shapes = cmds.listRelatives(mesh, shapes=True, type="mesh", fullPath=True) or []
+    mesh_shape = shapes[0] if shapes else mesh
+
+    raw_weights = cmds.percent(
+        cluster_node, f"{mesh_shape}.vtx[0:{n_verts - 1}]", q=True, v=True
+    ) or []
+    if len(raw_weights) < n_verts:
+        raw_weights += [0.0] * (n_verts - len(raw_weights))
+
+    # ── Joint position: same as the cluster handle transform ──────────────────
+    cx = cy = cz = 0.0
+    handle_xform = None
+
+    # Search all source connections of the cluster for a clusterHandle shape
+    all_src = cmds.listConnections(cluster_node, source=True, destination=False) or []
+    for node in all_src:
+        if cmds.nodeType(node) == "clusterHandle":
+            parents = cmds.listRelatives(node, parent=True, fullPath=True) or []
+            if parents:
+                handle_xform = parents[0]
+                break
+        elif cmds.nodeType(node) == "transform":
+            # Could be the handle transform directly
+            shapes = cmds.listRelatives(node, shapes=True, type="clusterHandle",
+                                        fullPath=True) or []
+            if shapes:
+                handle_xform = node
+                break
+
+    if handle_xform:
+        pos = cmds.xform(handle_xform, q=True, worldSpace=True, translation=True)
+        cx, cy, cz = pos[0], pos[1], pos[2]
+    else:
+        cmds.warning(f"cluster_to_joint_setup: could not find handle for '{cluster_node}' "
+                     f"— joints placed at origin.")
+
+    # ── Create joints at cluster position ────────────────────────────────────
+    cmds.select(clear=True)
+    deform_jnt = cmds.joint(name=f"{cluster_node}_jnt",      position=(cx, cy, cz))
+    cmds.select(clear=True)
+    zero_jnt   = cmds.joint(name=f"{cluster_node}_zero_jnt", position=(cx, cy, cz))
+    cmds.select(clear=True)
+
+    grp = cmds.group(deform_jnt, zero_jnt,
+                     name=f"{cluster_node}_Cluster2Joint_grp")
+
+    # ── Bind skinCluster ──────────────────────────────────────────────────────
+    skin_node = cmds.skinCluster(
+        deform_jnt, zero_jnt, mesh,
+        name=f"{cluster_node}_ctj_skin",
+        toSelectedBones=True, bindMethod=0, skinMethod=0,
+        normalizeWeights=1, frontOfChain=True, multi=True,
+    )[0]
+
+    cmds.setAttr(f"{skin_node}.normalizeWeights", 0)
+    for vi in range(n_verts):
+        w = raw_weights[vi]
+        cmds.setAttr(f"{skin_node}.weightList[{vi}].weights[0]", w)
+        cmds.setAttr(f"{skin_node}.weightList[{vi}].weights[1]", 1.0 - w)
+    cmds.setAttr(f"{skin_node}.normalizeWeights", 1)
+
+    cmds.setAttr(f"{cluster_node}.envelope", 0)
+
+    print(f"Cluster to Joint : {deform_jnt} / {zero_jnt} -> {skin_node}  (pos {cx:.3f}, {cy:.3f}, {cz:.3f})")
+    print(f"    Group : {grp}  |  Cluster '{cluster_node}' disabled. Paint weights, then Bake.")
+    return skin_node, deform_jnt, zero_jnt, n_verts
+
+
+def bake_joint_weights_to_cluster(skin_node, cluster_node, mesh, n_verts,
+                                   deform_jnt, zero_jnt, keep_skin=False):
+    """
+    Write skinCluster deform-joint weights back into the cluster, then re-enable it.
+
+    If *keep_skin* is False, the skinCluster and both joints are deleted after baking.
+    """
+    weights = []
+    for vi in range(n_verts):
+        w = cmds.getAttr(f"{skin_node}.weightList[{vi}].weights[0]")
+        weights.append(w if w is not None else 0.0)
+
+    cmds.setAttr(
+        f"{cluster_node}.weightList[0].weights[0:{n_verts - 1}]",
+        *weights, size=n_verts,
+    )
+    cmds.setAttr(f"{cluster_node}.envelope", 1)
+
+    if not keep_skin:
+        cmds.delete(skin_node)
+        grp = f"{cluster_node}_Cluster2Joint_grp"
+        if cmds.objExists(grp):
+            cmds.delete(grp)
+        else:
+            for jnt in (deform_jnt, zero_jnt):
+                if cmds.objExists(jnt):
+                    cmds.delete(jnt)
+
+    print(f"Baked joint weights -> '{cluster_node}'. Cluster re-enabled.")
+
+
+# ── Copy Deformer Weights ──────────────────────────────────────────────────────
+
+def _deformer_geo_index(deformer, mesh_shape):
+    """Return the geometry index of *mesh_shape* inside *deformer*'s geometry list."""
+    geos    = cmds.deformer(deformer, q=True, geometry=True)        or []
+    indices = cmds.deformer(deformer, q=True, geometryIndices=True) or list(range(len(geos)))
+    try:
+        full_tgt = cmds.ls(mesh_shape, long=True)[0]
+    except Exception:
+        return indices[0] if indices else 0
+    for idx, geo in zip(indices, geos):
+        try:
+            if cmds.ls(geo, long=True)[0] == full_tgt:
+                return idx
+        except Exception:
+            continue
+    return indices[0] if indices else 0
+
+
+def _transfer_deformer_weights_closest_point(src_shape, src_weights, tgt_shape, n_tgt):
+    """
+    Spatial weight transfer: for each target vertex find the closest point on the
+    source mesh surface and interpolate the weight using inverse-distance weighting
+    across the polygon face vertices.
+    """
+    import maya.api.OpenMaya as om2
+
+    sel_src = om2.MSelectionList()
+    sel_src.add(src_shape)
+    src_fn = om2.MFnMesh(sel_src.getDagPath(0))
+
+    sel_tgt = om2.MSelectionList()
+    sel_tgt.add(tgt_shape)
+    tgt_fn  = om2.MFnMesh(sel_tgt.getDagPath(0))
+    tgt_pts = tgt_fn.getPoints(om2.MSpace.kWorld)
+
+    result = []
+    for pt in tgt_pts:
+        closest_pt, poly_id = src_fn.getClosestPoint(pt, om2.MSpace.kWorld)
+        face_verts = src_fn.getPolygonVertices(poly_id)
+        face_pts   = [src_fn.getPoint(v, om2.MSpace.kWorld) for v in face_verts]
+        dists      = [closest_pt.distanceTo(fp) for fp in face_pts]
+        min_d      = min(dists)
+        if min_d < 1e-7:
+            result.append(src_weights[face_verts[dists.index(min_d)]])
+        else:
+            inv   = [1.0 / d for d in dists]
+            total = sum(inv)
+            result.append(sum(iv * src_weights[fv] / total
+                              for iv, fv in zip(inv, face_verts)))
+    return result
+
+
+def copy_deformer_weights(mesh_src, deformer_src, meshes_tgt, deformer_tgt):
+    """
+    Copy per-vertex deformer weights from *deformer_src* on *mesh_src*
+    to *deformer_tgt* on every mesh in *meshes_tgt* (str or list of str).
+
+    Supports all geometryFilter deformers that store membership weights via the
+    percent / weightList API: cluster, wire, deltaMush, softMod, shrinkWrap, etc.
+    skinCluster and blendShape use incompatible storage and are not supported.
+
+    Same vertex count  → direct 1-to-1 index copy.
+    Different topology → closest-surface-point spatial transfer (om2).
+    """
+    if isinstance(meshes_tgt, str):
+        meshes_tgt = [meshes_tgt]
+
+    def _shape(mesh):
+        shapes = cmds.listRelatives(mesh, shapes=True, type="mesh", fullPath=True) or []
+        return shapes[0] if shapes else mesh
+
+    src_shape = _shape(mesh_src)
+    n_src     = cmds.polyEvaluate(mesh_src, vertex=True)
+
+    src_weights = cmds.percent(
+        deformer_src, f"{src_shape}.vtx[0:{n_src - 1}]", q=True, v=True
+    ) or []
+    if len(src_weights) < n_src:
+        src_weights += [0.0] * (n_src - len(src_weights))
+
+    for mesh_tgt in meshes_tgt:
+        tgt_shape = _shape(mesh_tgt)
+        n_tgt     = cmds.polyEvaluate(mesh_tgt, vertex=True)
+
+        if n_src == n_tgt:
+            tgt_weights = list(src_weights)
+        else:
+            tgt_weights = _transfer_deformer_weights_closest_point(
+                src_shape, src_weights, tgt_shape, n_tgt
+            )
+
+        geo_idx = _deformer_geo_index(deformer_tgt, tgt_shape)
+        cmds.setAttr(
+            f"{deformer_tgt}.weightList[{geo_idx}].weights[0:{n_tgt - 1}]",
+            *tgt_weights, size=n_tgt,
+        )
+        print(f"copy_deformer_weights : {deformer_src}/{mesh_src}"
+              f" -> {deformer_tgt}/{mesh_tgt}  ({n_tgt} verts, geo_idx={geo_idx})")
+
+
 import re as _re
 
 _SIDE_PREFIX_RE = _re.compile(r'^(L|R|C|M)_(.+)$')
@@ -2840,15 +3117,25 @@ def _capture_target_shapes(bs_node, mesh_target, targets):
     """
     For each target: activates it, duplicates mesh_target (history deleted to bake
     the deformed position), resets weight to zero.
-    Returns [(target_name, temp_mesh_transform), ...].
+    Returns [(target_name, temp_mesh_transform, combo_info), ...] where combo_info
+    is the result of get_combination_info() (None if the target has no combination drive).
     """
     extracted = []
     for _bs, _idx, target_name in targets:
-        cmds.setAttr(f"{bs_node}.{target_name}", 1.0)
+        combo_info = get_combination_info(_bs, _idx)
+        attr = f"{bs_node}.{target_name}"
+        # Temporarily disconnect any incoming driver so the attribute can be set freely
+        src_connections = cmds.listConnections(attr, source=True, destination=False, plugs=True) or []
+        for src in src_connections:
+            cmds.disconnectAttr(src, attr)
+        cmds.setAttr(attr, 1.0)
         temp_dup = cmds.duplicate(mesh_target, name=f"{target_name}_WRAP_TEMP")[0]
         cmds.delete(temp_dup, constructionHistory=True)
-        cmds.setAttr(f"{bs_node}.{target_name}", 0.0)
-        extracted.append((target_name, temp_dup))
+        cmds.setAttr(attr, 0.0)
+        # Restore the driver connection
+        for src in src_connections:
+            cmds.connectAttr(src, attr, force=True)
+        extracted.append((target_name, temp_dup, combo_info))
         print(f"Captured: {target_name}")
     return extracted
 
@@ -2880,7 +3167,7 @@ def _integrate_extracted_shapes(mesh_target, extracted, overwrite=True):
     bs_target = _find_blendshape_on_mesh(mesh_target)
     log = []
 
-    for orig_name, temp_mesh in extracted:
+    for orig_name, temp_mesh, combo_info in extracted:
         was_replaced = False
 
         if bs_target is None:
@@ -2893,6 +3180,8 @@ def _integrate_extracted_shapes(mesh_target, extracted, overwrite=True):
             cmds.aliasAttr(orig_name, f"{bs_target}.w[0]")
             cmds.setAttr(f"{bs_target}.{orig_name}", 0.0)
             cmds.delete(temp_mesh)
+            if combo_info:
+                apply_combination(bs_target, orig_name, combo_info)
             log.append((orig_name, orig_name, False))
             print(f"Created blendShape '{bs_target}' with '{orig_name}'")
             continue
@@ -2917,6 +3206,8 @@ def _integrate_extracted_shapes(mesh_target, extracted, overwrite=True):
         cmds.aliasAttr(actual_name, f"{bs_target}.w[{next_idx}]")
         cmds.setAttr(f"{bs_target}.{actual_name}", 0.0)
         cmds.delete(temp_mesh)
+        if combo_info:
+            apply_combination(bs_target, actual_name, combo_info)
 
         log.append((orig_name, actual_name, was_replaced))
         action = "Replaced" if was_replaced else "Added"
@@ -3801,6 +4092,13 @@ def _soft_blend_keys(in_max, partner_in_max):
         ]
 
 
+def _set_curve_infinity(curve, pre="constant", post="constant"):
+    """Set preInfinity / postInfinity on an animCurveUU node.
+    selectKey must be called first — setInfinity operates on the key selection."""
+    cmds.selectKey(curve, keyframe=True, f=(0.0, 0.0))
+    cmds.setInfinity(pri=pre, poi=post)
+
+
 @undo_chunk
 def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve=None):
     """
@@ -3808,8 +4106,7 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
       offset_{shape}_{i}  (addDoubleLinear, if in_min≠0) : subtracts in_min
       norm_{shape}_{i}    (multiplyDivide)                : normalizes ->[0..1..∞]
       sum_{shape}         (plusMinusAverage, if >1 driver): additive sum
-      cond_{shape}        (condition)                     : hasLimits ->maxR=1 or 1e6
-      clamp_{shape}       (clamp)                         : minR=0 always, maxR driven
+      floor_{shape}       (animCurveUU)                   : floor at 0, constant above 1 (stagger/skinning) or linear (single-shape ctrl)
       gate_{shape}        (multDoubleLinear, if gate≠"")  : multiplies by the gate target weight
 
     Multiple rows with the same shape = proxy / additive drivers.
@@ -3859,10 +4156,10 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                     pass
 
     # ── Phase 0.5: create hasLimits FIRST (before custom attrs) ──────────────
-    # Excludes controllers flagged as no_limits — they get no hasLimits at all.
-    _ctrls_no_limits_raw = {r.get("controller", "").strip() for r in rows
-                            if r.get("no_limits") and r.get("controller", "").strip()}
-    for _ctrl in _ctrls_in_build - _ctrls_no_limits_raw:
+    # Excludes skinning_ctrl controllers — they get no hasLimits.
+    _ctrls_skinning_raw = {r.get("controller", "").strip() for r in rows
+                           if r.get("skinning_ctrl") and r.get("controller", "").strip()}
+    for _ctrl in _ctrls_in_build - _ctrls_skinning_raw:
         if not cmds.objExists(_ctrl):
             continue
         cmds.addAttr(_ctrl, longName="hasLimits", attributeType="bool",
@@ -3908,12 +4205,24 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
             "shape": shape, "idx": idx, "ctrl": ctrl,
             "ctrl_attr": ctrl_attr_full, "resolved_attr": resolved_attr,
             "in_min": in_min, "in_max": in_max,
-            "gate": gate,
-            "no_limits": bool(row.get("no_limits", False)),
+            "gate":         gate,
+            "proxy":        bool(row.get("proxy", False)),
+            "skinning_ctrl": bool(row.get("skinning_ctrl", False)),
         })
 
-    # Controllers that must NOT receive a hasLimits attr (user opted out per-row)
-    no_limits_ctrls = {vr["ctrl"] for vr in valid_rows if vr.get("no_limits")}
+    # Controllers that are also skinCluster influences — all transforms left unlocked
+    skinning_ctrls = {vr["ctrl"] for vr in valid_rows if vr.get("skinning_ctrl")}
+
+    # Count shapes per (ctrl, resolved_attr, sign) — any group with >1 shape is a
+    # stagger-style setup (zip, brows, etc.) where the controller is shared across
+    # several activation windows in the SAME direction.  Sign is derived from in_max
+    # so that bidirectional shapes (e.g. lip_up +10 / lip_dn -10 on the same attr)
+    # are NOT counted as stagger — each direction gets cycleRelative independently.
+    _ctrl_attr_count = {}
+    for vr in valid_rows:
+        sign = 1 if vr["in_max"] >= 0 else -1
+        key = (vr["ctrl"], vr["resolved_attr"], sign)
+        _ctrl_attr_count[key] = _ctrl_attr_count.get(key, 0) + 1
 
     # ── Apply physical slider limits to custom attrs ───────────────────────────
     # Aggregate in_min/in_max across all shapes sharing the same custom attr so
@@ -3962,8 +4271,10 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
         try:
             # Remove old nodes (deterministic names, including sdk_ for soft blend)
             old = (cmds.ls(f"offset_{shape}_*", f"norm_{shape}_*",
-                           f"gate_{shape}_*", f"rev_{shape}_*") or [])
-            old += [n for n in (f"sum_{shape}", f"clamp_{shape}", f"cond_{shape}",
+                           f"gate_{shape}_*", f"rev_{shape}_*", f"max_{shape}_*",
+                           f"flr_proxy_{shape}_*", f"cond_proxy_{shape}_*",
+                           f"clamp_proxy_{shape}_*") or [])
+            old += [n for n in (f"sum_{shape}", f"floor_{shape}", f"clamp_{shape}", f"cond_{shape}",
                                 f"rmv_{shape}", f"gate_{shape}", f"sdk_{shape}")
                     if cmds.objExists(n)]
             if old:
@@ -3981,8 +4292,6 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                     in_max        = vr0["in_max"]
 
                     curve = cmds.createNode("animCurveUU", name=f"sdk_{shape}")
-                    cmds.setAttr(f"{curve}.preInfinity",  1)  # linear extrapolation
-                    cmds.setAttr(f"{curve}.postInfinity", 1)
 
                     # Use custom normalized curve if provided; else fall back to defaults.
                     # Mapping: u_actual = u_norm * in_max  (works for ± shapes)
@@ -3998,6 +4307,17 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                         maya_tang = _TANG_TO_MAYA.get(tang, tang)
                         cmds.keyTangent(curve, index=(i, i),
                                         inTangentType=maya_tang, outTangentType=maya_tang)
+                    # Extend linearly beyond in_max with an explicit anchor key — avoids
+                    # relying on infinity modes which can cycle unpredictably.
+                    # sdk is connected to ctrl_attr directly (no norm), so the sign of
+                    # in_max determines which side is "beyond the limit":
+                    #   in_max > 0 → anchor at +100 (POST side)
+                    #   in_max < 0 → anchor at -100 (PRE side)
+                    extension_t = 100.0 if in_max >= 0 else -100.0
+                    cmds.setKeyframe(curve, float=extension_t, value=100.0,
+                                     inTangentType="linear", outTangentType="linear")
+                    # Constant infinity on both sides — all behaviour is in explicit keys
+                    _set_curve_infinity(curve, pre="constant", post="constant")
 
                     cmds.connectAttr(ctrl_attr,         f"{curve}.input",  force=True)
                     cmds.connectAttr(f"{curve}.output", bs_weight_attr,    force=True)
@@ -4018,8 +4338,10 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                                         "_table_row": vr.get("_table_row")})
                     continue  # skip standard norm/clamp/cond path
 
-            # ── Norm nodes (one per driver) ───────────────────────────────────
-            norm_outputs = []
+            # ── Norm nodes (one per driver, split by primary / proxy) ────────────
+            primary_norm_outputs = []
+            proxy_norm_outputs   = []
+            proxy_norm_vrs       = []   # parallel list: vr for each proxy output
             for i, vr in enumerate(group):
                 in_min = vr["in_min"]
                 in_max = vr["in_max"]
@@ -4047,43 +4369,115 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                 cmds.setAttr(f"{norm}.operation", 1)
                 cmds.setAttr(f"{norm}.input2X", 1.0 / span)
                 cmds.connectAttr(norm_src, f"{norm}.input1X", force=True)
-                norm_outputs.append(f"{norm}.outputX")
 
-            # ── Additive sum if multiple drivers ──────────────────────────────
+                if vr.get("proxy"):
+                    proxy_norm_outputs.append(f"{norm}.outputX")
+                    proxy_norm_vrs.append(vr)
+                else:
+                    primary_norm_outputs.append(f"{norm}.outputX")
+
+            _has_proxy   = bool(proxy_norm_outputs)
+            _has_primary = bool(primary_norm_outputs)
+
+            # ── Cap each proxy contribution at [0, 1] individually ────────────
+            # Proxy rows are stagger drivers: the controller travels past their
+            # in_max to reach other shapes, so their contribution must be clamped
+            # at 1.0 before being added to the primary.  This lets the primary
+            # push the total weight above 1.0 independently
+            # (proxy=0.25 + primary=1.0 → total weight=1.25).
+            capped_proxy_outputs = []
+            for j, (proxy_out, proxy_vr) in enumerate(zip(proxy_norm_outputs, proxy_norm_vrs)):
+                pf = cmds.createNode("animCurveUU", name=f"flr_proxy_{shape}_{j}")
+                cmds.setKeyframe(pf, float=0.0, value=0.0,
+                                 inTangentType="linear", outTangentType="linear")
+                cmds.setKeyframe(pf, float=1.0, value=1.0,
+                                 inTangentType="linear", outTangentType="linear")
+                _set_curve_infinity(pf, pre="constant", post="cycleRelative")
+                cmds.connectAttr(proxy_out, f"{pf}.input", force=True)
+
+                # If the proxy ctrl has a hasLimits attr, wire condition+clamp so that
+                # hasLimits=ON caps the proxy contribution at 1.0 and
+                # hasLimits=OFF lets the proxy drive above 1.0.
+                proxy_ctrl = proxy_vr["ctrl"]
+                if (cmds.objExists(proxy_ctrl) and
+                        cmds.attributeQuery("hasLimits", node=proxy_ctrl, exists=True)):
+                    cond = cmds.createNode("condition", name=f"cond_proxy_{shape}_{j}")
+                    cmds.setAttr(f"{cond}.operation",     0)    # Equal
+                    cmds.setAttr(f"{cond}.secondTerm",    1.0)
+                    cmds.setAttr(f"{cond}.colorIfTrueR",  1.0)  # hasLimits=ON  → cap at 1.0
+                    cmds.setAttr(f"{cond}.colorIfFalseR", 1e6)  # hasLimits=OFF → pass-through
+                    cmds.connectAttr(f"{proxy_ctrl}.hasLimits", f"{cond}.firstTerm", force=True)
+
+                    clp = cmds.createNode("clamp", name=f"clamp_proxy_{shape}_{j}")
+                    cmds.setAttr(f"{clp}.minR", 0.0)
+                    cmds.connectAttr(f"{cond}.outColorR", f"{clp}.maxR",   force=True)
+                    cmds.connectAttr(f"{pf}.output",      f"{clp}.inputR", force=True)
+                    capped_proxy_outputs.append(f"{clp}.outputR")
+                else:
+                    # No hasLimits attr — revert to hard constant cap at 1.0
+                    _set_curve_infinity(pf, post="constant")
+                    capped_proxy_outputs.append(f"{pf}.output")
+
+            # ── Combine: sum of (capped proxies + primary raws) ───────────────
+            all_outputs = primary_norm_outputs + capped_proxy_outputs
+
             # All drivers disabled ->skip network creation
-            if not norm_outputs:
+            if not all_outputs:
                 for vr in group:
                     results.append({"shape": shape, "status": "skip",
                                     "_table_row": vr.get("_table_row")})
                 continue
 
-            if len(norm_outputs) == 1:
-                sum_out = norm_outputs[0]
+            if len(all_outputs) == 1:
+                sum_out = all_outputs[0]
             else:
                 pma = cmds.createNode("plusMinusAverage", name=f"sum_{shape}")
                 cmds.setAttr(f"{pma}.operation", 1)  # sum
-                for i, out in enumerate(norm_outputs):
+                for i, out in enumerate(all_outputs):
                     cmds.connectAttr(out, f"{pma}.input1D[{i}]", force=True)
                 sum_out = f"{pma}.output1D"
 
-            # ── Condition: drives clamp.maxR ──────────────────────────────────
-            cond = cmds.createNode("condition", name=f"cond_{shape}")
-            cmds.setAttr(f"{cond}.operation",     0)    # equal
-            cmds.setAttr(f"{cond}.secondTerm",    1)
-            cmds.setAttr(f"{cond}.colorIfTrueR",  1.0)  # hasLimits=ON  ->max=1
-            cmds.setAttr(f"{cond}.colorIfFalseR", 1e6)  # hasLimits=OFF ->libre
+            # ── Floor postInfinity ─────────────────────────────────────────────
+            # skinning_ctrl              : constant — no hasLimits, unconditional cap.
+            # has proxy rows             : cycleRelative — proxy already capped
+            #                             individually; primary can push total > 1.0.
+            # primary-only stagger       : constant — ctrl travels past this shape's
+            #   (count > 1, no proxy)      in_max to reach other stagger shapes.
+            # otherwise                  : cycleRelative — single-shape ctrl,
+            #                             hasLimits gates the physical range.
+            if group[0]["ctrl"] in skinning_ctrls:
+                _cap_at_one = True
+            elif _has_proxy:
+                _cap_at_one = False
+            else:
+                _cap_at_one = any(
+                    _ctrl_attr_count.get(
+                        (vr["ctrl"], vr["resolved_attr"], 1 if vr["in_max"] >= 0 else -1), 1
+                    ) > 1
+                    for vr in group
+                )
 
-            # ── Clamp: minR=0 always, maxR driven ────────────────────────────
-            clp = cmds.createNode("clamp", name=f"clamp_{shape}")
-            cmds.setAttr(f"{clp}.minR", 0.0)
-            cmds.connectAttr(f"{cond}.outColorR", f"{clp}.maxR",   force=True)
-            cmds.connectAttr(sum_out,             f"{clp}.inputR", force=True)
-            cmds.connectAttr(f"{clp}.outputR", bs_weight_attr, force=True)
+            # ── Floor curve ───────────────────────────────────────────────────
+            # preInfinity=constant      : floor at 0 when ctrl goes wrong direction.
+            # postInfinity=constant     : cap at 1.0 — skinning_ctrl or stagger setup
+            #                            (multiple shapes share same ctrl+attr).
+            # postInfinity=cycleRelative: linear extrapolation above 1.0 — single
+            #                            shape on this ctrl+attr, hasLimits gates
+            #                            the physical range.
+            flr = cmds.createNode("animCurveUU", name=f"floor_{shape}")
+            cmds.setKeyframe(flr, float=0.0, value=0.0,
+                             inTangentType="linear", outTangentType="linear")
+            cmds.setKeyframe(flr, float=1.0, value=1.0,
+                             inTangentType="linear", outTangentType="linear")
+            _set_curve_infinity(flr, pre="constant",
+                                post="constant" if _cap_at_one else "cycleRelative")
+            cmds.connectAttr(sum_out,           f"{flr}.input",  force=True)
+            cmds.connectAttr(f"{flr}.output",   bs_weight_attr,  force=True)
 
             # ── Combo drivers: chain of multDoubleLinear nodes (comma-separated) ─
             gate_field = group[0].get("gate", "").strip()
             gate_names = [g.strip() for g in gate_field.split(",") if g.strip()] if gate_field else []
-            current_src = f"{clp}.outputR"
+            current_src = f"{flr}.output"
             for gi, gname in enumerate(gate_names):
                 # "rev:" prefix ->inversion via reverse node
                 use_reverse = gname.startswith("rev:")
@@ -4118,7 +4512,7 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
             # ── Collect post-loop ─────────────────────────────────────────────
             # Use the real node name (Maya may auto-rename on collision)
             primary_ctrl = group[0]["ctrl"]
-            pending_conds.setdefault(primary_ctrl, []).append(cond)
+            pending_conds.setdefault(primary_ctrl, [])
 
             for vr in group:
                 ctrl          = vr["ctrl"]
@@ -4151,18 +4545,17 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
 
     # ── Post-loop: hasLimits attr (added last) + connections ─────────────────
     for ctrl in set(pending_limits) | set(pending_conds):
-        # ── no_limits controllers: skip transformLimits + hasLimits entirely ──
-        if ctrl in no_limits_ctrls:
-            # hasLimits was already wiped in Phase 0 and not recreated in Phase 0.5.
-            # Disable all limit enables (they may retain True from a previous build)
+        # ── skinning_ctrl: no hasLimits, no transform limits, restore ALL attrs ─
+        if ctrl in skinning_ctrls:
+            # Disable all limit enables (may retain True from a previous build)
             for _, pos_en, neg_en in _RC_LIMIT_INFO.values():
                 for en_attr in (pos_en, neg_en):
                     try:
                         cmds.setAttr(f"{ctrl}.{en_attr}", False)
                     except Exception:
                         pass
-            # Restore any native attrs that a previous build may have locked/hidden
-            for attr_name in _RC_LIMIT_INFO:
+            # Restore ALL transform attrs — this ctrl is also a skinning controller
+            for attr_name in list(_RC_LIMIT_INFO) + list(_SCALE_ATTRS):
                 attr_full = f"{ctrl}.{attr_name}"
                 try:
                     if cmds.getAttr(attr_full, lock=True):
@@ -4170,15 +4563,7 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                     cmds.setAttr(attr_full, keyable=True)
                 except Exception:
                     pass
-            # Condition nodes still exist — fix firstTerm=1 so weight stays capped at 1.0
-            for cond_name in pending_conds.get(ctrl, []):
-                if cmds.objExists(cond_name):
-                    try:
-                        cmds.setAttr(f"{cond_name}.firstTerm", 1)
-                    except Exception:
-                        pass
             continue
-
         used_native = set(pending_limits.get(ctrl, {}).keys())
 
         # Unlock/unhide native attrs in use (a previous build may have locked them)
@@ -4219,11 +4604,6 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
                 if not cmds.isConnected(f"{ctrl}.hasLimits", f"{ctrl}.{en_attr}"):
                     cmds.connectAttr(f"{ctrl}.hasLimits", f"{ctrl}.{en_attr}", force=True)
 
-        for cond_name in pending_conds.get(ctrl, []):
-            if cmds.objExists(cond_name):
-                if not cmds.isConnected(f"{ctrl}.hasLimits", f"{cond_name}.firstTerm"):
-                    cmds.connectAttr(f"{ctrl}.hasLimits", f"{cond_name}.firstTerm", force=True)
-
     return results
 
 
@@ -4231,7 +4611,7 @@ def build_and_connect_rig(bs_node, rows, soft_blend_pairs=None, soft_blend_curve
 def disconnect_rig_shapes(bs_node, shape_names):
     """
     Disconnects the rig network for the specified shapes.
-    Deletes utility nodes (offset_, norm_, sum_, cond_, clamp_)
+    Deletes utility nodes (offset_, norm_, sum_, floor_, sdk_, gate_, rev_)
     and disconnects bs_node.w[idx].
     Returns the number of shapes disconnected.
     """
@@ -4248,8 +4628,10 @@ def disconnect_rig_shapes(bs_node, shape_names):
     for shape in shape_names:
         # Supprimer les utility nodes
         old = (cmds.ls(f"offset_{shape}_*", f"norm_{shape}_*",
-                       f"gate_{shape}_*", f"rev_{shape}_*") or [])
-        old += [n for n in (f"sum_{shape}", f"clamp_{shape}", f"cond_{shape}",
+                       f"gate_{shape}_*", f"rev_{shape}_*",
+                       f"max_{shape}_*", f"flr_proxy_{shape}_*",
+                       f"cond_proxy_{shape}_*", f"clamp_proxy_{shape}_*") or [])
+        old += [n for n in (f"sum_{shape}", f"floor_{shape}", f"clamp_{shape}", f"cond_{shape}",
                             f"gate_{shape}", f"sdk_{shape}")
                 if cmds.objExists(n)]
         if old:

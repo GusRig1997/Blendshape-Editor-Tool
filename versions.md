@@ -1,5 +1,49 @@
 # Changelog — Blendshape Editor Tool
 
+## v.05.53
+
+**Rig Connector — skinning_ctrl: renamed from no_limits, full behaviour overhaul**
+
+- Controller flag renamed from `no_limits` to `skinning_ctrl` (Is Skinning Controller)
+- Old `no_limits` key silently ignored on load, never written
+- Controller combobox tinted dark teal (`#002a3a`) instead of orange-brown
+- Header context menu: two separate Enable/Disable actions replaced by a single checkable `QAction` that reads the current state of selected rows
+- `skinning_ctrl` controllers: no `hasLimits` attr, no `transformLimits`, all 12 limit enables forced to False, all transform + scale attrs explicitly unlocked and set keyable
+- `_snapshot_row` now captures `skinning_ctrl` — flag was lost after any row move, reorder, or undo/redo
+- `_insert_row_data_at` now restores `skinning_ctrl` property and teal tint on the reconstructed combobox
+
+**Rig Connector — Build & Connect: single normalization path**
+
+- Extracted `_normalize_connection_rows(raw_data)` as a module-level function — single source of truth for the JSON → row-dict conversion expected by `build_and_connect_rig`
+- `_run_connect_from_file` (Run Connect from File) now calls this function; was previously a duplicate inline loop that was missing `skinning_ctrl`
+- Any future field addition only requires updating `_normalize_connection_rows` + `_collect_rows` + `_snapshot_row`/`_insert_row_data_at`
+
+**Rig Connector — Build & Connect: stagger detection fix for bidirectional shapes**
+
+- `_ctrl_attr_count` now keys by `(ctrl, resolved_attr, sign)` where sign = +1 if `in_max >= 0`, -1 otherwise
+- Previously, shapes on the same ctrl+attr with opposite-sign `in_max` (e.g. lip_up +10 / lip_dn −10 on `lip_ctrl.ty`) were counted as stagger → `floor_` set to constant → `hasLimits` had no effect on weight
+- Fix: each direction is counted independently; bidirectional shapes are no longer misidentified as stagger
+
+**Rig Connector — Build & Connect: cycleRelative fix on animCurveUU**
+
+- `_set_curve_infinity(curve, pre, post)` helper: uses `cmds.selectKey(curve, keyframe=True, f=(0.0, 0.0))` then `cmds.setInfinity(pri=pre, poi=post)`
+- Key at `f=(0.0, 0.0)` is always present regardless of `in_max` value; `add=True` removed to avoid selection pollution
+- Replaces previous approaches (`setAttr postInfinity`, `mel.eval`, `setInfinity(curve, ...)`) that silently failed on non-time-based curves
+
+**Rig Connector — Active target label clickable**
+
+- Clicking the active target label in the main UI re-selects that target in Maya's Shape Editor via `shapeEditorTreeviewSelect`
+- Cursor changes to `PointingHandCursor` when a target is active, `ArrowCursor` when showing `—`
+
+**Rig Connector — Stagger: smooth interpolation for InMax distribution**
+
+- "Exp." field replaced by `_combo_stagger_curve` combo: **Uniform** (linear), **Ease In** (t²), **Ease Out** (1−(1−t)²), **Smooth** (3t²−2t³ smoothstep)
+- "Linear" mode name kept for the sequential naming order; curve type "Linear" renamed to "Uniform" to avoid ambiguity
+
+**Rig Connector — Scale factor tooltip**
+
+- Added concrete usage examples: `2.0 → double`, `0.5 → halve`, `−1.0 → flip sign`, `1.5 → scale up by 50%`
+
 ## v.05.52
 
 **Rig Connector — Per-row "Disable Has Limits" option**
