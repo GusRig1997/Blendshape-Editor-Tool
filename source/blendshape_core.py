@@ -3575,6 +3575,86 @@ def create_wire_setup(mesh_base, edge_line, shape_names,
     return wire_grp
 
 
+def autopaint_wire_weights(wire_node, wire_mesh, loop_components, min_dist, max_dist):
+    """
+    Compute and apply wire deformer vertex weights on *wire_mesh* based on
+    euclidean distance from each mesh vertex to the nearest vertex in
+    *loop_components* (edges ".e[N]" or vertices ".vtx[N]").
+
+    Falloff (smooth-step):
+      distance <= min_dist  → weight = 1.0
+      distance >= max_dist  → weight = 0.0
+      in between            → smooth-step: 1 - 3t²(1-2t) + …
+
+    Returns the number of vertices painted.
+    """
+    import maya.api.OpenMaya as om2
+
+    # ── Convert loop components to vertex positions ───────────────────────────
+    loop_vtx = []
+    for comp in loop_components:
+        if ".e[" in comp:
+            raw = cmds.polyListComponentConversion(comp, fromEdge=True, toVertex=True)
+            loop_vtx.extend(cmds.ls(raw, flatten=True))
+        else:
+            loop_vtx.append(comp)
+    loop_vtx = list(set(loop_vtx))
+    if not loop_vtx:
+        raise RuntimeError("autopaint_wire_weights: no valid loop vertices found")
+
+    loop_pts = []
+    for v in loop_vtx:
+        p = cmds.pointPosition(v, world=True)
+        loop_pts.append((p[0], p[1], p[2]))
+
+    # ── Get all wire_mesh vertex positions via OpenMaya (bulk) ────────────────
+    sel = om2.MSelectionList()
+    sel.add(wire_mesh)
+    dag = sel.getDagPath(0)
+    fn_mesh = om2.MFnMesh(dag)
+    all_pts = fn_mesh.getPoints(om2.MSpace.kWorld)
+    n_verts = len(all_pts)
+
+    # ── Compute per-vertex weights ────────────────────────────────────────────
+    span = max(max_dist - min_dist, 1e-6)
+
+    def _smooth_step(t):
+        return t * t * (3.0 - 2.0 * t)
+
+    weights = []
+    for pt in all_pts:
+        px, py, pz = pt.x, pt.y, pt.z
+        min_d = min(
+            ((px - lx) ** 2 + (py - ly) ** 2 + (pz - lz) ** 2) ** 0.5
+            for lx, ly, lz in loop_pts
+        )
+        if min_d <= min_dist:
+            w = 1.0
+        elif min_d >= max_dist:
+            w = 0.0
+        else:
+            t = (min_d - min_dist) / span
+            w = 1.0 - _smooth_step(t)
+        weights.append(w)
+
+    # ── Find geometry index of wire_mesh in wire_node ─────────────────────────
+    geom_idx = 0
+    wire_geos = cmds.wire(wire_node, q=True, geometry=True) or []
+    mesh_shapes = cmds.listRelatives(wire_mesh, shapes=True,
+                                     noIntermediate=True) or []
+    mesh_shape = mesh_shapes[0] if mesh_shapes else wire_mesh
+    for i, geo in enumerate(wire_geos):
+        if geo in (mesh_shape, wire_mesh):
+            geom_idx = i
+            break
+
+    # ── Apply weights ─────────────────────────────────────────────────────────
+    for vi, w in enumerate(weights):
+        cmds.setAttr(f"{wire_node}.weightList[{geom_idx}].weights[{vi}]", w)
+
+    return n_verts
+
+
 @undo_chunk
 def check_wire_shapes_have_deltas(shape_names):
     """
