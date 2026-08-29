@@ -1,5 +1,29 @@
 # Changelog — Blendshape Editor
 
+## v.05.56
+
+**Wire Setup — Compute AutoPaint**
+
+- New toggle "Compute AutoPaint" on the same row as Flat Curve (Flat Curve moved to end of row)
+- When ON: after Create Wire Setup, the tool auto-completes the user's half edge loop into a full closed ring via `polySelectSp(loop=True)`, then paints wire deformer vertex weights on `wire_setup_msh` using euclidean distance + smooth-step IDW falloff
+- Min (default 3.0) and Max (default 6.0) QLineEdits control the falloff range in world units; both are greyed out when the toggle is OFF
+- Closure check: if the auto-completed loop is not topologically closed (open chain or too few added edges), a modal fallback dialog appears — user can manually capture a complete edge or vertex loop, then Continue or Cancel
+- If the user continues without providing an override, the paint proceeds with the incomplete loop and a warning is shown in the status bar
+- New core function `autopaint_wire_weights()` in `blendshape_core.py`: bulk vertex positions via OpenMaya `MFnMesh.getPoints()`, weights written via `setAttr` on `weightList[geomIdx].weights[vi]`
+- Improved "Edges" field tooltip: explains half-loop convention and topology advice for clean auto-completion
+
+**Wire Setup & Cluster to Joint — Delete Setup buttons**
+
+- New "Delete Wire Setup" icon button (last on Wire Setup shelf, right-aligned): deletes `wire_setup_grp` and `wire_setup_wire`; undoable; hover tint is red
+- New "Delete CTJ Setup" icon button (last on CTJ shelf, right-aligned): deletes `{cluster}_Cluster2Joint_grp` and `{cluster}_ctj_skin`, re-enables the cluster envelope; undoable; hover tint is red
+- Both buttons use `delete_wire.png` / `delete_cluster.png` icons (to be added to `resources/icons/`)
+
+**Icon cleanup**
+
+- Removed 25 unused icons from `resources/icons/`
+- Renamed `bs_autofill.png` → `bs_auto-fill.png` to match the filename referenced in code
+- Improved Wire Setup "Base Mesh" field tooltip: clarifies that the tool retrieves the mesh's shapeOrig as the neutral mesh for the wire rig
+
 ## v.05.55
 
 **Bake Deformers — fixes and improvements**
