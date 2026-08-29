@@ -1,5 +1,31 @@
 # Changelog — Blendshape Editor Tool
 
+## v.05.55
+
+**Bake Deformers — fixes and improvements**
+
+- Fixed rest-pose reference: now queries `bs_node.originalGeometry` via `plugs=True` to get the exact intermediate shape the blendShape uses, avoiding false deltas caused by leftover orig shapes with residual deformation
+- Double-click on Bake Defs button: toggles the `envelope` of all deformers downstream of the blendShape (→0 if any are active, →1 if all already at 0); new core function `get_deformers_above_bs()`
+
+**Zip Locator Presets — color export/import**
+
+- Export now saves each locator's display color override (`overrideEnabled`, index or RGB mode) into the JSON
+- Import restores `overrideEnabled` and the saved color on the locator shape
+- New right-click entry on the Import button: **Load default presets** — loads `resources/split_locs_presets.json` bundled with the tool (no file dialog)
+- Right-click menu order swapped: Load default presets first, Browse from JSON file second
+- Tooltips updated on Import and Save buttons to advertise right-click availability
+
+**Rig Connector**
+
+- Header tooltips added on **Controller**, **Min**, and **Max** columns explaining right-click actions
+- Min/Max tooltips clarify these are driver attribute values remapped to the [0, 1] target weight range
+- Help menu added to the Rig Connector window with a direct link to the dedicated documentation page
+
+**Main UI — Help menu**
+
+- New **Help** menu in the main menu bar: Documentation link (moved from Edit menu) + About dialog
+- About dialog shows tool name, version, copyright, and full MIT License text
+
 ## v.05.54
 
 **Wire Setup — Hammer Wire Weights**

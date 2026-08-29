@@ -1719,6 +1719,15 @@ class RigConnectorDialog(QtWidgets.QDialog):
         outer.setContentsMargins(8, 8, 8, 8)
         outer.setSpacing(6)
 
+        # ── Menu bar ──────────────────────────────────────────────────────────
+        menu_bar = QtWidgets.QMenuBar()
+        menu_help = menu_bar.addMenu("Help")
+        act_doc = menu_help.addAction("Rig Connector — Documentation…")
+        act_doc.setToolTip("Open the Rig Connector documentation in your web browser")
+        act_doc.triggered.connect(lambda: QtGui.QDesktopServices.openUrl(
+            QtCore.QUrl("https://blendshape-editor-tool.readthedocs.io/en/latest/sections/rig_connector.html")))
+        outer.setMenuBar(menu_bar)
+
         # ── Files Mapping ─────────────────────────────────────────────────────
         grp_files = QtWidgets.QGroupBox("Files Mapping")
         grp_files.setStyleSheet("QGroupBox { font-size: 11px; }")
@@ -1898,6 +1907,28 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self._table.verticalHeader().setDefaultSectionSize(24)
+
+        self._table.horizontalHeaderItem(self._COL_CTRL).setToolTip(
+            "Right-click:\n"
+            "  • Is Skinning Controller — toggle the flag on selected rows")
+        self._table.horizontalHeaderItem(self._COL_MIN).setToolTip(
+            "In Min — minimum value of the controller attribute that drives this target.\n"
+            "When the attribute reaches In Min, the target weight is 0.\n"
+            "When it reaches In Max, the target weight is 1.\n"
+            "The target is remapped from [In Min, In Max] to [0, 1].\n"
+            "Targets cannot exceed a weight of 1 with the current setup.\n\n"
+            "Right-click:\n"
+            "  • Multiply selected rows by Scale Factor\n"
+            "    (set the multiplier in the Scale Factor field above the table)")
+        self._table.horizontalHeaderItem(self._COL_MAX).setToolTip(
+            "In Max — maximum value of the controller attribute that drives this target.\n"
+            "When the attribute reaches In Max, the target weight is 1.\n"
+            "When it is at In Min, the target weight is 0.\n"
+            "The target is remapped from [In Min, In Max] to [0, 1].\n"
+            "Targets cannot exceed a weight of 1 with the current setup.\n\n"
+            "Right-click:\n"
+            "  • Multiply selected rows by Scale Factor\n"
+            "    (set the multiplier in the Scale Factor field above the table)")
 
         hh = self._table.horizontalHeader()
         hh.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -4306,7 +4337,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
 class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     TOOL_NAME = "BlendshapeEditorUI"
-    VERSION   = "v.05.54"
+    VERSION   = "v.05.55"
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -4831,11 +4862,6 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "and any leftover unnamed sets, then bakes non-deformer history\n"
             "on the selected mesh(es).")
         act_clean_mesh.triggered.connect(self._run_clean_deformed_mesh)
-        menu_edit.addSeparator()
-        act_doc = menu_edit.addAction("Documentation")
-        act_doc.setToolTip("Open the online documentation in your web browser")
-        act_doc.triggered.connect(lambda: QtGui.QDesktopServices.openUrl(
-            QtCore.QUrl("https://blendshape-editor-tool.readthedocs.io")))
         menu_check = menu_bar.addMenu("Check Shapes")
         act_check = menu_check.addAction("Open Check Shapes…")
         act_check.setToolTip("Open the Check Shapes dialog to verify expected targets on a blendShape node")
@@ -4844,6 +4870,15 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         act_rig = menu_rig.addAction("Open Rig Connector…")
         act_rig.setToolTip("Open the Rig Connector to map FK controllers to blendShape targets")
         act_rig.triggered.connect(self._open_rig_connector)
+        menu_help = menu_bar.addMenu("Help")
+        act_doc = menu_help.addAction("Documentation…")
+        act_doc.setToolTip("Open the online documentation in your web browser")
+        act_doc.triggered.connect(lambda: QtGui.QDesktopServices.openUrl(
+            QtCore.QUrl("https://blendshape-editor-tool.readthedocs.io")))
+        menu_help.addSeparator()
+        act_about = menu_help.addAction("About…")
+        act_about.setToolTip("Show version and license information")
+        act_about.triggered.connect(self._show_about)
         outer_layout.setMenuBar(menu_bar)
 
         # ── Scroll area ───────────────────────────────────────────────────
@@ -5518,7 +5553,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         btn_load_preset.setAutoRaise(True)
         btn_load_preset.setStyleSheet(_ICON_BTN_STYLE)
         btn_load_preset.setToolTip(
-            "Select a locator group in the scene and click to load its presets into the list.")
+            "Select a locator group in the scene and click to load its presets into the list.\n\n"
+            "Right-click:\n"
+            "  • Load default presets — imports the presets shipped with the tool\n"
+            "  • Browse from JSON file… — imports from a previously exported JSON file")
         _px_lp = QtGui.QPixmap(f"{_icons_dir}/path.png")
         if not _px_lp.isNull():
             btn_load_preset.setIcon(QtGui.QIcon(_px_lp.scaled(
@@ -5541,7 +5579,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         btn_save_preset.setToolTip(
             "Save the current locators and settings into the selected preset group\n"
             "(or create a new preset group if none is selected).\n"
-            "Locators are parented to the preset sub-group inside the locs_grp.")
+            "Locators are parented to the preset sub-group inside the locs_grp.\n\n"
+            "Right-click:\n"
+            "  • Save to JSON file… — exports all presets to a JSON file")
         _px_sp = QtGui.QPixmap(f"{_icons_dir}/save.png")
         if not _px_sp.isNull():
             btn_save_preset.setIcon(QtGui.QIcon(_px_sp.scaled(
@@ -6046,8 +6086,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "  4. Delete the deformer.\n\n"
             "Works on all targets selected in the Shape Editor.\n\n"
             "Vertex selection: if vertices are selected on the mesh, only those vertices\n"
-            "receive the baked delta — the remaining vertices keep their existing deltas.")
+            "receive the baked delta — the remaining vertices keep their existing deltas.\n\n"
+            "Double-click: toggle the envelope of all deformers above the blendShape\n"
+            "(0 if any are active, 1 if all are already at 0).")
         self.btn_bake_deformers.clicked.connect(self._run_bake_deformers)
+        self._bake_defs_dbl_filter = _DblClickFilter(self._toggle_deformers_above_bs, self)
+        self.btn_bake_deformers.installEventFilter(self._bake_defs_dbl_filter)
 
         self._align_label_icon_btns([_w_add, _w_sub, _w_xfer, _w_swap])
         self._align_label_icon_btns([_w_apply, _w_bake])
@@ -7415,6 +7459,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     def _on_load_preset_context_menu(self, btn, pos):
         menu = QtWidgets.QMenu(self)
+        act_def = menu.addAction("Load default presets")
+        act_def.setToolTip("Import the reference presets shipped with the tool\n"
+                           "(resources/split_locs_presets.json).")
+        act_def.triggered.connect(self._on_import_splits_default)
+        menu.addSeparator()
         act = menu.addAction("Browse from JSON file…")
         act.setToolTip("Import split presets from a JSON file previously exported.\n"
                        "Recreates Splits_locs_grp, preset sub-groups and locators.")
@@ -7493,11 +7542,21 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 t = cmds.getAttr(f"{loc}.translate")[0]
                 r = cmds.getAttr(f"{loc}.rotate")[0]
                 s = cmds.getAttr(f"{loc}.scale")[0]
+                color_data = None
+                shp_list = cmds.listRelatives(loc, shapes=True, type="locator") or []
+                if shp_list and cmds.getAttr(f"{shp_list[0]}.overrideEnabled"):
+                    shp = shp_list[0]
+                    if cmds.getAttr(f"{shp}.overrideRGBColors"):
+                        rgb = cmds.getAttr(f"{shp}.overrideColorRGB")[0]
+                        color_data = {"mode": "rgb",   "value": [round(v, 4) for v in rgb]}
+                    else:
+                        color_data = {"mode": "index", "value": cmds.getAttr(f"{shp}.overrideColor")}
                 locs_out.append({
-                    "name": loc.split("|")[-1],
-                    "t": [round(v, 6) for v in t],
-                    "r": [round(v, 6) for v in r],
-                    "s": [round(v, 6) for v in s],
+                    "name":  loc.split("|")[-1],
+                    "t":     [round(v, 6) for v in t],
+                    "r":     [round(v, 6) for v in r],
+                    "s":     [round(v, 6) for v in s],
+                    "color": color_data,
                 })
 
             presets_out.append({
@@ -7523,10 +7582,23 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._set_status(
             f"✓ {len(presets_out)} preset(s) exported to {os.path.basename(path)}")
 
-    def _on_import_splits_from_json(self):
+    def _on_import_splits_default(self):
+        """Import the reference presets bundled with the tool (resources/split_locs_presets.json)."""
+        src_dir  = os.path.dirname(os.path.abspath(__file__))
+        tool_dir = os.path.dirname(src_dir)
+        path     = os.path.join(tool_dir, "resources", "split_locs_presets.json")
+        if not os.path.exists(path):
+            QtWidgets.QMessageBox.warning(
+                self, "Load Default Presets",
+                f"Default presets file not found:\n{path}")
+            return
+        self._on_import_splits_from_json(path)
+
+    def _on_import_splits_from_json(self, path=None):
         """Import split presets from a JSON file, recreating groups and locators."""
-        path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Import Split Presets", "", "JSON files (*.json)")
+        if path is None:
+            path, _ = QtWidgets.QFileDialog.getOpenFileName(
+                self, "Import Split Presets", "", "JSON files (*.json)")
         if not path or not os.path.exists(path):
             return
 
@@ -7583,6 +7655,18 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                     cmds.setAttr(f"{loc_long}.rotate", *ld["r"], type="double3")
                 if "s" in ld:
                     cmds.setAttr(f"{loc_long}.scale", *ld["s"], type="double3")
+                color_data = ld.get("color")
+                if color_data:
+                    shp_list = cmds.listRelatives(loc_long, shapes=True, type="locator") or []
+                    if shp_list:
+                        shp = shp_list[0]
+                        cmds.setAttr(f"{shp}.overrideEnabled", 1)
+                        if color_data["mode"] == "rgb":
+                            cmds.setAttr(f"{shp}.overrideRGBColors", 1)
+                            cmds.setAttr(f"{shp}.overrideColorRGB", *color_data["value"])
+                        else:
+                            cmds.setAttr(f"{shp}.overrideRGBColors", 0)
+                            cmds.setAttr(f"{shp}.overrideColor", color_data["value"])
 
             settings = preset.get("settings", {})
             if settings:
@@ -9268,6 +9352,58 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         dlg = RigConnectorDialog(parent=self)
         dlg.show()
 
+    def _show_about(self):
+        dlg = QtWidgets.QDialog(self)
+        dlg.setWindowTitle("About Blendshape Editor")
+        dlg.setMinimumWidth(480)
+        lay = QtWidgets.QVBoxLayout(dlg)
+        lay.setSpacing(12)
+
+        lbl_title = QtWidgets.QLabel(
+            f"<b style='font-size:14px'>Blendshape Editor</b>"
+            f"&nbsp;&nbsp;<span style='font-size:11px; color:#aaa;'>{self.VERSION}</span>")
+        lbl_title.setAlignment(QtCore.Qt.AlignCenter)
+        lay.addWidget(lbl_title)
+
+        lbl_copy = QtWidgets.QLabel("Copyright © 2026 Gustave Soloy")
+        lbl_copy.setAlignment(QtCore.Qt.AlignCenter)
+        lay.addWidget(lbl_copy)
+
+        sep = QtWidgets.QFrame()
+        sep.setFrameShape(QtWidgets.QFrame.HLine)
+        sep.setFrameShadow(QtWidgets.QFrame.Sunken)
+        lay.addWidget(sep)
+
+        license_text = (
+            "Blendshape Editor is distributed under the MIT License.\n\n"
+            "Permission is hereby granted, free of charge, to any person obtaining a copy\n"
+            "of this software and associated documentation files (the \"Software\"), to deal\n"
+            "in the Software without restriction, including without limitation the rights\n"
+            "to use, copy, modify, merge, publish, distribute, sublicense, and/or sell\n"
+            "copies of the Software, and to permit persons to whom the Software is\n"
+            "furnished to do so, subject to the following conditions:\n\n"
+            "The above copyright notice and this permission notice shall be included in all\n"
+            "copies or substantial portions of the Software.\n\n"
+            "THE SOFTWARE IS PROVIDED \"AS IS\", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR\n"
+            "IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,\n"
+            "FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE\n"
+            "AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER\n"
+            "LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,\n"
+            "OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE\n"
+            "SOFTWARE."
+        )
+        te = QtWidgets.QPlainTextEdit(license_text)
+        te.setReadOnly(True)
+        te.setFixedHeight(220)
+        te.setStyleSheet("font-size: 10px; color: #aaa;")
+        lay.addWidget(te)
+
+        btn_close = QtWidgets.QPushButton("Close")
+        btn_close.clicked.connect(dlg.accept)
+        lay.addWidget(btn_close, alignment=QtCore.Qt.AlignCenter)
+
+        dlg.exec_()
+
     def _browse_rig_json(self):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Load Rig Mapping",
@@ -10188,6 +10324,33 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ Bake Moves: {e}", error=True)
+
+    @undo_chunk
+    def _toggle_deformers_above_bs(self):
+        """Double-click on Bake Defs: toggle the envelope of all deformers above the
+        blendShape. If any envelope is non-zero, set all to 0; otherwise set all to 1."""
+        targets = self._get_targets_or_warn()
+        if not targets:
+            return
+        try:
+            bs_nodes = {bs for bs, _, _ in targets}
+            deformers = []
+            for bs_node in bs_nodes:
+                base_mesh = get_base_mesh(bs_node)
+                if base_mesh:
+                    deformers.extend(get_deformers_above_bs(bs_node, base_mesh))
+            if not deformers:
+                self._set_status("Bake Deformers: no deformers found above the blendShape")
+                return
+            any_active = any(cmds.getAttr(f"{d}.envelope") != 0.0 for d in deformers)
+            value = 0.0 if any_active else 1.0
+            for d in deformers:
+                cmds.setAttr(f"{d}.envelope", value)
+            state = "disabled" if value == 0.0 else "enabled"
+            self._set_status(f"✓ Bake Deformers: {len(deformers)} deformer(s) {state}")
+        except Exception as e:
+            traceback.print_exc()
+            self._set_status(f"✗ Bake Deformers: {e}", error=True)
 
     @undo_chunk
     def _run_bake_deformers(self):

@@ -683,13 +683,36 @@ def apply_mesh_moves_to_target(bs_node, base_mesh, logical_index, vtx_indices=No
     return len(new_deltas)
 
 
+def get_deformers_above_bs(bs_node, base_mesh):
+    """
+    Returns a list of deformer node names that are downstream of bs_node
+    (i.e. applied AFTER the blendShape in the deformation stack).
+
+    Uses listHistory on the output shape; nodes that appear before bs_node
+    in the history traversal are downstream (closer to the output).
+    Only geometry filter nodes (deformers) are included.
+    """
+    out_shapes = cmds.listRelatives(base_mesh, shapes=True, noIntermediate=True, fullPath=True) or []
+    if not out_shapes:
+        return []
+    history = cmds.listHistory(out_shapes[0], pruneDagObjects=True) or []
+    result = []
+    for node in history:
+        if node == bs_node:
+            break
+        if cmds.objectType(node, isAType="geometryFilter"):
+            result.append(node)
+    return result
+
+
 def bake_deformers_to_targets(bs_node, base_mesh, logical_indices, vtx_indices=None):
     """
     For each target in logical_indices:
       - Activates the target at weight 1.0 (all others at 0).
       - Samples the output mesh vertex positions with all downstream deformers active.
       - Computes delta = baked_pos - rest_pos
-        (rest = intermediate/base mesh positions, no deformers applied).
+        (rest = shape connected to bs_node.originalGeometry, resolved via
+         plugs=True to guarantee we get the shape node, not its transform).
       - Writes the result as the target's new complete delta set.
 
     This formula is correct for any deformer type (blendShape, delta mush, etc.):
@@ -709,21 +732,19 @@ def bake_deformers_to_targets(bs_node, base_mesh, logical_indices, vtx_indices=N
         raise RuntimeError(f"No output shape found on '{base_mesh}'")
     mesh_shape = out_shapes[0]
 
-    # Intermediate shape — pure rest-pose positions, no deformers
-    all_shapes = cmds.listRelatives(base_mesh, shapes=True, fullPath=True) or []
-    int_shapes  = [s for s in all_shapes if cmds.getAttr(f"{s}.intermediateObject")]
-    if not int_shapes:
-        raise RuntimeError(f"No intermediate shape found on '{base_mesh}'")
-    int_shape = int_shapes[0]
-
     def _sample(shape_name):
         sel = om2.MSelectionList()
         sel.add(shape_name)
         fn  = om2.MFnMesh(sel.getDagPath(0))
         return fn.getPoints(om2.MSpace.kObject)
 
-    # Rest positions — sampled once from the intermediate shape (no deformers)
-    rest_pts = _sample(int_shape)
+    # Original geometry — plug query avoids transform-vs-shape ambiguity
+    orig_plugs = cmds.listConnections(f"{bs_node}.originalGeometry",
+                                      source=True, plugs=True, destination=False) or []
+    if not orig_plugs:
+        raise RuntimeError(f"No originalGeometry connected on '{bs_node}'")
+    orig_shape = orig_plugs[0].split(".")[0]
+    rest_pts   = _sample(orig_shape)
 
     vtx_set = set(vtx_indices) if vtx_indices else None
 
