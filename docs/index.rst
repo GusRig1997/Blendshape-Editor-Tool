@@ -1,5 +1,5 @@
-Blendshape Editor Tool  v.05.10
-================================
+Blendshape Editor  v.05.55
+==========================
 
 A Maya PySide6 tool for creating, editing, and managing blendShape targets —
 with spatial splitting, delta editing, secondary mesh extraction, a

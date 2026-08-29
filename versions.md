@@ -1,4 +1,4 @@
-# Changelog — Blendshape Editor Tool
+# Changelog — Blendshape Editor
 
 ## v.05.55
 

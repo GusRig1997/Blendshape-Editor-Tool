@@ -1,7 +1,7 @@
 Overview
 ========
 
-The **Blendshape Editor Tool** (v.05.10) is a dockable Maya panel designed to
+The **Blendshape Editor** (v.05.55) is a dockable Maya panel designed to
 speed up blendShape target creation and editing workflows for facial rigging
 and character deformation.
 
