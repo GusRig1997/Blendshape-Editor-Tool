@@ -1,0 +1,748 @@
+{
+  "bse_version": 1,
+  "presets": [
+    {
+      "name": "Brows",
+      "settings": {
+        "axis_x": true,
+        "axis_y": false,
+        "axis_z": false,
+        "invert": false,
+        "local": true,
+        "symmetric": false,
+        "radial": false,
+        "radius_on": true,
+        "radius": "0.25",
+        "curve": "Smoother Step",
+        "locs": [
+          {
+            "name": "brow_loc_a",
+            "side": "",
+            "suffix": "a"
+          },
+          {
+            "name": "brow_loc_b",
+            "side": "",
+            "suffix": "b"
+          },
+          {
+            "name": "brow_loc_c",
+            "side": "",
+            "suffix": "c"
+          },
+          {
+            "name": "brow_loc_d",
+            "side": "",
+            "suffix": "d"
+          },
+          {
+            "name": "brow_loc_e",
+            "side": "",
+            "suffix": "e"
+          }
+        ]
+      },
+      "locators": [
+        {
+          "name": "brow_loc_a",
+          "t": [
+            0.954906,
+            160.821457,
+            9.985611
+          ],
+          "r": [
+            0.0,
+            9.602827,
+            0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 6
+          }
+        },
+        {
+          "name": "brow_loc_b",
+          "t": [
+            2.002883,
+            161.088486,
+            9.60306
+          ],
+          "r": [
+            8.701892,
+            23.207385,
+            21.226453
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 29
+          }
+        },
+        {
+          "name": "brow_loc_c",
+          "t": [
+            3.620602,
+            161.64447,
+            8.969481
+          ],
+          "r": [
+            8.805474,
+            24.640835,
+            20.382083
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 28
+          }
+        },
+        {
+          "name": "brow_loc_d",
+          "t": [
+            4.534205,
+            162.009537,
+            8.352656
+          ],
+          "r": [
+            -7.087099,
+            43.501675,
+            -10.039085
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 18
+          }
+        },
+        {
+          "name": "brow_loc_e",
+          "t": [
+            5.419585,
+            161.174362,
+            6.687685
+          ],
+          "r": [
+            -31.378205,
+            62.742459,
+            -34.452585
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 19
+          }
+        }
+      ]
+    },
+    {
+      "name": "LeftRight",
+      "settings": {
+        "axis_x": true,
+        "axis_y": false,
+        "axis_z": false,
+        "invert": false,
+        "local": true,
+        "symmetric": true,
+        "radial": false,
+        "radius_on": true,
+        "radius": "1.50",
+        "curve": "Smoother Step",
+        "locs": [
+          {
+            "name": "LR_loc",
+            "side": "",
+            "suffix": ""
+          }
+        ]
+      },
+      "locators": [
+        {
+          "name": "LR_loc",
+          "t": [
+            0.0,
+            159.351837,
+            9.916117
+          ],
+          "r": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 17
+          }
+        }
+      ]
+    },
+    {
+      "name": "Lips",
+      "settings": {
+        "axis_x": true,
+        "axis_y": false,
+        "axis_z": false,
+        "invert": false,
+        "local": true,
+        "symmetric": true,
+        "radial": false,
+        "radius_on": true,
+        "radius": "1.00",
+        "curve": "Smoother Step",
+        "locs": [
+          {
+            "name": "R_lips_loc_b",
+            "side": "R",
+            "suffix": "b"
+          },
+          {
+            "name": "R_lips_loc_a",
+            "side": "R",
+            "suffix": "a"
+          },
+          {
+            "name": "C_lips_loc",
+            "side": "C",
+            "suffix": ""
+          },
+          {
+            "name": "L_lips_loc_a",
+            "side": "L",
+            "suffix": "a"
+          },
+          {
+            "name": "L_lips_loc_b",
+            "side": "L",
+            "suffix": "b"
+          }
+        ]
+      },
+      "locators": [
+        {
+          "name": "R_lips_loc_b",
+          "t": [
+            -1.732083,
+            153.490555,
+            9.406612
+          ],
+          "r": [
+            0.0,
+            -46.073536,
+            -0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 31
+          }
+        },
+        {
+          "name": "R_lips_loc_a",
+          "t": [
+            -1.125627,
+            153.534866,
+            10.126577
+          ],
+          "r": [
+            0.0,
+            -28.173771,
+            -0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 20
+          }
+        },
+        {
+          "name": "C_lips_loc",
+          "t": [
+            -0.0,
+            153.488839,
+            10.373977
+          ],
+          "r": [
+            0.0,
+            0.0,
+            0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 17
+          }
+        },
+        {
+          "name": "L_lips_loc_a",
+          "t": [
+            1.125627,
+            153.534865,
+            10.126577
+          ],
+          "r": [
+            0.0,
+            28.173771,
+            0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 18
+          }
+        },
+        {
+          "name": "L_lips_loc_b",
+          "t": [
+            1.732083,
+            153.490555,
+            9.406612
+          ],
+          "r": [
+            0.0,
+            46.073536,
+            0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 29
+          }
+        }
+      ]
+    },
+    {
+      "name": "Zip",
+      "settings": {
+        "axis_x": true,
+        "axis_y": false,
+        "axis_z": false,
+        "invert": false,
+        "local": true,
+        "symmetric": true,
+        "radial": false,
+        "radius_on": true,
+        "radius": "0.20",
+        "curve": "Smoother Step",
+        "locs": [
+          {
+            "name": "R_Zip_loc_e",
+            "side": "R",
+            "suffix": "e"
+          },
+          {
+            "name": "R_Zip_loc_d",
+            "side": "R",
+            "suffix": "d"
+          },
+          {
+            "name": "R_Zip_loc_c",
+            "side": "R",
+            "suffix": "c"
+          },
+          {
+            "name": "R_Zip_loc_b",
+            "side": "R",
+            "suffix": "b"
+          },
+          {
+            "name": "R_Zip_loc_a",
+            "side": "R",
+            "suffix": "a"
+          },
+          {
+            "name": "L_Zip_loc_a",
+            "side": "L",
+            "suffix": "a"
+          },
+          {
+            "name": "L_Zip_loc_b",
+            "side": "L",
+            "suffix": "b"
+          },
+          {
+            "name": "L_Zip_loc_c",
+            "side": "L",
+            "suffix": "c"
+          },
+          {
+            "name": "L_Zip_loc_d",
+            "side": "L",
+            "suffix": "d"
+          },
+          {
+            "name": "L_Zip_loc_e",
+            "side": "L",
+            "suffix": "e"
+          }
+        ]
+      },
+      "locators": [
+        {
+          "name": "R_Zip_loc_e",
+          "t": [
+            -1.870218,
+            153.473404,
+            9.241118
+          ],
+          "r": [
+            0.0,
+            -47.55312,
+            -0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 30
+          }
+        },
+        {
+          "name": "R_Zip_loc_d",
+          "t": [
+            -1.591771,
+            153.514648,
+            9.612329
+          ],
+          "r": [
+            0.0,
+            -49.780304,
+            -0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 13
+          }
+        },
+        {
+          "name": "R_Zip_loc_c",
+          "t": [
+            -1.125627,
+            153.582092,
+            10.126577
+          ],
+          "r": [
+            0.0,
+            -37.609917,
+            -0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 31
+          }
+        },
+        {
+          "name": "R_Zip_loc_b",
+          "t": [
+            -0.6953,
+            153.622559,
+            10.296372
+          ],
+          "r": [
+            0.0,
+            -15.702077,
+            -0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 21
+          }
+        },
+        {
+          "name": "R_Zip_loc_a",
+          "t": [
+            -0.15821,
+            153.544128,
+            10.387901
+          ],
+          "r": [
+            0.0,
+            -8.982416,
+            -0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 20
+          }
+        },
+        {
+          "name": "L_Zip_loc_a",
+          "t": [
+            0.15821,
+            153.544128,
+            10.387901
+          ],
+          "r": [
+            0.0,
+            8.982416,
+            0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 19
+          }
+        },
+        {
+          "name": "L_Zip_loc_b",
+          "t": [
+            0.6953,
+            153.622559,
+            10.296372
+          ],
+          "r": [
+            0.0,
+            15.702077,
+            0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 18
+          }
+        },
+        {
+          "name": "L_Zip_loc_c",
+          "t": [
+            1.125627,
+            153.582092,
+            10.126577
+          ],
+          "r": [
+            0.0,
+            37.609918,
+            0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 28
+          }
+        },
+        {
+          "name": "L_Zip_loc_d",
+          "t": [
+            1.591771,
+            153.514648,
+            9.612329
+          ],
+          "r": [
+            0.0,
+            49.780303,
+            0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 29
+          }
+        },
+        {
+          "name": "L_Zip_loc_e",
+          "t": [
+            1.870218,
+            153.473404,
+            9.241118
+          ],
+          "r": [
+            0.0,
+            47.553119,
+            0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 6
+          }
+        }
+      ]
+    },
+    {
+      "name": "Cheekbones",
+      "settings": {
+        "axis_x": true,
+        "axis_y": false,
+        "axis_z": false,
+        "invert": false,
+        "local": true,
+        "symmetric": false,
+        "radial": false,
+        "radius_on": true,
+        "radius": "1.00",
+        "curve": "Smoother Step",
+        "locs": [
+          {
+            "name": "Cheekbones_loc_a",
+            "side": "",
+            "suffix": "a"
+          },
+          {
+            "name": "Cheekbones_loc_b",
+            "side": "",
+            "suffix": "b"
+          },
+          {
+            "name": "Cheekbones_loc_c",
+            "side": "",
+            "suffix": "c"
+          }
+        ]
+      },
+      "locators": [
+        {
+          "name": "Cheekbones_loc_a",
+          "t": [
+            2.825963,
+            157.311371,
+            8.901421
+          ],
+          "r": [
+            0.0,
+            8.496827,
+            0.0
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 29
+          }
+        },
+        {
+          "name": "Cheekbones_loc_b",
+          "t": [
+            4.820863,
+            157.61647,
+            7.651913
+          ],
+          "r": [
+            11.63289,
+            31.644218,
+            26.897173
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 27
+          }
+        },
+        {
+          "name": "Cheekbones_loc_c",
+          "t": [
+            5.567225,
+            159.057968,
+            6.091628
+          ],
+          "r": [
+            53.504334,
+            56.475378,
+            58.334964
+          ],
+          "s": [
+            1.0,
+            1.0,
+            1.0
+          ],
+          "color": {
+            "mode": "index",
+            "value": 26
+          }
+        }
+      ]
+    }
+  ]
+}
