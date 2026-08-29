@@ -1,4 +1,4 @@
-# Blendshape Editor Tool
+# Blendshape Editor
 
 A dockable Maya panel for creating, editing, and managing blendShape targets —
 with spatial splitting, secondary mesh extraction, delta editing utilities, and a

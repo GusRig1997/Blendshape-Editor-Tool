@@ -1,6 +1,6 @@
 """
 ╔══════════════════════════════════════════════════════════════╗
-║          Blendshape Editor Tool — Drag & Drop Installer      ║
+║          Blendshape Editor — Drag & Drop Installer      ║
 ║                                                              ║
 ║  Drag and drop this file into the Maya viewport to           ║
 ║  install the tool automatically.                             ║
@@ -17,7 +17,7 @@ import shutil
 # ─── Configuration ────────────────────────────────────────────────────────────
 
 TOOL_NAME   = "blendshape_ui"
-TOOL_LABEL  = "Blendshape Editor Tool"
+TOOL_LABEL  = "Blendshape Editor"
 SHELF_LABEL = "BSEdtr"
 ICON_NAME   = "split.png"
 

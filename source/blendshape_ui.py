@@ -4342,7 +4342,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
     def __init__(self, parent=None):
         super().__init__(parent=parent)
         self.setObjectName(self.TOOL_NAME)
-        self.setWindowTitle("Blendshape Editor Tool")
+        self.setWindowTitle("Blendshape Editor")
         # Shelf width: 9 btns×36 + 2 seps×6 + 10 gaps×2 + margins 4+4
         # + scrollbar width (~12 px) so scroll content aligns with shelf buttons
         _SHELF_W = 9 * 36 + 2 * 6 + 10 * 2 + 8 + 12  # 376 px
@@ -11058,7 +11058,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
 def check_compatibility():
     """
-    Verifies that all dependencies required by the Blendshape Editor Tool
+    Verifies that all dependencies required by the Blendshape Editor
     are available in the current Maya environment.
 
     Checks:
@@ -11160,7 +11160,7 @@ def check_compatibility():
             lines.append(f"&nbsp;&nbsp;• {w}")
 
     msg = QtWidgets.QMessageBox()
-    msg.setWindowTitle("Blendshape Editor Tool — Compatibility Check")
+    msg.setWindowTitle("Blendshape Editor — Compatibility Check")
     msg.setIcon(QtWidgets.QMessageBox.Critical if errors else QtWidgets.QMessageBox.Warning)
     msg.setText("<br>".join(lines))
     msg.setStandardButtons(QtWidgets.QMessageBox.Ok)

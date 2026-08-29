@@ -1,7 +1,7 @@
 import os
 import sys
 
-project   = "Blendshape Editor Tool"
+project   = "Blendshape Editor"
 copyright = "2026"
 author    = ""
 release   = "v.04.00"
