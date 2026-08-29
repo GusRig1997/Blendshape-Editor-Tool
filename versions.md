@@ -1,5 +1,16 @@
 # Changelog — Blendshape Editor
 
+## v.05.57
+
+**Wire Setup — AutoPaint overhaul**
+
+- Replaced Euclidean distance with **geodesic distance** (on-surface shortest-path) in `autopaint_wire_weights()`: builds a mesh edge adjacency list via `MItMeshEdge`, then runs multi-source Dijkstra from all seed vertices simultaneously — falloff now correctly follows the lip surface topology instead of cutting through empty space
+- Updated default Min/Max distances to **1.0 / 3.0** (calibrated for a 1 m 70 character in Maya scene units)
+- Loop completion replaced `polySelectSp` with `cmds.polySelect(edgeLoopOrBorder=N, noSelection=True)` — purely computational, returns indices directly without touching the active selection or requiring viewport context; seeds from the first edge in the Edges field
+- Removed unreliable topological closure check (valence == 2); reliability is now determined solely by whether `polySelect` returned more edges than the input
+- `_WireLoopFallbackDialog` changed from blocking `exec_()` / `WindowModal` to non-blocking `show()` / `NonModal`; Continue and Cancel wired via `accepted`/`rejected` signals to a new `_apply_wire_autopaint()` helper so the user can interact with the viewport while the dialog is open
+- `wire_crv` is now hidden after wire setup creation; the first shape curve in the list is shown by default
+
 ## v.05.56
 
 **Wire Setup — Compute AutoPaint**
