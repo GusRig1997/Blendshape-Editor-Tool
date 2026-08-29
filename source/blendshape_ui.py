@@ -6642,10 +6642,14 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lbl_wbase.setFixedWidth(70)
         self.edit_wire_base = QtWidgets.QLineEdit()
         self.edit_wire_base.setPlaceholderText("mesh transform")
-        self.edit_wire_base.setToolTip("Base mesh to build the wire setup on")
+        self.edit_wire_base.setToolTip(
+            "Source mesh that owns the active blendShape node.\n"
+            "The tool will retrieve its original shape (shapeOrig) and duplicate it\n"
+            "as the neutral mesh on which the wire setup will be built."
+        )
         btn_wire_get_base = QtWidgets.QPushButton("Get")
         btn_wire_get_base.setFixedWidth(40)
-        btn_wire_get_base.setToolTip("Use currently selected object as base mesh")
+        btn_wire_get_base.setToolTip("Set the currently selected object as the base mesh")
         btn_wire_get_base.clicked.connect(self._wire_get_base)
         row_wbase.addWidget(lbl_wbase)
         row_wbase.addWidget(self.edit_wire_base, 1)
