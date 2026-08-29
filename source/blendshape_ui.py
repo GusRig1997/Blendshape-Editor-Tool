@@ -1596,7 +1596,7 @@ class _WireLoopFallbackDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("AutoPaint — Incomplete Loop Detected")
-        self.setWindowModality(QtCore.Qt.WindowModal)
+        self.setWindowModality(QtCore.Qt.NonModal)
         self.setMinimumWidth(480)
         self._override_components = []
         self._build_ui()
@@ -4419,7 +4419,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
 class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     TOOL_NAME = "BlendshapeEditorUI"
-    VERSION   = "v.05.56"
+    VERSION   = "v.05.57"
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -6610,6 +6610,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # Paint Wire Weights — shelf button
         _wire_shelf_row = QtWidgets.QHBoxLayout()
+        _wire_shelf_row.setSpacing(2)
         btn_paint_wire = QtWidgets.QToolButton()
         btn_paint_wire.setFixedSize(36, 36)
         btn_paint_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
@@ -6716,27 +6717,27 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         btn_hammer_wire.clicked.connect(self._run_hammer_wire_weights)
         _wire_shelf_row.addWidget(btn_hammer_wire)
 
-        _wire_shelf_row.addStretch()
-
-        btn_delete_wire = QtWidgets.QToolButton()
-        btn_delete_wire.setFixedSize(36, 36)
-        btn_delete_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
-        btn_delete_wire.setToolTip(
+        self.btn_delete_wire = QtWidgets.QToolButton()
+        self.btn_delete_wire.setFixedSize(36, 36)
+        self.btn_delete_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        self.btn_delete_wire.setToolTip(
             "Delete Wire Setup\n"
             "Removes wire_setup_grp and all its children\n"
             "(wire_setup_msh, wire_crv, wire_bs, shape curves,\n"
             "wire_setup_wire). Undoable.")
-        btn_delete_wire.setStyleSheet("""
+        self.btn_delete_wire.setStyleSheet("""
             QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
             QToolButton:hover { background-color: rgba(255,80,80,60); }
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
+            QToolButton:disabled { opacity: 0.35; }
         """)
         _dw_px = QtGui.QPixmap(f"{_icons_dir}/delete_wire.png")
         if not _dw_px.isNull():
-            btn_delete_wire.setIcon(QtGui.QIcon(_dw_px))
-            btn_delete_wire.setIconSize(QtCore.QSize(34, 34))
-        btn_delete_wire.clicked.connect(self._run_delete_wire_setup)
-        _wire_shelf_row.addWidget(btn_delete_wire)
+            self.btn_delete_wire.setIcon(QtGui.QIcon(_dw_px))
+            self.btn_delete_wire.setIconSize(QtCore.QSize(34, 34))
+        self.btn_delete_wire.setEnabled(cmds.objExists("wire_setup_grp"))
+        self.btn_delete_wire.clicked.connect(self._run_delete_wire_setup)
+        _wire_shelf_row.addWidget(self.btn_delete_wire)
 
         lay_wire.addLayout(_wire_shelf_row)
 
@@ -6786,22 +6787,60 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_wedge.addWidget(btn_wire_get_edges)
         lay_wire.addLayout(row_wedge)
 
-        # Shape Curves list
-        lbl_shapes = QtWidgets.QLabel("Shape Curves  (double-click to rename)")
-        lbl_shapes.setStyleSheet("color: #aaaaaa; font-size: 10px;")
-        lay_wire.addWidget(lbl_shapes)
+        # Curve options (Flat Curve + Spans)
+        row_curve_opts = QtWidgets.QHBoxLayout()
+        self.chk_wire_flat = QtWidgets.QCheckBox("Flat Curve")
+        self.chk_wire_flat.setChecked(True)
+        self.chk_wire_flat.setToolTip(
+            "Flatten all CVs to the Y position of the first CV.\n"
+            "Useful for lips or any edge loop that should remain planar.\n"
+            "Disable for curved surfaces (cheeks, eyelids…).")
+        row_curve_opts.addWidget(self.chk_wire_flat)
+        row_curve_opts.addSpacing(12)
+        row_curve_opts.addWidget(QtWidgets.QLabel("Spans"))
+        self.spin_wire_spans = QtWidgets.QLineEdit("4")
+        self.spin_wire_spans.setFixedWidth(44)
+        self.spin_wire_spans.setAlignment(QtCore.Qt.AlignCenter)
+        self.spin_wire_spans.setValidator(QtGui.QIntValidator(1, 64, self.spin_wire_spans))
+        self.spin_wire_spans.setToolTip(
+            "Number of spans for the rebuilt wire curve (rebuildCurve s=N).\n"
+            "More spans = more CVs = finer control.")
+        row_curve_opts.addWidget(self.spin_wire_spans)
+        row_curve_opts.addStretch()
+        lay_wire.addLayout(row_curve_opts)
 
-        self.list_wire_shapes = QtWidgets.QListWidget()
+        # Shape Curves list
+        self.list_wire_shapes = QtWidgets.QTreeWidget()
+        self.list_wire_shapes.setColumnCount(1)
+        self.list_wire_shapes.setHeaderLabels(["Shape Curves"])
+        self.list_wire_shapes.headerItem().setTextAlignment(
+            0, QtCore.Qt.AlignCenter)
         self.list_wire_shapes.setFixedHeight(116)
+        self.list_wire_shapes.setRootIsDecorated(False)
+        self.list_wire_shapes.setUniformRowHeights(True)
+        self.list_wire_shapes.setAlternatingRowColors(True)
+        self.list_wire_shapes.setSelectionBehavior(
+            QtWidgets.QAbstractItemView.SelectRows)
+        self.list_wire_shapes.setVerticalScrollBarPolicy(
+            QtCore.Qt.ScrollBarAsNeeded)
+        self.list_wire_shapes.setHorizontalScrollBarPolicy(
+            QtCore.Qt.ScrollBarAlwaysOff)
+        self.list_wire_shapes.setStyleSheet(
+            "QTreeWidget::item { height: 22px; padding: 0px;"
+            " border-bottom: 1px solid rgba(255,255,255,18); }")
+        self.list_wire_shapes.setEditTriggers(
+            QtWidgets.QAbstractItemView.DoubleClicked)
         self.list_wire_shapes.setToolTip(
-            "Each entry creates one blendShape target curve.\n"
-            "Double-click to rename. Use Add / Remove to edit the list.")
+            "List of blendShape target names to create on the wire curve.\n"
+            "Each entry will become one sculpt-able shape in the wire rig.\n"
+            "Double-click any entry to rename it.\n"
+            "Use the + / − buttons below to add or remove shapes.")
         for _shp in ["lip_up", "lip_dn", "lip_out", "lip_in",
                      "mouth_corner_out", "mouth_corner_in",
                      "mouth_corner_up", "mouth_corner_dn"]:
-            _item = QtWidgets.QListWidgetItem(_shp)
+            _item = QtWidgets.QTreeWidgetItem([_shp])
             _item.setFlags(_item.flags() | QtCore.Qt.ItemIsEditable)
-            self.list_wire_shapes.addItem(_item)
+            self.list_wire_shapes.addTopLevelItem(_item)
         lay_wire.addWidget(self.list_wire_shapes)
 
         row_shapes_ctrl = QtWidgets.QHBoxLayout()
@@ -6825,7 +6864,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_shapes_ctrl.addWidget(btn_wire_rm_shape)
         lay_wire.addLayout(row_shapes_ctrl)
 
-        # Dropoff / Rotation / Spans / Flat Curve
+        # Wire deformer options (Dropoff / Rotation)
         row_wparams = QtWidgets.QHBoxLayout()
         row_wparams.addWidget(QtWidgets.QLabel("Dropoff"))
         self.spin_wire_dropoff = QtWidgets.QLineEdit("100.0")
@@ -6846,24 +6885,14 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.spin_wire_rotation.setValidator(_rv)
         self.spin_wire_rotation.setToolTip("Wire deformer rotation value")
         row_wparams.addWidget(self.spin_wire_rotation)
-        row_wparams.addSpacing(8)
-        row_wparams.addWidget(QtWidgets.QLabel("Spans"))
-        self.spin_wire_spans = QtWidgets.QLineEdit("4")
-        self.spin_wire_spans.setFixedWidth(44)
-        self.spin_wire_spans.setAlignment(QtCore.Qt.AlignCenter)
-        self.spin_wire_spans.setValidator(QtGui.QIntValidator(1, 64, self.spin_wire_spans))
-        self.spin_wire_spans.setToolTip(
-            "Number of spans for the rebuilt wire curve (rebuildCurve s=N).\n"
-            "More spans = more CVs = finer control.")
-        row_wparams.addWidget(self.spin_wire_spans)
         row_wparams.addStretch()
         lay_wire.addLayout(row_wparams)
 
-        # AutoPaint + Flat Curve row
+        # Flat Curve + Auto-Paint row
         row_wire_opts = QtWidgets.QHBoxLayout()
         row_wire_opts.setSpacing(6)
 
-        self.chk_wire_autopaint = QtWidgets.QCheckBox("Compute AutoPaint")
+        self.chk_wire_autopaint = QtWidgets.QCheckBox("Auto-Paint")
         self.chk_wire_autopaint.setChecked(True)
         self.chk_wire_autopaint.setToolTip(
             "Automatically paint wire deformer vertex weights on wire_setup_msh\n"
@@ -6878,46 +6907,35 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "provide the full loop manually."
         )
         row_wire_opts.addWidget(self.chk_wire_autopaint)
-        row_wire_opts.addSpacing(4)
 
         lbl_ap_min = QtWidgets.QLabel("Min")
         row_wire_opts.addWidget(lbl_ap_min)
-        self.edit_wire_ap_min = QtWidgets.QLineEdit("3.0")
+        self.edit_wire_ap_min = QtWidgets.QLineEdit("1.0")
         self.edit_wire_ap_min.setFixedWidth(46)
         self.edit_wire_ap_min.setAlignment(QtCore.Qt.AlignCenter)
         _apv_min = QtGui.QDoubleValidator(0.0, 9999.0, 2, self.edit_wire_ap_min)
         _apv_min.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self.edit_wire_ap_min.setValidator(_apv_min)
         self.edit_wire_ap_min.setToolTip(
-            "Min distance (world units) from the edge ring.\n"
+            "Min geodesic distance (world units) from the edge ring.\n"
             "Vertices within this distance receive weight = 1."
         )
         row_wire_opts.addWidget(self.edit_wire_ap_min)
-        row_wire_opts.addSpacing(4)
 
         lbl_ap_max = QtWidgets.QLabel("Max")
         row_wire_opts.addWidget(lbl_ap_max)
-        self.edit_wire_ap_max = QtWidgets.QLineEdit("6.0")
+        self.edit_wire_ap_max = QtWidgets.QLineEdit("3.0")
         self.edit_wire_ap_max.setFixedWidth(46)
         self.edit_wire_ap_max.setAlignment(QtCore.Qt.AlignCenter)
         _apv_max = QtGui.QDoubleValidator(0.0, 9999.0, 2, self.edit_wire_ap_max)
         _apv_max.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self.edit_wire_ap_max.setValidator(_apv_max)
         self.edit_wire_ap_max.setToolTip(
-            "Max distance (world units) from the edge ring.\n"
+            "Max geodesic distance (world units) from the edge ring.\n"
             "Vertices at or beyond this distance receive weight = 0."
         )
         row_wire_opts.addWidget(self.edit_wire_ap_max)
-
         row_wire_opts.addStretch()
-
-        self.chk_wire_flat = QtWidgets.QCheckBox("Flat Curve")
-        self.chk_wire_flat.setChecked(True)
-        self.chk_wire_flat.setToolTip(
-            "Flatten all CVs to the Y position of the first CV.\n"
-            "Useful for lips or any edge loop that should remain planar.\n"
-            "Disable for curved surfaces (cheeks, eyelids…).")
-        row_wire_opts.addWidget(self.chk_wire_flat)
 
         lay_wire.addLayout(row_wire_opts)
 
@@ -6951,10 +6969,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         btn_bake_wire.setFixedSize(36, 36)
         btn_bake_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         btn_bake_wire.setToolTip(
-            "Bake Wire to Mesh\n"
-            "For each shape curve, poses wire_setup_msh and adds the result\n"
-            "as a blendShape target on the base mesh's bs_node.\n"
-            "Existing targets with the same name are overwritten.\n\n"
+            "Bake Shapes to Base Mesh\n"
+            "For each shape curve in the list, poses wire_setup_msh by driving\n"
+            "the wire blendShape to that curve, then extracts the resulting\n"
+            "deformation and adds it as a blendShape target directly on the\n"
+            "base mesh's BS node. Existing targets with the same name are\n"
+            "overwritten.\n\n"
             "Right-click to toggle Delete Wire at Bake.")
         btn_bake_wire.setStyleSheet(_wire_action_ss)
         _bw_px = QtGui.QPixmap(f"{_icons_dir}/bake_wire.png")
@@ -6983,6 +7003,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # Shelf row — Paint / Mirror / Copy / Paste cluster weights
         _ctj_shelf_row = QtWidgets.QHBoxLayout()
+        _ctj_shelf_row.setSpacing(2)
         _ctj_shelf_ss = """
             QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
             QToolButton:hover { background-color: rgba(255,255,255,30); }
@@ -7075,26 +7096,26 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         btn_hammer_ctj.clicked.connect(self._run_hammer_ctj_weights)
         _ctj_shelf_row.addWidget(btn_hammer_ctj)
 
-        _ctj_shelf_row.addStretch()
-
-        btn_delete_ctj = QtWidgets.QToolButton()
-        btn_delete_ctj.setFixedSize(36, 36)
-        btn_delete_ctj.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
-        btn_delete_ctj.setToolTip(
+        self.btn_delete_ctj = QtWidgets.QToolButton()
+        self.btn_delete_ctj.setFixedSize(36, 36)
+        self.btn_delete_ctj.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        self.btn_delete_ctj.setToolTip(
             "Delete CTJ Setup\n"
             "Removes the joints, skinCluster and group created by\n"
             "Cluster to Joint for the currently selected cluster.\n"
             "Re-enables the cluster envelope. Undoable.")
-        _ctj_del_ss = _ctj_shelf_ss.replace(
-            "QToolButton:hover { background-color: rgba(255,255,255,30); }",
-            "QToolButton:hover { background-color: rgba(255,80,80,60); }")
-        btn_delete_ctj.setStyleSheet(_ctj_del_ss)
+        _ctj_del_ss = (_ctj_shelf_ss
+                       .replace("QToolButton:hover { background-color: rgba(255,255,255,30); }",
+                                "QToolButton:hover { background-color: rgba(255,80,80,60); }")
+                       + " QToolButton:disabled { opacity: 0.35; }")
+        self.btn_delete_ctj.setStyleSheet(_ctj_del_ss)
         _dctj_px = QtGui.QPixmap(f"{_icons_dir}/delete_cluster.png")
         if not _dctj_px.isNull():
-            btn_delete_ctj.setIcon(QtGui.QIcon(_dctj_px))
-            btn_delete_ctj.setIconSize(QtCore.QSize(34, 34))
-        btn_delete_ctj.clicked.connect(self._run_delete_ctj_setup)
-        _ctj_shelf_row.addWidget(btn_delete_ctj)
+            self.btn_delete_ctj.setIcon(QtGui.QIcon(_dctj_px))
+            self.btn_delete_ctj.setIconSize(QtCore.QSize(34, 34))
+        self.btn_delete_ctj.setEnabled(False)   # updated by _ctj_refresh_delete_btn
+        self.btn_delete_ctj.clicked.connect(self._run_delete_ctj_setup)
+        _ctj_shelf_row.addWidget(self.btn_delete_ctj)
 
         lay_ctj.addLayout(_ctj_shelf_row)
 
@@ -7122,6 +7143,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.combo_ctj_cluster = QtWidgets.QComboBox()
         self.combo_ctj_cluster.setToolTip("Cluster deformer on the mesh above")
         self.combo_ctj_cluster.currentTextChanged.connect(self._ctj_try_restore_setup)
+        self.combo_ctj_cluster.currentTextChanged.connect(self._ctj_refresh_delete_btn)
         row_ctj_cls.addWidget(lbl_ctj_cls)
         row_ctj_cls.addWidget(self.combo_ctj_cluster, 1)
         lay_ctj.addLayout(row_ctj_cls)
@@ -8043,7 +8065,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 side_item = QtWidgets.QTableWidgetItem("")
                 self.table.setItem(row, 1, side_item)
             side_item.setText(sides[row] if row < len(sides) else "")
-            side_item.setFlags(side_item.flags() & ~QtCore.Qt.ItemIsEditable)
+            side_item.setFlags(side_item.flags() | QtCore.Qt.ItemIsEditable)
 
             # Suffix column (col 2)
             sfx_item = self.table.item(row, 2)
@@ -8051,7 +8073,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 sfx_item = QtWidgets.QTableWidgetItem("")
                 self.table.setItem(row, 2, sfx_item)
             sfx_item.setText(suffixes[row] if row < len(suffixes) else "")
-            sfx_item.setFlags(sfx_item.flags() & ~QtCore.Qt.ItemIsEditable)
+            sfx_item.setFlags(sfx_item.flags() | QtCore.Qt.ItemIsEditable)
 
     def _restore_suffix_editable(self):
         """Restores editable Side + Suffix columns when symmetric mode is turned off."""
@@ -8928,6 +8950,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             self._set_status("✗ Wire Setup: select edges first", error=True)
             return
         self.edit_wire_edges.setText(str(edges))
+        self.edit_wire_base.setText(edges[0].split(".")[0])
         self._set_status(f"✓ {len(edges)} edge(s) captured")
 
     def _on_wire_autopaint_toggled(self, checked):
@@ -8936,55 +8959,47 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     def _complete_wire_loop(self, edges):
         """
-        Attempts to extend *edges* into a full closed ring via polySelectSp.
+        Resolves the full closed edge ring from the first edge in *edges* using
+        cmds.polySelect(edgeLoopOrBorder=N, noSelection=True), which returns the
+        loop indices directly without touching the viewport or the active selection.
         Returns (full_edges, is_reliable).
-        is_reliable is True when the result forms a closed topological loop
-        and contains more edges than the input.
+        is_reliable is True when polySelect returned more edges than the input
+        (i.e. it successfully expanded to the full ring).
         """
-        from collections import defaultdict
-        prev_sel = cmds.ls(sl=True, flatten=True) or []
+        mesh = edges[0].split(".e[")[0]
+        edge_idx = int(edges[0].split(".e[")[1].rstrip("]"))
+        full_edges = list(edges)
         try:
-            cmds.select(edges, replace=True)
-            cmds.polySelectSp(loop=True)
-            result = cmds.ls(sl=True, flatten=True) or []
-            full_edges = [c for c in result if ".e[" in c]
+            indices = cmds.polySelect(mesh, edgeLoopOrBorder=edge_idx,
+                                      noSelection=True) or []
+            full_edges = [f"{mesh}.e[{i}]" for i in indices]
         except Exception:
+            pass
+
+        # polySelect is authoritative — trust its result if non-empty
+        is_reliable = len(full_edges) > len(edges)
+        if not is_reliable:
             full_edges = list(edges)
-        finally:
-            try:
-                cmds.select(prev_sel, replace=True) if prev_sel else cmds.select(clear=True)
-            except Exception:
-                pass
-
-        if len(full_edges) <= len(edges):
-            return full_edges, False
-
-        # Topological closure check: every vertex must appear in exactly 2 edges
-        adjacency = defaultdict(int)
-        for e in full_edges:
-            raw = cmds.polyListComponentConversion(e, fromEdge=True, toVertex=True)
-            for v in cmds.ls(raw, flatten=True):
-                adjacency[v] += 1
-        is_closed = bool(adjacency) and all(c == 2 for c in adjacency.values())
-        return full_edges, is_closed
+        return full_edges, is_reliable
 
     def _wire_add_shape(self):
         name = self.edit_wire_shape_add.text().strip()
         if not name:
             return
-        item = QtWidgets.QListWidgetItem(name)
+        item = QtWidgets.QTreeWidgetItem([name])
         item.setFlags(item.flags() | QtCore.Qt.ItemIsEditable)
-        self.list_wire_shapes.addItem(item)
+        self.list_wire_shapes.addTopLevelItem(item)
         self.edit_wire_shape_add.clear()
 
     def _wire_remove_shape(self):
         for item in self.list_wire_shapes.selectedItems():
-            self.list_wire_shapes.takeItem(self.list_wire_shapes.row(item))
+            idx = self.list_wire_shapes.indexOfTopLevelItem(item)
+            self.list_wire_shapes.takeTopLevelItem(idx)
 
     def _wire_shape_names(self):
-        return [self.list_wire_shapes.item(i).text().strip()
-                for i in range(self.list_wire_shapes.count())
-                if self.list_wire_shapes.item(i).text().strip()]
+        return [self.list_wire_shapes.topLevelItem(i).text(0).strip()
+                for i in range(self.list_wire_shapes.topLevelItemCount())
+                if self.list_wire_shapes.topLevelItem(i).text(0).strip()]
 
     def _run_paint_wire(self):
         wire_node = "wire_setup_wire"
@@ -9116,6 +9131,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             self._set_status(f"✗ Wire Setup: {e}", error=True)
             return
 
+        self.btn_delete_wire.setEnabled(True)
+
         # ── AutoPaint ────────────────────────────────────────────────────────
         if not self.chk_wire_autopaint.isChecked():
             self._set_status(f"✓ Wire setup created — {len(shape_names)} shape(s)")
@@ -9124,22 +9141,31 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         full_loop, is_reliable = self._complete_wire_loop(edges)
 
         if not is_reliable:
+            _auto_loop = full_loop
             dlg = _WireLoopFallbackDialog(self)
-            if not dlg.exec_():
-                self._set_status(
-                    f"✓ Wire setup created — {len(shape_names)} shape(s)"
-                    f" — AutoPaint skipped")
-                return
-            override = dlg.get_override()
-            if override:
-                full_loop = override
-                is_reliable = True
 
+            def _on_accepted():
+                override = dlg.get_override()
+                fl = override if override else _auto_loop
+                rel = bool(override)
+                self._apply_wire_autopaint(fl, rel, shape_names)
+
+            dlg.accepted.connect(_on_accepted)
+            dlg.rejected.connect(lambda: self._set_status(
+                f"✓ Wire setup created — {len(shape_names)} shape(s)"
+                f" — AutoPaint skipped"))
+            dlg.show()
+            return
+
+        self._apply_wire_autopaint(full_loop, is_reliable, shape_names)
+
+    def _apply_wire_autopaint(self, full_loop, is_reliable, shape_names):
+        """Apply IDW wire weight painting. Called directly or via fallback-dialog signal."""
         try:
             n = autopaint_wire_weights(
                 "wire_setup_wire", "wire_setup_msh", full_loop,
-                float(self.edit_wire_ap_min.text() or "3.0"),
-                float(self.edit_wire_ap_max.text() or "6.0"),
+                float(self.edit_wire_ap_min.text() or "1.0"),
+                float(self.edit_wire_ap_max.text() or "3.0"),
             )
             if is_reliable:
                 self._set_status(
@@ -9338,6 +9364,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             self.combo_ctj_cluster.addItem(c)
         # Auto-detection triggered via currentTextChanged signal
 
+    def _ctj_refresh_delete_btn(self, cluster=""):
+        """Enable/disable the Delete CTJ button based on whether the setup exists."""
+        cluster = cluster or self.combo_ctj_cluster.currentText()
+        exists = bool(cluster) and cmds.objExists(f"{cluster}_Cluster2Joint_grp")
+        self.btn_delete_ctj.setEnabled(exists)
+
     def _ctj_try_restore_setup(self, cluster=""):
         """If a CTJ skinCluster already exists for this cluster, restore state variables."""
         cluster = cluster or self.combo_ctj_cluster.currentText()
@@ -9387,6 +9419,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             self._ctj_deform_jnt   = djnt
             self._ctj_zero_jnt     = zjnt
             self._ctj_n_verts      = nverts
+            self.btn_delete_ctj.setEnabled(True)
             self._set_status(f"✓ Cluster to Joint: {djnt}  |  Paint weights, then Bake")
         except Exception as e:
             import traceback; traceback.print_exc()
@@ -9437,6 +9470,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 cmds.delete(node)
                 deleted.append(node)
         if deleted:
+            self.btn_delete_wire.setEnabled(False)
             self._set_status(f"✓ Wire setup deleted ({', '.join(deleted)})")
         else:
             self._set_status("⚠ Delete Wire Setup: nothing found to delete")
@@ -9596,6 +9630,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 pass
 
         if deleted:
+            self._ctj_refresh_delete_btn(cluster)
             self._set_status(
                 f"✓ CTJ setup deleted for '{cluster}' ({', '.join(deleted)})")
         else:

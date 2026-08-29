@@ -3571,6 +3571,11 @@ def create_wire_setup(mesh_base, edge_line, shape_names,
         if shp_node:
             cmds.setAttr(f"{shp_node[0]}.alwaysDrawOnTop", 1)
 
+    # ── Visibility defaults: hide wire_crv, show first shape curve ───────────
+    cmds.hide(wire_crv)
+    if shape_names:
+        cmds.showHidden(shape_names[0] + "_crv")
+
     print(f"Wire setup created — {len(shape_names)} shape(s) on {dup_name}")
     return wire_grp
 
@@ -3578,62 +3583,92 @@ def create_wire_setup(mesh_base, edge_line, shape_names,
 def autopaint_wire_weights(wire_node, wire_mesh, loop_components, min_dist, max_dist):
     """
     Compute and apply wire deformer vertex weights on *wire_mesh* based on
-    euclidean distance from each mesh vertex to the nearest vertex in
-    *loop_components* (edges ".e[N]" or vertices ".vtx[N]").
+    **geodesic** (on-surface shortest-path) distance from each mesh vertex to
+    the nearest seed vertex in *loop_components* (edges ".e[N]" or vertices
+    ".vtx[N]").
+
+    Uses multi-source Dijkstra on the mesh edge graph so the falloff follows
+    the surface topology rather than cutting through empty space — essential for
+    lip/mouth geometry where Euclidean shortcuts would produce incorrect weights.
 
     Falloff (smooth-step):
       distance <= min_dist  → weight = 1.0
       distance >= max_dist  → weight = 0.0
-      in between            → smooth-step: 1 - 3t²(1-2t) + …
+      in between            → smooth-step: 1 - t²(3 - 2t)
 
     Returns the number of vertices painted.
     """
+    import heapq
     import maya.api.OpenMaya as om2
 
-    # ── Convert loop components to vertex positions ───────────────────────────
-    loop_vtx = []
+    # ── Convert loop components to seed vertex indices ────────────────────────
+    loop_vtx_strs = []
     for comp in loop_components:
         if ".e[" in comp:
             raw = cmds.polyListComponentConversion(comp, fromEdge=True, toVertex=True)
-            loop_vtx.extend(cmds.ls(raw, flatten=True))
+            loop_vtx_strs.extend(cmds.ls(raw, flatten=True))
         else:
-            loop_vtx.append(comp)
-    loop_vtx = list(set(loop_vtx))
-    if not loop_vtx:
+            loop_vtx_strs.append(comp)
+    loop_vtx_strs = list(set(loop_vtx_strs))
+    if not loop_vtx_strs:
         raise RuntimeError("autopaint_wire_weights: no valid loop vertices found")
 
-    loop_pts = []
-    for v in loop_vtx:
-        p = cmds.pointPosition(v, world=True)
-        loop_pts.append((p[0], p[1], p[2]))
+    seed_indices = set()
+    for v in loop_vtx_strs:
+        seed_indices.add(int(v.split(".vtx[")[1].rstrip("]")))
 
-    # ── Get all wire_mesh vertex positions via OpenMaya (bulk) ────────────────
+    # ── Build mesh topology via OpenMaya ──────────────────────────────────────
     sel = om2.MSelectionList()
     sel.add(wire_mesh)
     dag = sel.getDagPath(0)
     fn_mesh = om2.MFnMesh(dag)
-    all_pts = fn_mesh.getPoints(om2.MSpace.kWorld)
-    n_verts = len(all_pts)
+    n_verts = fn_mesh.numVertices
 
-    # ── Compute per-vertex weights ────────────────────────────────────────────
+    # Adjacency list: adj[vi] = [(neighbor_vi, edge_length), ...]
+    adj = [[] for _ in range(n_verts)]
+    edge_iter = om2.MItMeshEdge(dag)
+    while not edge_iter.isDone():
+        v0 = edge_iter.vertexId(0)
+        v1 = edge_iter.vertexId(1)
+        length = edge_iter.length(om2.MSpace.kWorld)
+        adj[v0].append((v1, length))
+        adj[v1].append((v0, length))
+        edge_iter.next()
+
+    # ── Multi-source Dijkstra from all seed vertices ──────────────────────────
+    INF = float("inf")
+    geo_dist = [INF] * n_verts
+
+    heap = []
+    for vi in seed_indices:
+        geo_dist[vi] = 0.0
+        heapq.heappush(heap, (0.0, vi))
+
+    while heap:
+        d, u = heapq.heappop(heap)
+        if d > geo_dist[u]:
+            continue
+        for v, w in adj[u]:
+            nd = d + w
+            if nd < geo_dist[v]:
+                geo_dist[v] = nd
+                heapq.heappush(heap, (nd, v))
+
+    # ── Compute per-vertex weights via smooth-step on geodesic distance ───────
     span = max(max_dist - min_dist, 1e-6)
 
     def _smooth_step(t):
         return t * t * (3.0 - 2.0 * t)
 
     weights = []
-    for pt in all_pts:
-        px, py, pz = pt.x, pt.y, pt.z
-        min_d = min(
-            ((px - lx) ** 2 + (py - ly) ** 2 + (pz - lz) ** 2) ** 0.5
-            for lx, ly, lz in loop_pts
-        )
-        if min_d <= min_dist:
+    for vi in range(n_verts):
+        d = geo_dist[vi]
+        if d <= min_dist:
             w = 1.0
-        elif min_d >= max_dist:
+        elif d >= max_dist:
             w = 0.0
         else:
-            t = (min_d - min_dist) / span
+            t = (d - min_dist) / span
             w = 1.0 - _smooth_step(t)
         weights.append(w)
 
