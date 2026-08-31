@@ -1549,6 +1549,62 @@ class _AddSoftBlendPairDialog(QtWidgets.QDialog):
         return self._cb_a.currentText().strip(), self._cb_b.currentText().strip()
 
 
+def _check_bse_type(data, expected):
+    """Validate the 'bse_type' marker embedded in BSE files.
+
+    Returns (True, "") if:
+      - data has no 'bse_type' key  (old plain JSON — accepted for backwards compat)
+      - data['bse_type'] matches expected
+    Returns (False, error_message) if the marker is present but wrong.
+    """
+    if not isinstance(data, dict):
+        return True, ""  # format errors handled by dedicated validators
+    bse_type = data.get("bse_type")
+    if bse_type is None:
+        return True, ""
+    _labels = {
+        "rig_mapping":    "Rig Mapping (.mapng)",
+        "split_presets":  "Split Presets (.splt)",
+        "wire_cv_presets": "Wire CV Presets (.wirepreset)",
+    }
+    if bse_type != expected:
+        got = _labels.get(bse_type, f'"{bse_type}"')
+        exp = _labels.get(expected, f'"{expected}"')
+        return False, f"Wrong file type: this is a {got} file, expected a {exp} file."
+    return True, ""
+
+
+def _validate_rig_mapping_json(data):
+    """Check that loaded JSON data has the expected rig mapping structure.
+
+    Returns (True, "") if valid, or (False, error_message) if not.
+    Accepts both old format (bare list) and new format (dict with "connections" key).
+    """
+    if isinstance(data, dict):
+        if "connections" not in data:
+            return False, (
+                "JSON dict has no 'connections' key — "
+                "this does not look like a rig mapping file.")
+        connections = data["connections"]
+    elif isinstance(data, list):
+        connections = data
+    else:
+        return False, (
+            f"Unexpected JSON root type '{type(data).__name__}' — "
+            "expected a list or a dict with a 'connections' key.")
+
+    if not isinstance(connections, list):
+        return False, f"'connections' must be a list, got '{type(connections).__name__}'."
+    if not connections:
+        return False, "JSON file contains no connection rows."
+    for i, row in enumerate(connections):
+        if not isinstance(row, dict):
+            return False, f"Row {i} is not a dict."
+        if not row.get("shape", "").strip():
+            return False, f"Row {i} has no 'shape' field or it is empty."
+    return True, ""
+
+
 def _normalize_connection_rows(raw_data):
     """Convert raw JSON connection data to the canonical row-dict format expected
     by build_and_connect_rig.  This is the single source of truth for that
@@ -1826,7 +1882,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         _FS = 6  # uniform spacing between label / field / button
 
         # Mapping json
-        files_row.addWidget(QtWidgets.QLabel("Mapping .json"))
+        files_row.addWidget(QtWidgets.QLabel("Mapping .mapng"))
         files_row.addSpacing(_FS)
         _fm_ss_nopad = _fm_ss.replace("padding: 2px;", "padding: 0px;")
         btn_save_map = QtWidgets.QToolButton()
@@ -1870,7 +1926,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._le_mapping_path.setReadOnly(True)
         self._le_mapping_path.setMinimumWidth(260)
         self._le_mapping_path.setFixedHeight(23)
-        self._le_mapping_path.setPlaceholderText("C:/path/to/rig_mapping.json")
+        self._le_mapping_path.setPlaceholderText("C:/path/to/rig_mapping.mapng")
         files_row.addWidget(self._le_mapping_path)
         files_row.addSpacing(_FS)
         btn_json_autofill = QtWidgets.QToolButton()
@@ -3318,12 +3374,15 @@ class RigConnectorDialog(QtWidgets.QDialog):
         else:
             default = _smart_mapping_default(loaded)
             path, _ = QtWidgets.QFileDialog.getSaveFileName(
-                self, "Save Mapping", default, "JSON files (*.json)")
+                self, "Save Mapping", default, "Rig Mapping (*.mapng)")
             if not path:
                 return
+            if not path.endswith(".mapng"):
+                path += ".mapng"
             self._le_mapping_path.setText(path)
             self._sync_path_to_parent(path)
         data = {
+            "bse_type":          "rig_mapping",
             "connections":       self._collect_rows(),
             "soft_blend_pairs":  self._collect_soft_blend_pairs(),
             "soft_blend_curve":  self._graph.get_keys(),
@@ -3355,12 +3414,15 @@ class RigConnectorDialog(QtWidgets.QDialog):
         else:
             default = _smart_mapping_default()
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Save Mapping As", default, "JSON files (*.json)")
+            self, "Save Mapping As", default, "Rig Mapping (*.mapng)")
         if not path:
             return
+        if not path.endswith(".mapng"):
+            path += ".mapng"
         self._le_mapping_path.setText(path)
         self._sync_path_to_parent(path)
         data = {
+            "bse_type":          "rig_mapping",
             "connections":       self._collect_rows(),
             "soft_blend_pairs":  self._collect_soft_blend_pairs(),
             "soft_blend_curve":  self._graph.get_keys(),
@@ -3390,7 +3452,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
     def _load_mapping(self):
         default = _smart_mapping_default(self._le_mapping_path.text().strip())
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
-            self, "Load Mapping", default, "JSON files (*.json)")
+            self, "Load Mapping", default, "Rig Mapping (*.mapng);;JSON files (*.json)")
         if not path or not os.path.exists(path):
             return
         self._le_mapping_path.setText(path)
@@ -3428,6 +3490,22 @@ class RigConnectorDialog(QtWidgets.QDialog):
             overlay.hide(); overlay.deleteLater()
             QtWidgets.QApplication.restoreOverrideCursor()
             QtWidgets.QMessageBox.warning(self, "Load Error", str(e))
+            return
+
+        ok, err = _check_bse_type(data, "rig_mapping")
+        if not ok:
+            overlay.hide(); overlay.deleteLater()
+            QtWidgets.QApplication.restoreOverrideCursor()
+            QtWidgets.QMessageBox.warning(self, "Wrong File Type", err)
+            return
+
+        ok, err = _validate_rig_mapping_json(data)
+        if not ok:
+            overlay.hide(); overlay.deleteLater()
+            QtWidgets.QApplication.restoreOverrideCursor()
+            QtWidgets.QMessageBox.warning(
+                self, "Invalid Rig Mapping",
+                f"This file does not appear to be a rig mapping JSON.\n\n{err}")
             return
 
         # Support both old format (list) and new format (dict with "connections" key)
@@ -4419,7 +4497,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
 class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     TOOL_NAME = "BlendshapeEditorUI"
-    VERSION   = "v.05.57"
+    VERSION   = "v.05.58"
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -5244,7 +5322,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.line_rig_json = QtWidgets.QLineEdit()
         self.line_rig_json.setReadOnly(True)
         self.line_rig_json.setFixedHeight(23)
-        self.line_rig_json.setPlaceholderText("C:/path/to/rig_mapping.json")
+        self.line_rig_json.setPlaceholderText("C:/path/to/rig_mapping.mapng")
         self.btn_rig_connect = QtWidgets.QToolButton()
         btn_rig_connect = self.btn_rig_connect
         btn_rig_connect.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
@@ -6717,6 +6795,27 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         btn_hammer_wire.clicked.connect(self._run_hammer_wire_weights)
         _wire_shelf_row.addWidget(btn_hammer_wire)
 
+        btn_smooth_wire = QtWidgets.QToolButton()
+        btn_smooth_wire.setFixedSize(36, 36)
+        btn_smooth_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        btn_smooth_wire.setToolTip(
+            "Smooth / Flood Wire Weights\n"
+            "Activates the Paint Attributes tool on wire weights, sets operation\n"
+            "to Smooth, then floods.\n"
+            "If vertices are selected (F9 mask), only those are smoothed.\n"
+            "Otherwise the smooth applies to the entire mesh.")
+        btn_smooth_wire.setStyleSheet("""
+            QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
+            QToolButton:hover { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """)
+        _smw_px = QtGui.QPixmap(f"{_icons_dir}/smooth_weights.png")
+        if not _smw_px.isNull():
+            btn_smooth_wire.setIcon(QtGui.QIcon(_smw_px))
+            btn_smooth_wire.setIconSize(QtCore.QSize(34, 34))
+        btn_smooth_wire.clicked.connect(self._run_smooth_wire_weights)
+        _wire_shelf_row.addWidget(btn_smooth_wire)
+
         self.btn_delete_wire = QtWidgets.QToolButton()
         self.btn_delete_wire.setFixedSize(36, 36)
         self.btn_delete_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
@@ -6737,7 +6836,6 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             self.btn_delete_wire.setIconSize(QtCore.QSize(34, 34))
         self.btn_delete_wire.setEnabled(cmds.objExists("wire_setup_grp"))
         self.btn_delete_wire.clicked.connect(self._run_delete_wire_setup)
-        _wire_shelf_row.addWidget(self.btn_delete_wire)
 
         lay_wire.addLayout(_wire_shelf_row)
 
@@ -6807,14 +6905,16 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "More spans = more CVs = finer control.")
         row_curve_opts.addWidget(self.spin_wire_spans)
         row_curve_opts.addStretch()
-        lay_wire.addLayout(row_curve_opts)
 
         # Shape Curves list
+        self._wire_cv_presets = {}
         self.list_wire_shapes = QtWidgets.QTreeWidget()
-        self.list_wire_shapes.setColumnCount(1)
-        self.list_wire_shapes.setHeaderLabels(["Shape Curves"])
+        self.list_wire_shapes.setColumnCount(2)
+        self.list_wire_shapes.setHeaderLabels(["Shape Curves", "CV Preset"])
         self.list_wire_shapes.headerItem().setTextAlignment(
             0, QtCore.Qt.AlignCenter)
+        self.list_wire_shapes.headerItem().setTextAlignment(
+            1, QtCore.Qt.AlignCenter)
         self.list_wire_shapes.setFixedHeight(116)
         self.list_wire_shapes.setRootIsDecorated(False)
         self.list_wire_shapes.setUniformRowHeights(True)
@@ -6841,28 +6941,114 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             _item = QtWidgets.QTreeWidgetItem([_shp])
             _item.setFlags(_item.flags() | QtCore.Qt.ItemIsEditable)
             self.list_wire_shapes.addTopLevelItem(_item)
-        lay_wire.addWidget(self.list_wire_shapes)
+            self._wire_preset_indicator(_item, _shp)
+        _hdr = self.list_wire_shapes.header()
+        _hdr.setStretchLastSection(False)
+        _hdr.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
+        _hdr.setSectionResizeMode(1, QtWidgets.QHeaderView.Fixed)
+        _hdr.resizeSection(1, _hdr.fontMetrics().horizontalAdvance("CV Preset") + 12)
 
-        row_shapes_ctrl = QtWidgets.QHBoxLayout()
-        self.edit_wire_shape_add = QtWidgets.QLineEdit()
-        self.edit_wire_shape_add.setPlaceholderText("new shape name")
-        self.edit_wire_shape_add.returnPressed.connect(self._wire_add_shape)
+        # ── CV Preset export/import row (above table) ─────────────────────────
+        _wire_icon_btn_ss = """
+            QToolButton {
+                background-color: rgba(255,255,255,18);
+                border: none; border-radius: 3px; padding: 2px;
+            }
+            QToolButton:hover   { background-color: rgba(255,255,255,30); }
+            QToolButton:pressed { background-color: rgba(0,0,0,40); }
+        """
+        _cv_preset_row = QtWidgets.QHBoxLayout()
+        _cv_preset_row.setSpacing(4)
+        _cv_preset_row.setContentsMargins(0, 0, 0, 0)
+
+        btn_preset_export = QtWidgets.QToolButton()
+        btn_preset_export.setFixedSize(32, 32)
+        btn_preset_export.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        btn_preset_export.setStyleSheet(_wire_icon_btn_ss)
+        btn_preset_export.setToolTip("Export all CV presets to a .wirepreset file.")
+        _px_exp = QtGui.QPixmap(f"{_icons_dir}/save.png")
+        if not _px_exp.isNull():
+            btn_preset_export.setIcon(QtGui.QIcon(_px_exp.scaled(
+                30, 30, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
+            btn_preset_export.setIconSize(QtCore.QSize(30, 30))
+        else:
+            btn_preset_export.setText("Exp")
+        btn_preset_export.clicked.connect(self._wire_preset_export)
+
+        btn_preset_import = QtWidgets.QToolButton()
+        btn_preset_import.setFixedSize(32, 32)
+        btn_preset_import.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        btn_preset_import.setStyleSheet(_wire_icon_btn_ss)
+        btn_preset_import.setToolTip("Import CV presets from a .wirepreset file.")
+        _px_imp = QtGui.QPixmap(f"{_icons_dir}/path.png")
+        if not _px_imp.isNull():
+            btn_preset_import.setIcon(QtGui.QIcon(_px_imp.scaled(
+                30, 30, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
+            btn_preset_import.setIconSize(QtCore.QSize(30, 30))
+        else:
+            btn_preset_import.setText("Imp")
+        btn_preset_import.clicked.connect(self._wire_preset_import)
+
+        _cv_preset_row.addWidget(btn_preset_import)
+        _cv_preset_row.addWidget(btn_preset_export)
+        _cv_preset_row.addStretch(1)
+        lay_wire.addLayout(_cv_preset_row)
+
+        # ── Shape list + sidebar ───────────────────────────────────────────────
         _wire_btn_ss = "font-size: 12px; font-weight: bold;"
+        _psb_ss = "font-size: 11px;"
+
+        btn_preset_save = QtWidgets.QPushButton("Save")
+        btn_preset_save.setFixedWidth(44)
+        btn_preset_save.setFocusPolicy(QtCore.Qt.NoFocus)
+        btn_preset_save.setStyleSheet(_psb_ss)
+        btn_preset_save.setToolTip(
+            "Save the CV positions of the selected shape curve(s) as a preset.\n"
+            "If nothing is selected, saves all shapes.")
+        btn_preset_save.clicked.connect(self._wire_preset_save)
+
+        btn_preset_apply = QtWidgets.QPushButton("Apply")
+        btn_preset_apply.setFixedWidth(44)
+        btn_preset_apply.setFocusPolicy(QtCore.Qt.NoFocus)
+        btn_preset_apply.setStyleSheet(_psb_ss)
+        btn_preset_apply.setToolTip(
+            "Apply the saved CV positions to the selected shape curve(s) in the scene.\n"
+            "If nothing is selected, applies all shapes that have a preset.")
+        btn_preset_apply.clicked.connect(self._wire_preset_apply)
+
         btn_wire_add_shape = QtWidgets.QPushButton("+")
-        btn_wire_add_shape.setFixedSize(22, 22)
+        btn_wire_add_shape.setFixedWidth(44)
         btn_wire_add_shape.setFocusPolicy(QtCore.Qt.NoFocus)
         btn_wire_add_shape.setStyleSheet(_wire_btn_ss)
+        btn_wire_add_shape.setToolTip("Add a new shape — edit the name directly in the table.")
         btn_wire_add_shape.clicked.connect(self._wire_add_shape)
+
         btn_wire_rm_shape = QtWidgets.QPushButton("−")
-        btn_wire_rm_shape.setFixedSize(22, 22)
+        btn_wire_rm_shape.setFixedWidth(44)
         btn_wire_rm_shape.setFocusPolicy(QtCore.Qt.NoFocus)
         btn_wire_rm_shape.setStyleSheet(_wire_btn_ss)
-        btn_wire_rm_shape.setToolTip("Remove selected shape from the list")
+        btn_wire_rm_shape.setToolTip("Remove selected shape from the list.")
         btn_wire_rm_shape.clicked.connect(self._wire_remove_shape)
-        row_shapes_ctrl.addWidget(self.edit_wire_shape_add, 1)
-        row_shapes_ctrl.addWidget(btn_wire_add_shape)
-        row_shapes_ctrl.addWidget(btn_wire_rm_shape)
-        lay_wire.addLayout(row_shapes_ctrl)
+
+        _sidebar = QtWidgets.QVBoxLayout()
+        _sidebar.setSpacing(2)
+        _sidebar.setContentsMargins(0, 0, 0, 0)
+        _sidebar.addWidget(btn_preset_save)
+        _sidebar.addWidget(btn_preset_apply)
+        _sidebar.addWidget(btn_wire_add_shape)
+        _sidebar.addWidget(btn_wire_rm_shape)
+        _sidebar.addStretch(1)
+
+        _list_col = QtWidgets.QVBoxLayout()
+        _list_col.setSpacing(2)
+        _list_col.addWidget(self.list_wire_shapes)
+        _list_col.addLayout(row_curve_opts)
+
+        _list_row = QtWidgets.QHBoxLayout()
+        _list_row.setSpacing(4)
+        _list_row.addLayout(_list_col, 1)
+        _list_row.addLayout(_sidebar)
+        lay_wire.addLayout(_list_row)
 
         # Wire deformer options (Dropoff / Rotation)
         row_wparams = QtWidgets.QHBoxLayout()
@@ -6949,8 +7135,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
         """
         row_create_wire = QtWidgets.QHBoxLayout()
-        row_create_wire.setSpacing(4)
+        row_create_wire.setSpacing(0)
         row_create_wire.addWidget(QtWidgets.QLabel("Create Wire Setup"))
+        row_create_wire.addSpacing(4)
         btn_create_wire = QtWidgets.QToolButton()
         btn_create_wire.setFixedSize(36, 36)
         btn_create_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
@@ -6962,8 +7149,16 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         btn_create_wire.setIconSize(QtCore.QSize(34, 34))
         btn_create_wire.clicked.connect(self._run_create_wire_setup)
         row_create_wire.addWidget(btn_create_wire)
+        row_create_wire.addSpacing(8)
+        row_create_wire.addWidget(self.btn_delete_wire)
+        _sep_wire = QtWidgets.QFrame()
+        _sep_wire.setFrameShape(QtWidgets.QFrame.VLine)
+        _sep_wire.setFrameShadow(QtWidgets.QFrame.Sunken)
+        row_create_wire.addWidget(_sep_wire)
         row_create_wire.addStretch(1)
+        row_create_wire.addSpacing(8)
         row_create_wire.addWidget(QtWidgets.QLabel("Bake Wire to Mesh"))
+        row_create_wire.addSpacing(4)
         self._wire_delete_after_bake = False
         btn_bake_wire = QtWidgets.QToolButton()
         btn_bake_wire.setFixedSize(36, 36)
@@ -7096,6 +7291,23 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         btn_hammer_ctj.clicked.connect(self._run_hammer_ctj_weights)
         _ctj_shelf_row.addWidget(btn_hammer_ctj)
 
+        btn_smooth_ctj = QtWidgets.QToolButton()
+        btn_smooth_ctj.setFixedSize(36, 36)
+        btn_smooth_ctj.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
+        btn_smooth_ctj.setToolTip(
+            "Smooth / Flood Cluster Weights\n"
+            "Activates the Paint Attributes tool on cluster weights, sets operation\n"
+            "to Smooth, then floods.\n"
+            "If vertices are selected (F9 mask), only those are smoothed.\n"
+            "Otherwise the smooth applies to the entire mesh.")
+        btn_smooth_ctj.setStyleSheet(_ctj_shelf_ss)
+        _smc_px = QtGui.QPixmap(f"{_icons_dir}/smooth_weights.png")
+        if not _smc_px.isNull():
+            btn_smooth_ctj.setIcon(QtGui.QIcon(_smc_px))
+            btn_smooth_ctj.setIconSize(QtCore.QSize(34, 34))
+        btn_smooth_ctj.clicked.connect(self._run_smooth_ctj_weights)
+        _ctj_shelf_row.addWidget(btn_smooth_ctj)
+
         self.btn_delete_ctj = QtWidgets.QToolButton()
         self.btn_delete_ctj.setFixedSize(36, 36)
         self.btn_delete_ctj.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
@@ -7115,7 +7327,6 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             self.btn_delete_ctj.setIconSize(QtCore.QSize(34, 34))
         self.btn_delete_ctj.setEnabled(False)   # updated by _ctj_refresh_delete_btn
         self.btn_delete_ctj.clicked.connect(self._run_delete_ctj_setup)
-        _ctj_shelf_row.addWidget(self.btn_delete_ctj)
 
         lay_ctj.addLayout(_ctj_shelf_row)
 
@@ -7155,8 +7366,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
         """
         row_ctj_setup = QtWidgets.QHBoxLayout()
-        row_ctj_setup.setSpacing(4)
+        row_ctj_setup.setSpacing(0)
         row_ctj_setup.addWidget(QtWidgets.QLabel("Cluster to Joint Setup"))
+        row_ctj_setup.addSpacing(4)
         btn_ctj_setup = QtWidgets.QToolButton()
         btn_ctj_setup.setFixedSize(36, 36)
         btn_ctj_setup.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
@@ -7171,7 +7383,14 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         btn_ctj_setup.clicked.connect(self._run_ctj_setup)
         row_ctj_setup.addWidget(btn_ctj_setup)
         row_ctj_setup.addStretch(1)
+        row_ctj_setup.addWidget(self.btn_delete_ctj)
+        _sep_ctj = QtWidgets.QFrame()
+        _sep_ctj.setFrameShape(QtWidgets.QFrame.VLine)
+        _sep_ctj.setFrameShadow(QtWidgets.QFrame.Sunken)
+        row_ctj_setup.addWidget(_sep_ctj)
+        row_ctj_setup.addSpacing(8)
         row_ctj_setup.addWidget(QtWidgets.QLabel("Bake to Cluster"))
+        row_ctj_setup.addSpacing(4)
         btn_ctj_bake = QtWidgets.QToolButton()
         btn_ctj_bake.setFixedSize(36, 36)
         btn_ctj_bake.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
@@ -7783,15 +8002,15 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             })
 
         path, _ = QtWidgets.QFileDialog.getSaveFileName(
-            self, "Export Split Presets", "", "JSON files (*.json)")
+            self, "Export Split Presets", "", "Split Presets (*.splt)")
         if not path:
             return
-        if not path.endswith(".json"):
-            path += ".json"
+        if not path.endswith(".splt"):
+            path += ".splt"
 
         try:
             with open(path, "w") as fh:
-                json.dump({"bse_version": 1, "presets": presets_out}, fh, indent=2)
+                json.dump({"bse_type": "split_presets", "bse_version": 1, "presets": presets_out}, fh, indent=2)
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Export Error", str(e))
             return
@@ -7815,7 +8034,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         """Import split presets from a JSON file, recreating groups and locators."""
         if path is None:
             path, _ = QtWidgets.QFileDialog.getOpenFileName(
-                self, "Import Split Presets", "", "JSON files (*.json)")
+                self, "Import Split Presets", "", "Split Presets (*.splt);;JSON files (*.json)")
         if not path or not os.path.exists(path):
             return
 
@@ -7824,6 +8043,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 data = json.load(fh)
         except Exception as e:
             QtWidgets.QMessageBox.warning(self, "Import Error", str(e))
+            return
+
+        ok, err = _check_bse_type(data, "split_presets")
+        if not ok:
+            QtWidgets.QMessageBox.warning(self, "Wrong File Type", err)
             return
 
         if not isinstance(data, dict) or "presets" not in data:
@@ -8982,14 +9206,120 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             full_edges = list(edges)
         return full_edges, is_reliable
 
-    def _wire_add_shape(self):
-        name = self.edit_wire_shape_add.text().strip()
-        if not name:
+    # ── CV Preset helpers ─────────────────────────────────────────────────────
+
+    def _wire_preset_indicator(self, item, shape_name):
+        """Update the CV Preset indicator (col 1) for a tree item."""
+        has = shape_name in self._wire_cv_presets
+        item.setText(1, "●" if has else "○")
+        item.setForeground(1, QtGui.QColor("#5BBD6E" if has else "#666666"))
+        item.setTextAlignment(1, QtCore.Qt.AlignCenter)
+
+    def _wire_preset_save(self):
+        """Save CV positions from the scene for selected shape(s), or all if none selected."""
+        sel = self.list_wire_shapes.selectedItems()
+        targets = sel if sel else [
+            self.list_wire_shapes.topLevelItem(i)
+            for i in range(self.list_wire_shapes.topLevelItemCount())]
+        saved, skipped = 0, []
+        for item in targets:
+            shp = item.text(0).strip()
+            crv = shp + "_crv"
+            if not cmds.objExists(crv):
+                skipped.append(shp)
+                continue
+            num_cvs = cmds.getAttr(f"{crv}.spans") + cmds.getAttr(f"{crv}.degree")
+            self._wire_cv_presets[shp] = [
+                list(cmds.xform(f"{crv}.cv[{i}]", q=True, t=True))
+                for i in range(num_cvs)]
+            self._wire_preset_indicator(item, shp)
+            saved += 1
+        msg = f"✓ CV presets saved for {saved} shape(s)"
+        if skipped:
+            msg += f" — curve(s) not found: {', '.join(skipped)}"
+        self._set_status(msg)
+
+    def _wire_preset_apply_shapes(self, shape_names):
+        """Apply stored CV presets to the given shape curves. Returns number applied."""
+        applied = 0
+        for shp in shape_names:
+            if shp not in self._wire_cv_presets:
+                continue
+            crv = shp + "_crv"
+            if not cmds.objExists(crv):
+                continue
+            for i, pos in enumerate(self._wire_cv_presets[shp]):
+                cmds.xform(f"{crv}.cv[{i}]", t=pos)
+            applied += 1
+        return applied
+
+    def _wire_preset_apply(self):
+        """Apply saved CV positions to selected shape(s), or all if none selected."""
+        sel = self.list_wire_shapes.selectedItems()
+        names = [it.text(0) for it in sel] if sel else self._wire_shape_names()
+        applied = self._wire_preset_apply_shapes(names)
+        if applied:
+            self._set_status(f"✓ CV presets applied to {applied} shape(s)")
+        else:
+            self._set_status("✗ No presets found for the selected shape(s)", error=True)
+
+    def _wire_preset_export(self):
+        """Export all CV presets to a JSON file."""
+        if not self._wire_cv_presets:
+            self._set_status("✗ No CV presets to export", error=True)
             return
+        path, _ = QtWidgets.QFileDialog.getSaveFileName(
+            self, "Export CV Presets", "", "Wire CV Presets (*.wirepreset)")
+        if not path:
+            return
+        if not path.endswith(".wirepreset"):
+            path += ".wirepreset"
+        import json
+        with open(path, "w") as f:
+            json.dump({"bse_type": "wire_cv_presets", "presets": self._wire_cv_presets}, f, indent=2)
+        self._set_status(f"✓ CV presets exported — {len(self._wire_cv_presets)} shape(s)")
+
+    def _wire_preset_import(self):
+        """Import CV presets from a JSON file and refresh indicators."""
+        import json
+        path, _ = QtWidgets.QFileDialog.getOpenFileName(
+            self, "Import CV Presets", "", "Wire CV Presets (*.wirepreset);;JSON files (*.json)")
+        if not path:
+            return
+        try:
+            with open(path, "r") as f:
+                data = json.load(f)
+        except Exception as e:
+            self._set_status(f"✗ CV preset import failed: {e}", error=True)
+            return
+        ok, err = _check_bse_type(data, "wire_cv_presets")
+        if not ok:
+            self._set_status(f"✗ {err}", error=True)
+            return
+        # New format wraps presets under a "presets" key; old format is a bare dict
+        presets = data.get("presets", data) if isinstance(data, dict) and "bse_type" in data else data
+        self._wire_cv_presets.update(presets)
+        for i in range(self.list_wire_shapes.topLevelItemCount()):
+            item = self.list_wire_shapes.topLevelItem(i)
+            self._wire_preset_indicator(item, item.text(0))
+        self._set_status(f"✓ CV presets imported — {len(presets)} shape(s) from file")
+
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _wire_add_shape(self):
+        # Generate a unique placeholder name
+        existing = {self.list_wire_shapes.topLevelItem(i).text(0)
+                    for i in range(self.list_wire_shapes.topLevelItemCount())}
+        base, idx, name = "new_shape", 1, "new_shape"
+        while name in existing:
+            name = f"{base}_{idx}"
+            idx += 1
         item = QtWidgets.QTreeWidgetItem([name])
         item.setFlags(item.flags() | QtCore.Qt.ItemIsEditable)
         self.list_wire_shapes.addTopLevelItem(item)
-        self.edit_wire_shape_add.clear()
+        self._wire_preset_indicator(item, name)
+        self.list_wire_shapes.setCurrentItem(item)
+        self.list_wire_shapes.editItem(item, 0)
 
     def _wire_remove_shape(self):
         for item in self.list_wire_shapes.selectedItems():
@@ -9097,6 +9427,16 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._set_status("✓ Wire weights mirrored (YZ)")
 
     @undo_chunk
+    def _active_model_panel(self):
+        """Return the focused model panel, or the first visible one as fallback."""
+        panel = cmds.getPanel(withFocus=True)
+        if cmds.getPanel(typeOf=panel) == 'modelPanel':
+            return panel
+        for p in cmds.getPanel(type='modelPanel') or []:
+            if cmds.panel(p, q=True, visible=True):
+                return p
+        return None
+
     def _run_create_wire_setup(self):
         mesh = self.edit_wire_base.text().strip()
         if not mesh:
@@ -9131,7 +9471,18 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             self._set_status(f"✗ Wire Setup: {e}", error=True)
             return
 
+        if self._wire_cv_presets:
+            self._wire_preset_apply_shapes(shape_names)
+
         self.btn_delete_wire.setEnabled(True)
+
+        # ── Isolate wire_setup_grp ────────────────────────────────────────────
+        if cmds.objExists("wire_setup_grp"):
+            panel = self._active_model_panel()
+            if panel:
+                cmds.select("wire_setup_grp")
+                cmds.isolateSelect(panel, state=True)
+                cmds.isolateSelect(panel, addSelected=True)
 
         # ── AutoPaint ────────────────────────────────────────────────────────
         if not self.chk_wire_autopaint.isChecked():
@@ -9234,6 +9585,50 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             f"on '{wire_node}'.")
 
     @undo_chunk
+    @undo_chunk
+    def _run_smooth_wire_weights(self):
+        """Laplacian smooth flood of wire weights on all mesh vertices.
+        Builds adjacency via polyInfo (one call) then averages each vertex
+        weight with its 1-ring neighbours — same algorithm as the hammer but
+        applied to the entire mesh without requiring a vertex selection."""
+        wire_node = "wire_setup_wire"
+        mesh = "wire_setup_msh"
+        if not cmds.objExists(wire_node):
+            self._set_status("✗ Smooth Wire: wire_setup_wire not found in scene", error=True)
+            return
+        if not cmds.objExists(mesh):
+            self._set_status("✗ Smooth Wire: wire_setup_msh not found in scene", error=True)
+            return
+
+        num_vtx = cmds.polyEvaluate(mesh, vertex=True)
+
+        # Build full adjacency map in one polyInfo call
+        adj = {i: [] for i in range(num_vtx)}
+        for line in (cmds.polyInfo(mesh, edgeToVertex=True) or []):
+            parts = line.split()
+            try:
+                if parts[0] == 'EDGE':
+                    vi, vj = int(parts[2]), int(parts[3])
+                    adj[vi].append(vj)
+                    adj[vj].append(vi)
+            except (IndexError, ValueError):
+                continue
+
+        # Snapshot all weights before any write (prevents write-order bias)
+        w_snap = {vi: cmds.percent(wire_node, f"{mesh}.vtx[{vi}]", q=True, v=True)[0]
+                  for vi in range(num_vtx)}
+
+        # Relax (opacity=0.5): blend each vertex halfway toward its 1-ring average
+        for vi in range(num_vtx):
+            nbrs = adj.get(vi, [])
+            if nbrs:
+                avg_w = sum(w_snap[nb] for nb in nbrs) / len(nbrs)
+                cmds.percent(wire_node, f"{mesh}.vtx[{vi}]",
+                             v=w_snap[vi] + (avg_w - w_snap[vi]) * 1.0)
+
+        self._set_status(f"✓ Smooth Wire Weights — {num_vtx} vtx on '{wire_node}'")
+
+    @undo_chunk
     def _run_hammer_wire_weights(self):
         """Pure Laplacian smooth of wire weights on selected vertices.
         Each selected vertex converges to the uniform average of its edge-connected
@@ -9269,13 +9664,14 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         w_snap = {vi: cmds.percent(wire_node, f"{mesh}.vtx[{vi}]", q=True, v=True)[0]
                   for vi in needed}
 
-        # Pure Laplacian: replace each selected vertex with average of neighbours only
+        # Relax (opacity=0.5): blend each selected vertex halfway toward its 1-ring average
         for vi in sel_indices:
             nbrs = adj.get(vi, [])
             if not nbrs:
                 continue
+            avg_w = sum(w_snap[nb] for nb in nbrs) / len(nbrs)
             cmds.percent(wire_node, f"{mesh}.vtx[{vi}]",
-                         v=sum(w_snap[nb] for nb in nbrs) / len(nbrs))
+                         v=w_snap[vi] + (avg_w - w_snap[vi]) * 1.0)
         self._set_status(
             f"✓ Hammer Wire Weights — {len(sel_indices)} vtx on '{wire_node}'")
 
@@ -9312,10 +9708,21 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             if self._wire_delete_after_bake:
                 if cmds.objExists("wire_setup_grp"):
                     cmds.delete("wire_setup_grp")
+            else:
+                if cmds.objExists("wire_setup_grp"):
+                    cmds.hide("wire_setup_grp")
             self._set_status(f"✓ Baked {len(baked)} shape(s) ->{bs_node}")
         except Exception as e:
             import traceback; traceback.print_exc()
             self._set_status(f"✗ Bake Wire: {e}", error=True)
+
+        # ── Exit isolate + show base mesh ─────────────────────────────────────
+        panel = self._active_model_panel()
+        if panel and cmds.isolateSelect(panel, q=True, state=True):
+            cmds.isolateSelect(panel, state=False)
+        if cmds.objExists(mesh):
+            cmds.showHidden(mesh)
+            cmds.setAttr(f"{mesh}.visibility", 1)
 
     # ── Joints Setup callbacks ─────────────────────────────────────────────────
 
@@ -9552,6 +9959,49 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             f"Cluster weight {weight:.4f} pasted onto {len(vtx_sel)} vert(s) on '{cluster}'.")
 
     @undo_chunk
+    @undo_chunk
+    def _run_smooth_ctj_weights(self):
+        """Laplacian smooth flood of cluster weights on all mesh vertices.
+        Builds adjacency via polyInfo (one call) then averages each vertex
+        weight with its 1-ring neighbours — same algorithm as the wire smooth."""
+        mesh = self.edit_ctj_mesh.text().strip()
+        cluster = self.combo_ctj_cluster.currentText().strip()
+        if not mesh or not cmds.objExists(mesh):
+            self._set_status("✗ Smooth Cluster: no mesh set", error=True)
+            return
+        if not cluster or not cmds.objExists(cluster):
+            self._set_status("✗ Smooth Cluster: no cluster selected", error=True)
+            return
+
+        num_vtx = cmds.polyEvaluate(mesh, vertex=True)
+
+        # Build full adjacency map in one polyInfo call
+        adj = {i: [] for i in range(num_vtx)}
+        for line in (cmds.polyInfo(mesh, edgeToVertex=True) or []):
+            parts = line.split()
+            try:
+                if parts[0] == 'EDGE':
+                    vi, vj = int(parts[2]), int(parts[3])
+                    adj[vi].append(vj)
+                    adj[vj].append(vi)
+            except (IndexError, ValueError):
+                continue
+
+        # Snapshot all weights before any write (prevents write-order bias)
+        w_snap = {vi: cmds.percent(cluster, f"{mesh}.vtx[{vi}]", q=True, v=True)[0]
+                  for vi in range(num_vtx)}
+
+        # Relax (opacity=0.5): blend each vertex halfway toward its 1-ring average
+        for vi in range(num_vtx):
+            nbrs = adj.get(vi, [])
+            if nbrs:
+                avg_w = sum(w_snap[nb] for nb in nbrs) / len(nbrs)
+                cmds.percent(cluster, f"{mesh}.vtx[{vi}]",
+                             v=w_snap[vi] + (avg_w - w_snap[vi]) * 1.0)
+
+        self._set_status(f"✓ Smooth Cluster Weights — {num_vtx} vtx on '{cluster}'")
+
+    @undo_chunk
     def _run_hammer_ctj_weights(self):
         """Pure Laplacian smooth of cluster weights on selected vertices.
         Each selected vertex converges to the uniform average of its edge-connected
@@ -9589,13 +10039,14 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         w_snap = {vi: cmds.percent(cluster, f"{mesh}.vtx[{vi}]", q=True, v=True)[0]
                   for vi in needed}
 
-        # Pure Laplacian: replace each selected vertex with average of neighbours only
+        # Relax (opacity=0.5): blend each selected vertex halfway toward its 1-ring average
         for vi in sel_indices:
             nbrs = adj.get(vi, [])
             if not nbrs:
                 continue
+            avg_w = sum(w_snap[nb] for nb in nbrs) / len(nbrs)
             cmds.percent(cluster, f"{mesh}.vtx[{vi}]",
-                         v=sum(w_snap[nb] for nb in nbrs) / len(nbrs))
+                         v=w_snap[vi] + (avg_w - w_snap[vi]) * 1.0)
         self._set_status(
             f"✓ Hammer Cluster Weights — {len(sel_indices)} vtx on '{cluster}'")
 
@@ -9769,7 +10220,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         path, _ = QtWidgets.QFileDialog.getOpenFileName(
             self, "Load Rig Mapping",
             _smart_mapping_default(self.line_rig_json.text().strip()),
-            "JSON files (*.json)")
+            "Rig Mapping (*.mapng);;JSON files (*.json)")
         if path:
             self.line_rig_json.setText(path)
 
@@ -9796,6 +10247,16 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 data = json.load(f)
         except Exception as e:
             self._set_status(f"✗ Could not read JSON: {e}", error=True)
+            return
+
+        ok, err = _check_bse_type(data, "rig_mapping")
+        if not ok:
+            self._set_status(f"✗ {err}", error=True)
+            return
+
+        ok, err = _validate_rig_mapping_json(data)
+        if not ok:
+            self._set_status(f"✗ Invalid rig mapping JSON: {err}", error=True)
             return
 
         # Support both old format (list) and new format (dict with "connections" key)
