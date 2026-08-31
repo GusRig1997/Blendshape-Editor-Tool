@@ -2914,7 +2914,31 @@ def edge_loop_split_target(bs_node, logical_index, target_name,
 
     # ── Duplicate + write weighted deltas ──────────────────────────────────
     def _write_weighted_target(new_name, weight_map):
+        # Overwrite existing target: save connections, delete old slot, then recreate
+        saved_out = []
+        saved_in  = []
+        existing  = cmds.listAttr(f"{bs_node}.w", m=True) or []
+        if new_name in existing:
+            old_idx  = get_bs_weight_attribute_logical_index(bs_node, new_name)
+            old_attr = f"{bs_node}.weight[{old_idx}]"
+            saved_out = cmds.listConnections(old_attr, plugs=True, s=False, d=True) or []
+            saved_in  = cmds.listConnections(old_attr, plugs=True, s=True,  d=False) or []
+            for src in saved_in:
+                cmds.disconnectAttr(src, old_attr)
+            for dst in saved_out:
+                cmds.disconnectAttr(old_attr, dst)
+            mel.eval(f"blendShapeDeleteTargetGroup {bs_node} {old_idx};")
+            print(f"  overriding existing target : {new_name}")
+
         idx   = duplicate_target(bs_node, base_mesh, logical_index, new_name)
+
+        # Restore connections onto the new slot
+        new_attr = f"{bs_node}.weight[{idx}]"
+        for dst in saved_out:
+            cmds.connectAttr(new_attr, dst, force=True)
+        for src in saved_in:
+            cmds.connectAttr(src, new_attr, force=True)
+
         saved = _save_shape_editor_selection()
         try:
             regen = cmds.sculptTarget(bs_node, e=True, target=idx, regenerate=True)
@@ -3551,7 +3575,7 @@ def create_wire_setup(mesh_base, edge_line, shape_names,
         cmds.duplicate(wire_crv, n=crv_name)
         cmds.blendShape(wire_bs, e=True, t=(wire_crv, idx, crv_name, 1.0))
         cmds.aliasAttr(shp, f"{wire_bs}.weight[{idx}]")
-        cmds.hide(crv_name)
+        cmds.connectAttr(f"{wire_bs}.{shp}", f"{crv_name}.visibility", f=True)
         if not cmds.listRelatives(crv_name, parent=True) or \
                 cmds.listRelatives(crv_name, parent=True)[0] != wire_grp:
             cmds.parent(crv_name, wire_grp)
@@ -3571,10 +3595,10 @@ def create_wire_setup(mesh_base, edge_line, shape_names,
         if shp_node:
             cmds.setAttr(f"{shp_node[0]}.alwaysDrawOnTop", 1)
 
-    # ── Visibility defaults: hide wire_crv, show first shape curve ───────────
+    # ── Visibility defaults: hide wire_crv, activate first shape weight ───────
     cmds.hide(wire_crv)
     if shape_names:
-        cmds.showHidden(shape_names[0] + "_crv")
+        cmds.setAttr(f"{wire_bs}.{shape_names[0]}", 1.0)
 
     print(f"Wire setup created — {len(shape_names)} shape(s) on {dup_name}")
     return wire_grp

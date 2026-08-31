@@ -1,5 +1,21 @@
 # Changelog — Blendshape Editor
 
+## v.05.58
+
+**Wire & CTJ — Weight tools, UI overhaul, file system, Edge Loop Split fix**
+
+- `@undo_chunk` added to all four weight methods: `_run_smooth_wire_weights`, `_run_hammer_wire_weights`, `_run_smooth_ctj_weights`, `_run_hammer_ctj_weights` — a single Ctrl+Z now undoes the entire operation
+- `_run_smooth_ctj_weights` replaced `artAttrCtx` MEL approach (which deselected vertices and opened the Paint tool) with the same custom Python Laplacian flood used by the wire smooth: `polyInfo(edgeToVertex=True)` adjacency + `cmds.percent()` read/write
+- Smooth and hammer (wire + CTJ) now use a relax formula `old_w + (avg_neighbors − old_w) * 1.0` instead of pure Laplacian snap — structure in place for easy opacity adjustment
+- **Custom file extensions**: rig mapping → `.mapng`, split locs presets → `.splt` (`.wirepreset` already existed); all save/open dialogs updated; old `.json` files accepted as fallback in open dialogs
+- **`bse_type` marker**: each file type embeds `"bse_type"` on save (`"rig_mapping"`, `"split_presets"`, `"wire_cv_presets"`); `_check_bse_type()` module-level helper validates on import and shows a clear error if the wrong file type is loaded; files without the key (old JSON) pass silently
+- Rig mapping field placeholder and label updated to `.mapng`; `wirepreset` export now wraps presets under `{"bse_type": ..., "presets": {...}}`; import handles both old bare-dict and new wrapped format
+- **Wire Setup UI — sidebar**: removed the "new shape name" field; `[Save] [Apply] [+] [−]` buttons moved to a vertical sidebar to the right of the Shape Curves table; `+` adds a row with a generated unique name and opens inline editing immediately; Save/Apply labels shortened (tooltips clarify CV preset purpose)
+- CV preset row above the table now contains only `[Import] [Export]` icon buttons (Save/Apply moved to sidebar)
+- **Wire Setup — isolate on create**: after `create_wire_setup()`, `wire_setup_grp` is isolated in the active model panel via `cmds.isolateSelect`; `_active_model_panel()` helper returns the focused panel or first visible model panel
+- **Wire Setup — bake cleanup**: on bake (success or failure), exits isolate mode if active; if "Delete setup at bake" is OFF, hides `wire_setup_grp`; forces `visibility = 1` on the base mesh via `showHidden` + `setAttr`
+- **Edge Loop Split — overwrite targets**: `_write_weighted_target` now saves outgoing and combo-incoming connections, deletes the old blendShape slot, recreates the target, then restores all connections — identical behaviour to the classic split overwrite
+
 ## v.05.57
 
 **Wire Setup — AutoPaint overhaul**
