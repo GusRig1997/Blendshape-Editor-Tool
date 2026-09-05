@@ -997,12 +997,22 @@ def get_combination_info(bs_node, idx):
       {"driver_names": [str, ...], "method": int}
     where driver_names are the blendShape weight aliases of the input drivers.
     Returns None if the target has no combination drive.
+
+    Uses plugs=True + "outputWeight" check to distinguish combination outputs
+    from combination drivers (cmds.listConnections with type= can return the
+    combo node regardless of connection direction in some Maya versions).
     """
     attr = f"{bs_node}.weight[{idx}]"
-    combo_nodes = cmds.listConnections(attr, source=True, type="combinationShape")
-    if not combo_nodes:
+    in_plugs = cmds.listConnections(attr, source=True, destination=False,
+                                    plugs=True) or []
+    combo_node = next(
+        (p.split(".")[0] for p in in_plugs
+         if "outputWeight" in p
+         and cmds.nodeType(p.split(".")[0]) == "combinationShape"),
+        None
+    )
+    if combo_node is None:
         return None
-    combo_node = combo_nodes[0]
     input_plugs = cmds.listConnections(f"{combo_node}.inputWeight",
                                        source=True, plugs=True) or []
     # Each plug is like "blendShape1.jaw_dn" — extract the alias part
@@ -3162,27 +3172,37 @@ def _capture_target_shapes(bs_node, mesh_target, targets):
     """
     For each target: activates it, duplicates mesh_target (history deleted to bake
     the deformed position), resets weight to zero.
-    Returns [(target_name, temp_mesh_transform, combo_info), ...] where combo_info
-    is the result of get_combination_info() (None if the target has no combination drive).
+
+    zero_all_bs_weights() is assumed to have been called beforehand for non-combo
+    targets.  Combination-output targets (skipped by zero_all_bs_weights) are
+    disconnected here and their connections are accumulated in deferred_reconnects
+    instead of being restored after each target — the caller is responsible for
+    reconnecting them once all captures are done.
+
+    Returns:
+      (extracted, deferred_reconnects)
+      extracted           = [(target_name, temp_mesh, combo_info), ...]
+      deferred_reconnects = [(src_plug, dst_attr), ...] to reconnect after all captures
     """
     extracted = []
+    deferred  = []
     for _bs, _idx, target_name in targets:
         combo_info = get_combination_info(_bs, _idx)
         attr = f"{bs_node}.{target_name}"
-        # Temporarily disconnect any incoming driver so the attribute can be set freely
-        src_connections = cmds.listConnections(attr, source=True, destination=False, plugs=True) or []
+        # Disconnect remaining incoming drivers (combo outputs not zeroed earlier)
+        src_connections = cmds.listConnections(
+            attr, source=True, destination=False, plugs=True) or []
         for src in src_connections:
             cmds.disconnectAttr(src, attr)
+            deferred.append((src, attr))
         cmds.setAttr(attr, 1.0)
         temp_dup = cmds.duplicate(mesh_target, name=f"{target_name}_WRAP_TEMP")[0]
         cmds.delete(temp_dup, constructionHistory=True)
         cmds.setAttr(attr, 0.0)
-        # Restore the driver connection
-        for src in src_connections:
-            cmds.connectAttr(src, attr, force=True)
+        # Do NOT reconnect here — deferred to avoid per-target reconnect overhead
         extracted.append((target_name, temp_dup, combo_info))
         print(f"Captured: {target_name}")
-    return extracted
+    return extracted, deferred
 
 
 def _unique_target_name(bs_target, name):
@@ -3283,16 +3303,85 @@ def extract_targets_via_wrap(bs_node, base_mesh, mesh_target, targets, overwrite
 
     wrap_node, base_transform = _create_wrap_deformer(base_mesh, proxy)
     extracted = []
+    deferred  = []
     try:
-        extracted = _capture_target_shapes(bs_node, proxy, targets)
+        extracted, deferred = _capture_target_shapes(bs_node, proxy, targets)
     finally:
         # Always clean up wrap + proxy regardless of success or failure
         _delete_wrap_deformer(wrap_node, base_transform)
         if cmds.objExists(proxy):
             cmds.delete(proxy)
+        # Restore combo connections that were deferred during capture
+        for src, attr in deferred:
+            if cmds.objExists(src.split(".")[0]):
+                try:
+                    cmds.connectAttr(src, attr, force=True)
+                except Exception:
+                    pass
         restore_all_bs_weights(bs_node, bs_state)
 
     return _integrate_extracted_shapes(mesh_target, extracted, overwrite=overwrite)
+
+
+def extract_targets_via_wrap_batch(bs_node, base_mesh, receiver_meshes, targets,
+                                   overwrite=True, on_receiver_start=None):
+    """
+    Batch version of extract_targets_via_wrap: saves and restores all BS connections
+    ONCE for all receivers instead of once per receiver.
+
+    For N receivers this saves (N-1) full disconnect/reconnect cycles on the source
+    BS node — a significant win when the BS has many driven targets.
+
+    on_receiver_start(receiver_idx, mesh_target_name) — optional progress callback
+        called just before each receiver's wrap is created.
+
+    Returns [(bs_target, log), ...] — one entry per receiver_mesh, in order.
+    log = [(orig_name, actual_name, was_replaced), ...]
+    """
+    bs_state     = zero_all_bs_weights(bs_node)
+    all_deferred = []   # combo connections to restore at the very end
+    results      = []
+
+    try:
+        for r_idx, mesh_target in enumerate(receiver_meshes):
+            if on_receiver_start:
+                on_receiver_start(r_idx, mesh_target)
+
+            proxy = cmds.duplicate(mesh_target,
+                                   name=f"{mesh_target}_wrapProxy")[0]
+            cmds.delete(proxy, constructionHistory=True)
+
+            wrap_node, base_transform = _create_wrap_deformer(base_mesh, proxy)
+            extracted = []
+            deferred  = []
+            try:
+                extracted, deferred = _capture_target_shapes(
+                    bs_node, proxy, targets)
+                # Combo connections disconnected in this receiver are accumulated
+                # globally; subsequent receivers will find them already gone and
+                # produce empty deferred lists — no double-disconnect risk.
+                all_deferred.extend(deferred)
+            finally:
+                _delete_wrap_deformer(wrap_node, base_transform)
+                if cmds.objExists(proxy):
+                    cmds.delete(proxy)
+
+            bs_target, log = _integrate_extracted_shapes(
+                mesh_target, extracted, overwrite=overwrite)
+            results.append((bs_target, log))
+
+    finally:
+        # Restore all deferred combo connections once, after all receivers are done
+        for src, attr in all_deferred:
+            node = src.split(".")[0]
+            if cmds.objExists(node):
+                try:
+                    cmds.connectAttr(src, attr, force=True)
+                except Exception:
+                    pass
+        restore_all_bs_weights(bs_node, bs_state)
+
+    return results
 
 
 def connect_extracted_targets(bs_node, bs_target, target_names):
