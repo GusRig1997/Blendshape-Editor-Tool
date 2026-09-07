@@ -381,6 +381,7 @@ def create_opposite_shape(symmetry_axis="Topology", topo_edge=None):
             # Replace the existing opposite target if it already exists
             existing_shapes = cmds.listAttr(f'{bs_name}.w', m=True) or []
             was_fresh = opposite_shape not in existing_shapes
+            in_conns  = []  # populated below when overwriting an existing opposite
             if not was_fresh:
                 existing_index = get_bs_weight_attribute_logical_index(bs_name, opposite_shape)
                 old_shape   = f"{bs_name}.weight[{existing_index}]"
@@ -462,9 +463,15 @@ def create_opposite_shape(symmetry_axis="Topology", topo_edge=None):
                     cmds.connectAttr(opp_plug, new_weight, force=True)
                     print(f"Driver mirrored : {opp_plug} ->{new_weight}")
 
-            # Mirror combination drive — only for freshly created targets.
-            # Overwrite path already restored the old slot's incoming connections above.
-            if was_fresh and source_combo_info:
+            # Mirror combination drive when:
+            #   • the opposite is freshly created (nothing existed), or
+            #   • the opposite existed but had no combination node of its own.
+            # When the opposite existed WITH a combo, in_conns already transferred it above.
+            opp_had_combo = any(
+                cmds.nodeType(c.split(".")[0]) == "combinationShape"
+                for c in in_conns
+            )
+            if source_combo_info and not opp_had_combo:
                 mirrored_drivers = []
                 for driver_name in source_combo_info["driver_names"]:
                     tokens   = driver_name.split("_")
@@ -4497,7 +4504,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
 class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     TOOL_NAME = "BlendshapeEditorUI"
-    VERSION   = "v.05.58"
+    VERSION   = "v.05.59"
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -6548,10 +6555,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         self.chk_connect_targets = QtWidgets.QCheckBox("Connect")
         self.chk_connect_targets.setChecked(True)
-        self.chk_connect_targets.setToolTip(
-            "After extraction, connects each target weight from the source blendShape\n"
-            "to the matching target on the mesh's blendShape.\n"
-            "source_bs.target_name  -> mesh_bs.target_name")
+        self._connect_mode = "child"   # "child" or "parent"
+        self.chk_connect_targets.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self.chk_connect_targets.customContextMenuRequested.connect(
+            self._show_connect_mode_menu)
+        self._update_connect_tooltip()
         self.chk_wrap_overwrite = QtWidgets.QCheckBox("Overwrite")
         self.chk_wrap_overwrite.setChecked(True)
         self.chk_wrap_overwrite.setToolTip(
@@ -7903,7 +7911,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         act = menu.addAction("Browse from JSON file…")
         act.setToolTip("Import split presets from a JSON file previously exported.\n"
                        "Recreates Splits_locs_grp, preset sub-groups and locators.")
-        act.triggered.connect(self._on_import_splits_from_json)
+        act.triggered.connect(lambda: self._on_import_splits_from_json())
         menu.exec_(btn.mapToGlobal(pos))
 
     def _on_save_preset_context_menu(self, btn, pos):
@@ -8019,14 +8027,23 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             f"✓ {len(presets_out)} preset(s) exported to {os.path.basename(path)}")
 
     def _on_import_splits_default(self):
-        """Import the reference presets bundled with the tool (resources/split_locs_presets.json)."""
-        src_dir  = os.path.dirname(os.path.abspath(__file__))
-        tool_dir = os.path.dirname(src_dir)
-        path     = os.path.join(tool_dir, "resources", "split_locs_presets.json")
+        """Import the reference presets bundled with the tool.
+
+        Looks first in Maya's prefs folder (installed by the drag & drop installer),
+        then falls back to the tool's own resources/ folder for dev use.
+        """
+        prefs_path = os.path.join(
+            cmds.internalVar(userAppDir=True), "prefs", "split_locs_presets.json")
+        src_dir    = os.path.dirname(os.path.abspath(__file__))
+        dev_path   = os.path.join(os.path.dirname(src_dir), "resources", "split_locs_presets.json")
+
+        path = prefs_path if os.path.exists(prefs_path) else dev_path
         if not os.path.exists(path):
             QtWidgets.QMessageBox.warning(
                 self, "Load Default Presets",
-                f"Default presets file not found:\n{path}")
+                f"Default presets file not found.\n\n"
+                f"Expected location:\n  {prefs_path}\n\n"
+                f"Re-run the drag & drop installer to restore it.")
             return
         self._on_import_splits_from_json(path)
 
@@ -8530,6 +8547,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Secondary Meshes ──────────────────────────────────────────────────
         self.chk_connect_targets.setChecked(True)
+        self._connect_mode = "child"
+        self._update_connect_tooltip()
 
         # ── Create Opposite ───────────────────────────────────────────────────
         self._opp_axis = "Object X"
@@ -11184,21 +11203,30 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             seen = {}
             for bs_node, logical_index, _ in targets:
                 seen.setdefault(bs_node, []).append(logical_index)
-            total = 0
+            total   = 0
             n_total = len(targets)
-            done = 0
+            done    = 0
             self._progress_begin(n_total)
             for bs_node, indices in seen.items():
                 base_mesh = get_base_mesh(bs_node)
                 if not base_mesh:
                     done += len(indices)
                     continue
-                for idx in indices:
-                    name = cmds.aliasAttr(f"{bs_node}.w[{idx}]", q=True) or str(idx)
-                    self._progress_step(done, f"Baking {name}…")
-                    total += bake_deformers_to_targets(bs_node, base_mesh, [idx],
-                                                       vtx_indices=vtx_indices)
-                    done += 1
+                # Build name map once — used by the progress callback
+                name_map = {
+                    idx: cmds.aliasAttr(f"{bs_node}.w[{idx}]", q=True) or str(idx)
+                    for idx in indices
+                }
+                _done_ref = [done]  # mutable cell so the closure captures the right base
+
+                def _progress(count, idx, _ref=_done_ref, _nm=name_map):
+                    self._progress_step(_ref[0] + count, f"Baking {_nm.get(idx, str(idx))}…")
+
+                # One disconnect/reconnect cycle for all indices on this bs_node
+                total += bake_deformers_to_targets(bs_node, base_mesh, indices,
+                                                   vtx_indices=vtx_indices,
+                                                   progress_cb=_progress)
+                done += len(indices)
             vtx_suffix = f" on {len(vtx_indices)} vert(s)" if vtx_indices else ""
             self._set_status(f"✓ Bake Deformers: {total} target(s) baked{vtx_suffix}")
         except Exception as e:
@@ -11670,6 +11698,40 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             self._progress_end()
         return combined, n_verts
 
+    def _update_connect_tooltip(self):
+        if self._connect_mode == "child":
+            tip = (
+                "After extraction, connects each target weight from the source blendShape\n"
+                "to the matching target on the mesh's blendShape.\n"
+                "  source_bs.target  ->  mesh_bs.target\n"
+                "Right-click to switch to 'Connect as Parent'."
+            )
+        else:
+            tip = (
+                "After extraction, connects the upstream drivers of each source target\n"
+                "directly to the matching target on the mesh's blendShape.\n"
+                "Both BS nodes are driven in parallel — independently, not chained.\n"
+                "Right-click to switch to 'Connect as Child'."
+            )
+        self.chk_connect_targets.setToolTip(tip)
+
+    def _show_connect_mode_menu(self, pos):
+        menu = QtWidgets.QMenu(self)
+        act_child  = menu.addAction("Connect as Child")
+        act_parent = menu.addAction("Connect as Parent")
+        act_child.setCheckable(True)
+        act_parent.setCheckable(True)
+        act_child.setChecked(self._connect_mode == "child")
+        act_parent.setChecked(self._connect_mode == "parent")
+        chosen = menu.exec_(self.chk_connect_targets.mapToGlobal(pos))
+        if chosen is act_child:
+            self._connect_mode = "child"
+        elif chosen is act_parent:
+            self._connect_mode = "parent"
+        else:
+            return
+        self._update_connect_tooltip()
+
     @undo_chunk
     def _run_wrap_extract(self):
         sel    = cmds.ls(sl=True, type='transform') or []
@@ -11743,70 +11805,101 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 if msg.clickedButton() != btn_ok:
                     return
 
-        # ── Extract onto each receiver ────────────────────────────────────
-        total_kept   = 0
-        total_pruned = 0
-        receiver_reports = []
+        # ── Batch extract — single BS save/restore for all receivers ─────
         n_receivers = len(receiver_meshes)
         cmds.progressWindow(title="Wrap Extract", minValue=0, maxValue=n_receivers,
                             progress=0, isInterruptable=False, status="Please wait…")
-        for r_idx, receiver in enumerate(receiver_meshes):
-            cmds.progressWindow(e=True, progress=r_idx,
-                                status=f"Extracting onto {receiver.split('|')[-1]}…")
-            try:
-                bs_target, log = extract_targets_via_wrap(
-                    bs_node, base_mesh, receiver, targets,
-                    overwrite=self.chk_wrap_overwrite.isChecked())
 
-                # Prune near-zero targets in auto mode
-                pruned = 0
-                if auto_mode:
-                    for _orig, actual_name, _ in log:
+        def _on_receiver(r_idx, mesh_target):
+            cmds.progressWindow(
+                e=True, progress=r_idx,
+                status=f"Extracting onto {mesh_target.split('|')[-1]}…")
+
+        try:
+            batch_results = extract_targets_via_wrap_batch(
+                bs_node, base_mesh, receiver_meshes, targets,
+                overwrite=self.chk_wrap_overwrite.isChecked(),
+                on_receiver_start=_on_receiver)
+        except Exception as e:
+            cmds.progressWindow(endProgress=True)
+            traceback.print_exc()
+            self._set_status(f"✗ Wrap Extract: {e}", error=True)
+            return
+
+        # ── Post-process per receiver: prune, connect, report ─────────
+        total_kept   = 0
+        total_pruned = 0
+        receiver_reports = []
+
+        for receiver, (bs_target, log) in zip(receiver_meshes, batch_results):
+            # Prune near-zero targets in auto mode
+            pruned = 0
+            if auto_mode:
+                for _orig, actual_name, _ in log:
+                    try:
                         idx = get_bs_weight_attribute_logical_index(bs_target, actual_name)
-                        if idx is None:
-                            continue
-                        deltas = get_target_deltas(bs_target, idx)
-                        if not any(
-                            (dx*dx + dy*dy + dz*dz) >= 1e-6
-                            for dx, dy, dz in deltas.values()
-                        ):
-                            mel.eval(f"blendShapeDeleteTargetGroup {bs_target} {idx};")
-                            pruned += 1
+                    except RuntimeError:
+                        continue
+                    deltas = get_target_deltas(bs_target, idx)
+                    if not any(
+                        (dx*dx + dy*dy + dz*dz) >= 1e-6
+                        for dx, dy, dz in deltas.values()
+                    ):
+                        mel.eval(f"blendShapeDeleteTargetGroup {bs_target} {idx};")
+                        pruned += 1
 
-                kept = len(log) - pruned
-                total_kept   += kept
-                total_pruned += pruned
+            kept = len(log) - pruned
+            total_kept   += kept
+            total_pruned += pruned
 
-                if self.chk_connect_targets.isChecked():
-                    # Connect source weight to destination weight — handles renamed targets
+            if self.chk_connect_targets.isChecked():
+                if self._connect_mode == "child":
+                    # Chain: source_bs.target -> target_bs.target
                     for orig_name, actual_name, _ in log:
                         src_attr = f"{bs_node}.{orig_name}"
                         dst_attr = f"{bs_target}.{actual_name}"
                         if cmds.objExists(src_attr) and cmds.objExists(dst_attr):
                             cmds.connectAttr(src_attr, dst_attr, force=True)
+                else:
+                    # Parent: connect the upstream drivers of each source target
+                    # directly to the matching target on bs_target (parallel, independent).
+                    # Combination outputs are excluded — their combo node (recreated by
+                    # _integrate_extracted_shapes) handles the driving on bs_target.
+                    for orig_name, actual_name, _ in log:
+                        try:
+                            src_idx = get_bs_weight_attribute_logical_index(
+                                bs_node, orig_name)
+                        except RuntimeError:
+                            continue
+                        src_weight = f"{bs_node}.weight[{src_idx}]"
+                        drivers = cmds.listConnections(
+                            src_weight,
+                            source=True, destination=False, plugs=True) or []
+                        # Skip combo outputs — their local combo drives them
+                        drivers = [d for d in drivers
+                                   if cmds.nodeType(d.split(".")[0]) != "combinationShape"]
+                        dst_attr = f"{bs_target}.{actual_name}"
+                        for drv in drivers:
+                            if cmds.objExists(drv) and cmds.objExists(dst_attr):
+                                cmds.connectAttr(drv, dst_attr, force=True)
 
-                rec_short = receiver.split(":")[-1].split("|")[-1]
-                n_replaced = sum(1 for *_, r in log if r)
-                n_added    = kept - n_replaced
-                detail = f"{rec_short}: {kept} target(s)"
-                if n_added and n_replaced:
-                    detail += f" ({n_added} added, {n_replaced} replaced)"
-                elif n_replaced:
-                    detail += f" ({n_replaced} replaced)"
-                receiver_reports.append(detail)
-
-            except Exception as e:
-                cmds.progressWindow(endProgress=True)
-                traceback.print_exc()
-                self._set_status(f"✗ Wrap Extract ({receiver}): {e}", error=True)
-                return
+            rec_short = receiver.split(":")[-1].split("|")[-1]
+            n_replaced = sum(1 for *_, r in log if r)
+            n_added    = kept - n_replaced
+            detail = f"{rec_short}: {kept} target(s)"
+            if n_added and n_replaced:
+                detail += f" ({n_added} added, {n_replaced} replaced)"
+            elif n_replaced:
+                detail += f" ({n_replaced} replaced)"
+            receiver_reports.append(detail)
 
         cmds.progressWindow(endProgress=True)
         parts = [f"✓ Wrap Extract: {', '.join(receiver_reports)}"]
         if total_pruned:
             parts.append(f"{total_pruned} pruned (near-zero)")
         if self.chk_connect_targets.isChecked():
-            parts.append("connected")
+            mode_label = "child" if self._connect_mode == "child" else "parent"
+            parts.append(f"connected ({mode_label})")
         self._set_status("  ".join(parts))
 
     @undo_chunk

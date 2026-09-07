@@ -1,5 +1,21 @@
 # Changelog — Blendshape Editor
 
+## v.05.59
+
+**Code refactor + Bake Deformer combination fix + installer preset copy**
+
+- `frozen_bs_weights(bs_node)` context manager added to `blendshape_core.py` — replaces all manual `zero_all_bs_weights` / `restore_all_bs_weights` try/finally blocks (4 occurrences)
+- `regen_mesh(bs_node, logical_index)` context manager — replaces all manual `_get_regen_mesh` + conditional delete patterns (9 occurrences)
+- `shape_editor_selection_preserved()` context manager — replaces all manual save/restore selection patterns (13 occurrences)
+- `_read_pnts_delta(mesh_shape, vi)` and `_write_pnts_delta(mesh_shape, vi, dx, dy, dz)` helpers — replace all raw triple `getAttr`/`setAttr pnts[]` calls (~65 occurrences)
+- `_get_mesh_shape(mesh)`, `_disconnect_incoming(dst_attr)`, `_normalize_sculptTarget(result)` micro-helpers added
+- Net result: -122 lines, no behavior change
+- **Bake Deformer — combination targets**: combination targets are now baked correctly instead of being zeroed out; drivers are set to 1.0 so the combinationShape activates, the full deformed result is sampled, driver deltas are subtracted, and the corrected delta is written to the combo target
+- **Bake Deformer — single pass**: `_run_bake_deformers` now groups all selected targets by blendShape node and calls `bake_deformers_to_targets` once per node (disconnect/reconnect cycle runs once for all targets instead of once per target)
+- **Split preset — default path**: `_on_import_splits_default` now looks first in `maya/prefs/split_locs_presets.json` (installed location), falls back to `resources/` for dev use
+- **Split preset — JSON browser fix**: `_on_import_splits_from_json` was receiving `checked=False` from the `triggered` signal; fixed with a lambda wrapper
+- **Installer**: `_copy_presets()` added to `dragDropInstaller_BSE.py` — copies `.json`, `.wirepreset`, `.splt` files from `resources/` to `maya/prefs/` on drag & drop install
+
 ## v.05.58
 
 **Wire & CTJ — Weight tools, UI overhaul, file system, Edge Loop Split fix**

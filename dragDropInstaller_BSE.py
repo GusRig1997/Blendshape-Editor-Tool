@@ -25,7 +25,8 @@ ICON_NAME   = "split.png"
 
 MAYA_APP_DIR = cmds.internalVar(userAppDir=True)
 SCRIPTS_DIR  = os.path.join(MAYA_APP_DIR, "scripts")
-PREFS_ICONS  = os.path.join(MAYA_APP_DIR, "prefs", "icons")
+PREFS_DIR    = os.path.join(MAYA_APP_DIR, "prefs")
+PREFS_ICONS  = os.path.join(PREFS_DIR, "icons")
 
 
 # ─── Functions ────────────────────────────────────────────────────────────────
@@ -112,6 +113,21 @@ def _copy_icons(installer_dir):
     return count
 
 
+def _copy_presets(installer_dir):
+    """Copies default preset files to the Maya prefs folder."""
+    res_dir = os.path.join(installer_dir, "resources")
+    os.makedirs(PREFS_DIR, exist_ok=True)
+    count = 0
+    for fname in os.listdir(res_dir):
+        if fname.lower().endswith((".json", ".wirepreset", ".splt")):
+            src = os.path.join(res_dir, fname)
+            dst = os.path.join(PREFS_DIR, fname)
+            shutil.copy2(src, dst)
+            _log(f"  Preset copied : {fname}")
+            count += 1
+    return count
+
+
 def _add_to_shelf():
     """Adds a button to the active shelf."""
     mel.eval('refreshEditorTemplates')
@@ -169,12 +185,13 @@ def _add_to_usersetup():
     _log("  userSetup.py updated.")
 
 
-def _show_result(scripts_count, icons_count):
+def _show_result(scripts_count, icons_count, presets_count):
     """Displays a confirmation popup."""
     msg = (
         f"{TOOL_LABEL} installed successfully!\n\n"
         f"  • {scripts_count} script(s) copied\n"
-        f"  • {icons_count} icon(s) copied\n\n"
+        f"  • {icons_count} icon(s) copied\n"
+        f"  • {presets_count} preset file(s) copied\n\n"
         f"A button has been added to your active shelf.\n"
         f"Restart Maya to fully validate the installation."
     )
@@ -253,6 +270,7 @@ def install(installer_dir=None):
     # 2. Copy files
     n_scripts = _copy_scripts(installer_dir)
     n_icons   = _copy_icons(installer_dir)
+    n_presets = _copy_presets(installer_dir)
     _add_to_shelf()
     _add_to_usersetup()
 
@@ -260,8 +278,8 @@ def install(installer_dir=None):
     _purge_modules()
     _fix_sys_path()
 
-    _log(f"Installation complete ({n_scripts} scripts, {n_icons} icons).")
-    _show_result(n_scripts, n_icons)
+    _log(f"Installation complete ({n_scripts} scripts, {n_icons} icons, {n_presets} presets).")
+    _show_result(n_scripts, n_icons, n_presets)
 
     # Deferred so Maya finishes processing the close before opening the new window
     import maya.utils
