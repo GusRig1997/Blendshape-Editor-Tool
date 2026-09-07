@@ -4504,7 +4504,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
 class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     TOOL_NAME = "BlendshapeEditorUI"
-    VERSION   = "v.05.58"
+    VERSION   = "v.05.59"
 
     def __init__(self, parent=None):
         super().__init__(parent=parent)
@@ -7911,7 +7911,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         act = menu.addAction("Browse from JSON file…")
         act.setToolTip("Import split presets from a JSON file previously exported.\n"
                        "Recreates Splits_locs_grp, preset sub-groups and locators.")
-        act.triggered.connect(self._on_import_splits_from_json)
+        act.triggered.connect(lambda: self._on_import_splits_from_json())
         menu.exec_(btn.mapToGlobal(pos))
 
     def _on_save_preset_context_menu(self, btn, pos):
@@ -8027,14 +8027,23 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             f"✓ {len(presets_out)} preset(s) exported to {os.path.basename(path)}")
 
     def _on_import_splits_default(self):
-        """Import the reference presets bundled with the tool (resources/split_locs_presets.json)."""
-        src_dir  = os.path.dirname(os.path.abspath(__file__))
-        tool_dir = os.path.dirname(src_dir)
-        path     = os.path.join(tool_dir, "resources", "split_locs_presets.json")
+        """Import the reference presets bundled with the tool.
+
+        Looks first in Maya's prefs folder (installed by the drag & drop installer),
+        then falls back to the tool's own resources/ folder for dev use.
+        """
+        prefs_path = os.path.join(
+            cmds.internalVar(userAppDir=True), "prefs", "split_locs_presets.json")
+        src_dir    = os.path.dirname(os.path.abspath(__file__))
+        dev_path   = os.path.join(os.path.dirname(src_dir), "resources", "split_locs_presets.json")
+
+        path = prefs_path if os.path.exists(prefs_path) else dev_path
         if not os.path.exists(path):
             QtWidgets.QMessageBox.warning(
                 self, "Load Default Presets",
-                f"Default presets file not found:\n{path}")
+                f"Default presets file not found.\n\n"
+                f"Expected location:\n  {prefs_path}\n\n"
+                f"Re-run the drag & drop installer to restore it.")
             return
         self._on_import_splits_from_json(path)
 
@@ -11194,21 +11203,30 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             seen = {}
             for bs_node, logical_index, _ in targets:
                 seen.setdefault(bs_node, []).append(logical_index)
-            total = 0
+            total   = 0
             n_total = len(targets)
-            done = 0
+            done    = 0
             self._progress_begin(n_total)
             for bs_node, indices in seen.items():
                 base_mesh = get_base_mesh(bs_node)
                 if not base_mesh:
                     done += len(indices)
                     continue
-                for idx in indices:
-                    name = cmds.aliasAttr(f"{bs_node}.w[{idx}]", q=True) or str(idx)
-                    self._progress_step(done, f"Baking {name}…")
-                    total += bake_deformers_to_targets(bs_node, base_mesh, [idx],
-                                                       vtx_indices=vtx_indices)
-                    done += 1
+                # Build name map once — used by the progress callback
+                name_map = {
+                    idx: cmds.aliasAttr(f"{bs_node}.w[{idx}]", q=True) or str(idx)
+                    for idx in indices
+                }
+                _done_ref = [done]  # mutable cell so the closure captures the right base
+
+                def _progress(count, idx, _ref=_done_ref, _nm=name_map):
+                    self._progress_step(_ref[0] + count, f"Baking {_nm.get(idx, str(idx))}…")
+
+                # One disconnect/reconnect cycle for all indices on this bs_node
+                total += bake_deformers_to_targets(bs_node, base_mesh, indices,
+                                                   vtx_indices=vtx_indices,
+                                                   progress_cb=_progress)
+                done += len(indices)
             vtx_suffix = f" on {len(vtx_indices)} vert(s)" if vtx_indices else ""
             self._set_status(f"✓ Bake Deformers: {total} target(s) baked{vtx_suffix}")
         except Exception as e:
