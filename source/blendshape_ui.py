@@ -8,7 +8,33 @@ from blendshape_core import *
 from blendshape_core import (_save_shape_editor_selection, _restore_shape_editor_selection,
                              _collect_magnitudes, _find_blendshape_on_mesh)
 
-import json, os, copy
+import json, os, copy, re
+
+# ── DPI scaling ───────────────────────────────────────────────────────────────
+# Maya does not let Qt scale widgets on high-DPI screens (e.g. 4K laptop at 250%):
+# it applies its own "Interface Scaling" factor. Every hard-coded pixel size must
+# therefore go through _dpi(), and every stylesheet through _ss().
+try:
+    import maya.OpenMayaUI as _omui
+    _DPI_SCALE = float(_omui.MQtUtil.dpiScale(1.0)) or 1.0
+except Exception:
+    _DPI_SCALE = 1.0
+
+_PX_RE = re.compile(r'(\d+(?:\.\d+)?)px')
+
+
+def _dpi(v):
+    """Scale a pixel value by Maya's interface scaling factor (min 1 px if v > 0)."""
+    if _DPI_SCALE == 1.0 or not v:
+        return v
+    return max(1, int(round(v * _DPI_SCALE)))
+
+
+def _ss(css):
+    """Return a stylesheet with every 'Npx' value scaled by _dpi()."""
+    if _DPI_SCALE == 1.0 or not css:
+        return css
+    return _PX_RE.sub(lambda m: f"{_dpi(float(m.group(1)))}px", css)
 
 # Module-level slot called from the MEL wrapper of setSculptTargetIndex
 _sculpt_idx_callback = None
@@ -564,7 +590,7 @@ class _AddToListDialog(QtWidgets.QDialog):
     def __init__(self, unmatched, group_names, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Add to List")
-        self.setMinimumWidth(380)
+        self.setMinimumWidth(_dpi(380))
         lay = QtWidgets.QVBoxLayout(self)
 
         lbl = QtWidgets.QLabel(
@@ -585,8 +611,8 @@ class _AddToListDialog(QtWidgets.QDialog):
         sel_row = QtWidgets.QHBoxLayout()
         btn_all  = QtWidgets.QPushButton("All")
         btn_none = QtWidgets.QPushButton("None")
-        btn_all.setFixedHeight(22)
-        btn_none.setFixedHeight(22)
+        btn_all.setFixedHeight(_dpi(22))
+        btn_none.setFixedHeight(_dpi(22))
         btn_all.clicked.connect(lambda: self._set_all(QtCore.Qt.Checked))
         btn_none.clicked.connect(lambda: self._set_all(QtCore.Qt.Unchecked))
         sel_row.addWidget(btn_all)
@@ -600,7 +626,7 @@ class _AddToListDialog(QtWidgets.QDialog):
         self._combo.addItems(group_names if group_names else ["misc"])
         grp_row.addWidget(self._combo, 1)
         btn_new = QtWidgets.QPushButton("New…")
-        btn_new.setFixedWidth(52)
+        btn_new.setFixedWidth(_dpi(52))
         btn_new.clicked.connect(self._new_group)
         grp_row.addWidget(btn_new)
         lay.addLayout(grp_row)
@@ -645,13 +671,13 @@ class RenameMatchDialog(QtWidgets.QDialog):
         self.bs_node     = bs_node
         self.suggestions = suggestions
         self.setWindowTitle("Match existing to List")
-        self.setMinimumWidth(520)
-        self.resize(520, 400)
+        self.setMinimumWidth(_dpi(520))
+        self.resize(_dpi(520), _dpi(400))
         self._build_ui()
 
     def _build_ui(self):
         lay = QtWidgets.QVBoxLayout(self)
-        lay.setSpacing(6)
+        lay.setSpacing(_dpi(6))
 
         info = QtWidgets.QLabel(
             f"Found <b>{len(self.suggestions)}</b> target(s) with token-equivalent names "
@@ -699,8 +725,8 @@ class RenameMatchDialog(QtWidgets.QDialog):
         btn_uncheck_all = QtWidgets.QPushButton("Uncheck All")
         btn_apply       = QtWidgets.QPushButton("Apply Checked")
         btn_cancel      = QtWidgets.QPushButton("Cancel")
-        btn_apply.setFixedHeight(28)
-        btn_cancel.setFixedHeight(28)
+        btn_apply.setFixedHeight(_dpi(28))
+        btn_cancel.setFixedHeight(_dpi(28))
         btn_row.addWidget(btn_check_all)
         btn_row.addWidget(btn_uncheck_all)
         btn_row.addStretch()
@@ -815,8 +841,8 @@ class CheckShapesDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Check Shapes")
-        self.setMinimumWidth(400)
-        self.resize(400, 640)
+        self.setMinimumWidth(_dpi(400))
+        self.resize(_dpi(400), _dpi(640))
         self._build_ui()
         # Load last used file, or fall back to default JSON, or fall back to DEFAULT_SHAPES
         last = cmds.optionVar(q=_CHECK_SHAPES_OPTIONVAR) \
@@ -828,7 +854,7 @@ class CheckShapesDialog(QtWidgets.QDialog):
 
     def _build_ui(self):
         lay = QtWidgets.QVBoxLayout(self)
-        lay.setSpacing(6)
+        lay.setSpacing(_dpi(6))
 
         # ── Menu bar ──────────────────────────────────────────────────────
         menu_bar  = QtWidgets.QMenuBar(self)
@@ -854,7 +880,7 @@ class CheckShapesDialog(QtWidgets.QDialog):
         lay.addWidget(self.tree)
 
         # Tree buttons
-        _SB = 26  # small square button size
+        _SB = _dpi(26)  # small square button size
 
         btn_add_shp = QtWidgets.QPushButton("+")
         btn_add_shp.setToolTip("Add a shape entry")
@@ -884,13 +910,13 @@ class CheckShapesDialog(QtWidgets.QDialog):
             b.setFocusPolicy(QtCore.Qt.NoFocus)
 
         row1 = QtWidgets.QHBoxLayout()
-        row1.setSpacing(3)
+        row1.setSpacing(_dpi(3))
         row1.addWidget(btn_add_shp, 1)
         row1.addWidget(btn_remove, 1)
         row1.addWidget(btn_add_grp, 1)
 
         row2 = QtWidgets.QHBoxLayout()
-        row2.setSpacing(3)
+        row2.setSpacing(_dpi(3))
         row2.addWidget(btn_opp, 1)
         row2.addWidget(btn_up, 1)
         row2.addWidget(btn_dn, 1)
@@ -906,11 +932,11 @@ class CheckShapesDialog(QtWidgets.QDialog):
 
         # Check + Match buttons
         btn_check = QtWidgets.QPushButton("Check")
-        btn_check.setFixedHeight(28)
+        btn_check.setFixedHeight(_dpi(28))
         lay.addWidget(btn_check)
 
         btn_match = QtWidgets.QPushButton("Match existing to List")
-        btn_match.setFixedHeight(28)
+        btn_match.setFixedHeight(_dpi(28))
         btn_match.setToolTip(
             "Scans the blendShape node for targets whose name tokens match a JSON list entry\n"
             "but are in the wrong order (e.g. L_brow_a_up ->L_brow_up_a, M_ ->C_).\n"
@@ -920,7 +946,7 @@ class CheckShapesDialog(QtWidgets.QDialog):
         # Results
         self.txt_results = QtWidgets.QTextEdit()
         self.txt_results.setReadOnly(True)
-        self.txt_results.setFixedHeight(110)
+        self.txt_results.setFixedHeight(_dpi(110))
         self.txt_results.setPlaceholderText(
             "Select targets in the Shape Editor or a mesh in the scene, then click Check.")
         lay.addWidget(self.txt_results)
@@ -1273,8 +1299,8 @@ class _SoftBlendGraphWidget(QtWidgets.QWidget):
 
     keys_changed = QtCore.Signal()
 
-    _KEY_R  = 5
-    _MARGIN = 20
+    _KEY_R  = _dpi(5)
+    _MARGIN = _dpi(20)
     # Visible viewport range (data space) — keys outside are drawn clipped
     _U_MIN, _U_MAX = -0.5, 1.0
     _V_MIN, _V_MAX = -0.5, 1.0
@@ -1293,8 +1319,8 @@ class _SoftBlendGraphWidget(QtWidgets.QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumSize(200, 150)
-        self.setFixedHeight(155)
+        self.setMinimumSize(_dpi(200), _dpi(150))
+        self.setFixedHeight(_dpi(155))
         self.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
                            QtWidgets.QSizePolicy.Fixed)
         self.setFocusPolicy(QtCore.Qt.ClickFocus)
@@ -1422,14 +1448,14 @@ class _SoftBlendGraphWidget(QtWidgets.QWidget):
                 y = int(self._v2y(val))
                 p.drawLine(m, y, self.width() - m, y)
                 p.setPen(lbl_col)
-                p.drawText(2, y + fm.ascent() // 2, lbl)
+                p.drawText(_dpi(2), y + fm.ascent() // 2, lbl)
             # vertical grid line (U axis)
             if self._U_MIN <= val <= self._U_MAX:
                 p.setPen(grid_pen)
                 x = int(self._u2x(val))
                 p.drawLine(x, m, x, self.height() - m)
                 p.setPen(lbl_col)
-                p.drawText(x - lbl_w // 2, self.height() - 3, lbl)
+                p.drawText(x - lbl_w // 2, self.height() - _dpi(3), lbl)
 
         # Axes at 0
         p.setPen(axis_pen)
@@ -1485,7 +1511,7 @@ class _SoftBlendGraphWidget(QtWidgets.QWidget):
         for i, k in enumerate(self._keys):
             dx = pos.x() - self._u2x(k["u"])
             dy = pos.y() - self._v2y(k["v"])
-            if dx * dx + dy * dy <= (self._KEY_R + 3) ** 2:
+            if dx * dx + dy * dy <= (self._KEY_R + _dpi(3)) ** 2:
                 return i
         return None
 
@@ -1529,12 +1555,12 @@ class _AddSoftBlendPairDialog(QtWidgets.QDialog):
     def __init__(self, shapes, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Add Soft Blend Pair")
-        self.setFixedWidth(380)
+        self.setFixedWidth(_dpi(380))
         lay = QtWidgets.QVBoxLayout(self)
-        lay.setSpacing(8)
+        lay.setSpacing(_dpi(8))
 
         row = QtWidgets.QHBoxLayout()
-        row.setSpacing(6)
+        row.setSpacing(_dpi(6))
         self._cb_a = QtWidgets.QComboBox()
         self._cb_a.setEditable(True)
         self._cb_a.addItems(shapes)
@@ -1660,13 +1686,13 @@ class _WireLoopFallbackDialog(QtWidgets.QDialog):
         super().__init__(parent)
         self.setWindowTitle("AutoPaint — Incomplete Loop Detected")
         self.setWindowModality(QtCore.Qt.NonModal)
-        self.setMinimumWidth(480)
+        self.setMinimumWidth(_dpi(480))
         self._override_components = []
         self._build_ui()
 
     def _build_ui(self):
         lay = QtWidgets.QVBoxLayout(self)
-        lay.setSpacing(10)
+        lay.setSpacing(_dpi(10))
 
         lbl_warn = QtWidgets.QLabel(
             "The automatic edge-loop completion did not return a closed ring.\n"
@@ -1681,7 +1707,7 @@ class _WireLoopFallbackDialog(QtWidgets.QDialog):
 
         row = QtWidgets.QHBoxLayout()
         lbl_fl = QtWidgets.QLabel("Full Loop")
-        lbl_fl.setFixedWidth(65)
+        lbl_fl.setFixedWidth(_dpi(65))
         self.edit_full_loop = QtWidgets.QLineEdit()
         self.edit_full_loop.setReadOnly(True)
         self.edit_full_loop.setPlaceholderText(
@@ -1695,7 +1721,7 @@ class _WireLoopFallbackDialog(QtWidgets.QDialog):
             "should connect both halves into a single continuous ring."
         )
         btn_get = QtWidgets.QPushButton("Get")
-        btn_get.setFixedWidth(40)
+        btn_get.setFixedWidth(_dpi(40))
         btn_get.setToolTip(
             "Capture the current edge or vertex selection as the full loop")
         btn_get.clicked.connect(self._get_full_loop)
@@ -1708,8 +1734,8 @@ class _WireLoopFallbackDialog(QtWidgets.QDialog):
         btn_row.addStretch()
         btn_continue = QtWidgets.QPushButton("Continue")
         btn_cancel   = QtWidgets.QPushButton("Cancel")
-        btn_continue.setFixedWidth(90)
-        btn_cancel.setFixedWidth(90)
+        btn_continue.setFixedWidth(_dpi(90))
+        btn_cancel.setFixedWidth(_dpi(90))
         btn_continue.clicked.connect(self.accept)
         btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(btn_continue)
@@ -1752,7 +1778,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Rig Connector")
-        self.setMinimumSize(900, 600)
+        self.setMinimumSize(_dpi(900), _dpi(600))
         self.setWindowFlags(self.windowFlags() | QtCore.Qt.Window)
         self._shapes = []   # list of shape name strings currently in table
         self._min_h_locked = False
@@ -1820,19 +1846,19 @@ class RigConnectorDialog(QtWidgets.QDialog):
         lbl_w       = self._lbl_filter.sizeHint().width()
         shape_right = fw + hh.sectionViewportPosition(self._COL_SHAPE) + hh.sectionSize(self._COL_SHAPE)
         le_left     = sp + lbl_w + sp   # left_spacer_w=0, so lbl_w + 2*sp
-        self._le_search.setFixedWidth(max(40, shape_right - le_left))
+        self._le_search.setFixedWidth(max(_dpi(40), shape_right - le_left))
         le_search_w = self._le_search.width()
 
         # ── Scale Factor block [lbl_scale + (sp+4px+sp) + le_scale]: center over InMin+InMax
         lbl_scale_w = self._lbl_scale.sizeHint().width()
         le_scale_w  = self._le_scale.width()         # 44 px
-        inner_gap   = sp + 4 + sp                    # gap between lbl_scale and le_scale
+        inner_gap   = sp + _dpi(4) + sp                    # gap between lbl_scale and le_scale
         block_w     = lbl_scale_w + inner_gap + le_scale_w
 
         inmin_left  = fw + hh.sectionViewportPosition(self._COL_MIN)
         inmax_right = fw + hh.sectionViewportPosition(self._COL_MAX) + hh.sectionSize(self._COL_MAX)
         combined_w  = inmax_right - inmin_left
-        block_left_target = inmin_left + (combined_w - block_w) // 2 - 10
+        block_left_target = inmin_left + (combined_w - block_w) // 2 - _dpi(10)
 
         # x(lbl_scale) = left_spacer_w + sp + lbl_w + sp + le_search_w + sp
         #                + scale_left_spacer_w + sp
@@ -1861,8 +1887,8 @@ class RigConnectorDialog(QtWidgets.QDialog):
         _idir = _cmds.internalVar(userAppDir=True) + "prefs/icons"
 
         outer = QtWidgets.QVBoxLayout(self)
-        outer.setContentsMargins(8, 8, 8, 8)
-        outer.setSpacing(6)
+        outer.setContentsMargins(_dpi(8), _dpi(8), _dpi(8), _dpi(8))
+        outer.setSpacing(_dpi(6))
 
         # ── Menu bar ──────────────────────────────────────────────────────────
         menu_bar = QtWidgets.QMenuBar()
@@ -1875,7 +1901,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         # ── Files Mapping ─────────────────────────────────────────────────────
         grp_files = QtWidgets.QGroupBox("Files Mapping")
-        grp_files.setStyleSheet("QGroupBox { font-size: 11px; }")
+        grp_files.setStyleSheet(_ss("QGroupBox { font-size: 11px; }"))
         _fm_ss = (
             "QToolButton { background-color: transparent; border: none;"
             " border-radius: 3px; padding: 2px; }"
@@ -1883,10 +1909,10 @@ class RigConnectorDialog(QtWidgets.QDialog):
             "QToolButton:pressed { background-color: rgba(0,0,0,40); }"
         )
         files_row = QtWidgets.QHBoxLayout(grp_files)
-        files_row.setContentsMargins(8, 4, 8, 4)
+        files_row.setContentsMargins(_dpi(8), _dpi(4), _dpi(8), _dpi(4))
         files_row.setSpacing(0)
 
-        _FS = 6  # uniform spacing between label / field / button
+        _FS = _dpi(6)  # uniform spacing between label / field / button
 
         # Mapping json
         files_row.addWidget(QtWidgets.QLabel("Mapping .mapng"))
@@ -1894,24 +1920,24 @@ class RigConnectorDialog(QtWidgets.QDialog):
         _fm_ss_nopad = _fm_ss.replace("padding: 2px;", "padding: 0px;")
         btn_save_map = QtWidgets.QToolButton()
         btn_save_map.setAutoRaise(True)
-        btn_save_map.setStyleSheet(_fm_ss_nopad)
+        btn_save_map.setStyleSheet(_ss(_fm_ss_nopad))
         _pix_save_map = QtGui.QPixmap(f"{_idir}/save.png")
         if not _pix_save_map.isNull():
             btn_save_map.setIcon(QtGui.QIcon(_pix_save_map))
-            btn_save_map.setIconSize(QtCore.QSize(38, 38))
-        btn_save_map.setFixedSize(36, 36)
+            btn_save_map.setIconSize(QtCore.QSize(_dpi(38), _dpi(38)))
+        btn_save_map.setFixedSize(_dpi(36), _dpi(36))
         btn_save_map.setToolTip(
             "Save — overwrite the current file directly.\n"
             "Opens a browser only if no file is loaded yet.")
         btn_save_map.clicked.connect(self._save_mapping)
         btn_save_plus = QtWidgets.QToolButton()
         btn_save_plus.setAutoRaise(True)
-        btn_save_plus.setStyleSheet(_fm_ss_nopad)
+        btn_save_plus.setStyleSheet(_ss(_fm_ss_nopad))
         _pix_save_plus = QtGui.QPixmap(f"{_idir}/save_plus.png")
         if not _pix_save_plus.isNull():
             btn_save_plus.setIcon(QtGui.QIcon(_pix_save_plus))
-            btn_save_plus.setIconSize(QtCore.QSize(38, 38))
-        btn_save_plus.setFixedSize(36, 36)
+            btn_save_plus.setIconSize(QtCore.QSize(_dpi(38), _dpi(38)))
+        btn_save_plus.setFixedSize(_dpi(36), _dpi(36))
         btn_save_plus.setToolTip(
             "Save As — increment version.\n"
             "Proposes a new filename with an incremented version number\n"
@@ -1919,31 +1945,31 @@ class RigConnectorDialog(QtWidgets.QDialog):
         btn_save_plus.clicked.connect(self._save_mapping_increment)
         btn_load_map = QtWidgets.QToolButton()
         btn_load_map.setAutoRaise(True)
-        btn_load_map.setStyleSheet(_fm_ss)
+        btn_load_map.setStyleSheet(_ss(_fm_ss))
         _pix_load_map = QtGui.QPixmap(f"{_idir}/path.png")
         if not _pix_load_map.isNull():
             btn_load_map.setIcon(QtGui.QIcon(_pix_load_map))
-            btn_load_map.setIconSize(QtCore.QSize(34, 34))
-        btn_load_map.setFixedSize(36, 36)
+            btn_load_map.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
+        btn_load_map.setFixedSize(_dpi(36), _dpi(36))
         btn_load_map.setToolTip("Load a previously saved table mapping from a JSON file")
         btn_load_map.clicked.connect(self._load_mapping)
         files_row.addWidget(btn_load_map)
         files_row.addSpacing(_FS)
         self._le_mapping_path = QtWidgets.QLineEdit()
         self._le_mapping_path.setReadOnly(True)
-        self._le_mapping_path.setMinimumWidth(260)
-        self._le_mapping_path.setFixedHeight(23)
+        self._le_mapping_path.setMinimumWidth(_dpi(260))
+        self._le_mapping_path.setFixedHeight(_dpi(23))
         self._le_mapping_path.setPlaceholderText("C:/path/to/rig_mapping.mapng")
         files_row.addWidget(self._le_mapping_path)
         files_row.addSpacing(_FS)
         btn_json_autofill = QtWidgets.QToolButton()
         btn_json_autofill.setAutoRaise(True)
-        btn_json_autofill.setStyleSheet(_fm_ss)
+        btn_json_autofill.setStyleSheet(_ss(_fm_ss))
         _pix_json_af = QtGui.QPixmap(f"{_idir}/json_autofill.png")
         if not _pix_json_af.isNull():
             btn_json_autofill.setIcon(QtGui.QIcon(_pix_json_af))
-            btn_json_autofill.setIconSize(QtCore.QSize(34, 34))
-        btn_json_autofill.setFixedSize(36, 36)
+            btn_json_autofill.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
+        btn_json_autofill.setFixedSize(_dpi(36), _dpi(36))
         btn_json_autofill.setToolTip(
             "Auto Fill from JSON — reload the table from the currently loaded mapping file.")
         btn_json_autofill.clicked.connect(self._autofill_from_json)
@@ -1956,32 +1982,32 @@ class RigConnectorDialog(QtWidgets.QDialog):
         files_row.addSpacing(_FS)
         btn_get_bs = QtWidgets.QToolButton()
         btn_get_bs.setAutoRaise(True)
-        btn_get_bs.setStyleSheet(_fm_ss)
+        btn_get_bs.setStyleSheet(_ss(_fm_ss))
         _pix_get_bs = QtGui.QPixmap(f"{_idir}/get_bsnode.png")
         if not _pix_get_bs.isNull():
             btn_get_bs.setIcon(QtGui.QIcon(_pix_get_bs))
-            btn_get_bs.setIconSize(QtCore.QSize(34, 34))
-        btn_get_bs.setFixedSize(36, 36)
+            btn_get_bs.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
+        btn_get_bs.setFixedSize(_dpi(36), _dpi(36))
         btn_get_bs.setToolTip("Get the blendShape node from the current mesh selection or selected blendshape node")
         btn_get_bs.clicked.connect(self._get_bs_node)
         files_row.addWidget(btn_get_bs)
         files_row.addSpacing(_FS)
         self._le_bs_node = QtWidgets.QLineEdit()
         self._le_bs_node.setReadOnly(True)
-        self._le_bs_node.setFixedWidth(160)
-        self._le_bs_node.setFixedHeight(23)
+        self._le_bs_node.setFixedWidth(_dpi(160))
+        self._le_bs_node.setFixedHeight(_dpi(23))
         self._le_bs_node.setPlaceholderText("blendShape node")
         files_row.addWidget(self._le_bs_node)
         files_row.addSpacing(_FS)
         btn_fill_bs = QtWidgets.QToolButton()
         btn_fill_bs.setAutoRaise(True)
-        btn_fill_bs.setStyleSheet(_fm_ss)
+        btn_fill_bs.setStyleSheet(_ss(_fm_ss))
         _pix_bs_af = QtGui.QPixmap(f"{_idir}/bs_auto-fill.png")
         if _pix_bs_af.isNull():
             _pix_bs_af = QtGui.QPixmap(f"{_idir}/json_autofill.png")
         btn_fill_bs.setIcon(QtGui.QIcon(_pix_bs_af))
-        btn_fill_bs.setIconSize(QtCore.QSize(34, 34))
-        btn_fill_bs.setFixedSize(36, 36)
+        btn_fill_bs.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
+        btn_fill_bs.setFixedSize(_dpi(36), _dpi(36))
         btn_fill_bs.setToolTip(
             "Auto Fill from BS Node — populate the table with all targets\n"
             "from the current BS node (auto-detects if none is set).")
@@ -1997,7 +2023,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         # ── Search + Scale Ranges ─────────────────────────────────────────────
         self._search_row = QtWidgets.QHBoxLayout()
         search_row = self._search_row
-        search_row.setSpacing(4)
+        search_row.setSpacing(_dpi(4))
         self._filter_left_spacer = QtWidgets.QSpacerItem(
             0, 0, QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         search_row.addItem(self._filter_left_spacer)
@@ -2010,15 +2036,15 @@ class RigConnectorDialog(QtWidgets.QDialog):
         search_row.addWidget(self._le_search)
 
         self._scale_left_spacer = QtWidgets.QSpacerItem(
-            12, 0, QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
+            _dpi(12), 0, QtWidgets.QSizePolicy.Fixed, QtWidgets.QSizePolicy.Fixed)
         search_row.addItem(self._scale_left_spacer)
         self._lbl_scale = QtWidgets.QLabel("Scale Factor")
         search_row.addWidget(self._lbl_scale)
-        search_row.addSpacing(4)
+        search_row.addSpacing(_dpi(4))
         self._le_scale = QtWidgets.QLineEdit("2.00")
         self._le_scale.setAlignment(QtCore.Qt.AlignCenter)
-        self._le_scale.setFixedWidth(44)
-        self._le_scale.setFixedHeight(22)
+        self._le_scale.setFixedWidth(_dpi(44))
+        self._le_scale.setFixedHeight(_dpi(22))
         self._le_scale.setToolTip(
             "Multiplier applied when right-clicking In Min / In Max column headers.\n"
             "Examples:\n"
@@ -2051,7 +2077,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._table.verticalHeader().setVisible(False)
         self._table.setAlternatingRowColors(True)
         self._table.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
-        self._table.verticalHeader().setDefaultSectionSize(24)
+        self._table.verticalHeader().setDefaultSectionSize(_dpi(24))
 
         self._table.horizontalHeaderItem(self._COL_CTRL).setToolTip(
             "Right-click:\n"
@@ -2087,17 +2113,17 @@ class RigConnectorDialog(QtWidgets.QDialog):
         hh.setSectionResizeMode(self._COL_GATE,  QtWidgets.QHeaderView.Fixed)
         hh.setSectionResizeMode(self._COL_STAT,  QtWidgets.QHeaderView.Fixed)
 
-        self._table.setColumnWidth(self._COL_NUM,   28)
-        self._table.setColumnWidth(self._COL_CTRL,  140)
-        self._table.setColumnWidth(self._COL_ATTR,  90)
-        self._table.setColumnWidth(self._COL_MIN, 65)
-        self._table.setColumnWidth(self._COL_MAX, 65)
-        self._table.setColumnWidth(self._COL_GATE,  100)
-        self._table.setColumnWidth(self._COL_STAT,  50)
+        self._table.setColumnWidth(self._COL_NUM,   _dpi(28))
+        self._table.setColumnWidth(self._COL_CTRL,  _dpi(140))
+        self._table.setColumnWidth(self._COL_ATTR,  _dpi(90))
+        self._table.setColumnWidth(self._COL_MIN, _dpi(65))
+        self._table.setColumnWidth(self._COL_MAX, _dpi(65))
+        self._table.setColumnWidth(self._COL_GATE,  _dpi(100))
+        self._table.setColumnWidth(self._COL_STAT,  _dpi(50))
 
         # ── Table + sidebar ────────────────────────────────────────────────────
-        _RC_BW = 28
-        _RC_SP = 2
+        _RC_BW = _dpi(28)
+        _RC_SP = _dpi(2)
         _RC_W  = _RC_BW * 2 + _RC_SP   # 58 px — uniform column width
         _rc_icon_ss = (
             "QToolButton { background-color: transparent; border: none;"
@@ -2108,23 +2134,23 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         def _rc_side_btn(label, tooltip, callback):
             b = QtWidgets.QPushButton(label)
-            b.setFixedSize(40, 40)
+            b.setFixedSize(_dpi(40), _dpi(40))
             b.setFocusPolicy(QtCore.Qt.NoFocus)
-            b.setStyleSheet("font-size: 14px; font-weight: bold;")
+            b.setStyleSheet(_ss("font-size: 14px; font-weight: bold;"))
             b.setToolTip(tooltip)
             b.clicked.connect(callback)
             return b
 
         def _rc_icon_btn(icon_path, tooltip, callback, icon_size=34):
             b = QtWidgets.QToolButton()
-            b.setFixedSize(40, 40)
+            b.setFixedSize(_dpi(40), _dpi(40))
             b.setAutoRaise(True)
-            b.setStyleSheet(_rc_icon_ss)
+            b.setStyleSheet(_ss(_rc_icon_ss))
             b.setToolTip(tooltip)
             px = QtGui.QPixmap(icon_path)
             if not px.isNull():
                 b.setIcon(QtGui.QIcon(px))
-                b.setIconSize(QtCore.QSize(icon_size, icon_size))
+                b.setIconSize(QtCore.QSize(_dpi(icon_size), _dpi(icon_size)))
             b.clicked.connect(callback)
             return b
 
@@ -2145,7 +2171,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
             "swaps L/R (and other symmetric tokens) in the Shape and Controller fields.\n"
             "The new row is inserted directly below the source row.",
             self._create_opposite_row)
-        btn_opp.setStyleSheet("font-size: 11px; font-weight: bold;")
+        btn_opp.setStyleSheet(_ss("font-size: 11px; font-weight: bold;"))
 
         btn_connect_sel = _rc_icon_btn(
             f"{_idir}/link_locs.png",
@@ -2177,12 +2203,12 @@ class RigConnectorDialog(QtWidgets.QDialog):
             "  • Creates offset / normalize / clamp utility nodes per shape\n"
             "  • Applies transform limits and locks unused axes on each controller\n"
             "  • Optionally generates scale shapes (if Auto Scale Shapes is checked)")
-        self._btn_build.setStyleSheet(_build_ss)
+        self._btn_build.setStyleSheet(_ss(_build_ss))
         _pix_connect = QtGui.QPixmap(f"{_idir}/connect_rig.png")
         if not _pix_connect.isNull():
             self._btn_build.setIcon(QtGui.QIcon(_pix_connect))
-            self._btn_build.setIconSize(QtCore.QSize(30, 30))
-        self._btn_build.setFixedSize(40, 40)
+            self._btn_build.setIconSize(QtCore.QSize(_dpi(30), _dpi(30)))
+        self._btn_build.setFixedSize(_dpi(40), _dpi(40))
         self._btn_build.clicked.connect(self._on_build_connect)
 
         _tbl_row = QtWidgets.QHBoxLayout()
@@ -2195,13 +2221,13 @@ class RigConnectorDialog(QtWidgets.QDialog):
         _side_vlay.addStretch(1)
         for _b in (btn_connect_sel, btn_disc_sel, btn_disc_all):
             _side_vlay.addWidget(_b)
-        _side_vlay.addSpacing(8)
+        _side_vlay.addSpacing(_dpi(8))
         _side_vlay.addWidget(self._btn_build)
         _side_vlay.addStretch(1)
         _tbl_row.addLayout(_side_vlay)
 
         # search_row constrained to table width: sidebar (40px) + spacing on the right
-        _sidebar_w = 40 + _RC_SP  # btn fixed size + tbl_row spacing
+        _sidebar_w = _dpi(40) + _RC_SP  # btn fixed size + tbl_row spacing
         _search_outer = QtWidgets.QHBoxLayout()
         _search_outer.setContentsMargins(0, 0, 0, 0)
         _search_outer.setSpacing(0)
@@ -2212,29 +2238,29 @@ class RigConnectorDialog(QtWidgets.QDialog):
         outer.addLayout(_tbl_row, 1)
 
         grp_row_opts = QtWidgets.QGroupBox("Row Options")
-        grp_row_opts.setStyleSheet("QGroupBox { font-size: 11px; }")
+        grp_row_opts.setStyleSheet(_ss("QGroupBox { font-size: 11px; }"))
         side_row = QtWidgets.QHBoxLayout(grp_row_opts)
         side_row.setSpacing(_RC_SP)
-        side_row.setContentsMargins(8, 4, 8, 4)
+        side_row.setContentsMargins(_dpi(8), _dpi(4), _dpi(8), _dpi(4))
         for _b in (btn_add, btn_rm, btn_up, btn_dn, btn_opp):
             side_row.addWidget(_b)
         side_row.addStretch(1)
 
         # ── Auto-stagger ──────────────────────────────────────────────────────
         grp_stagger = QtWidgets.QGroupBox("Auto-stagger")
-        grp_stagger.setStyleSheet("QGroupBox { font-size: 11px; }")
+        grp_stagger.setStyleSheet(_ss("QGroupBox { font-size: 11px; }"))
         _stagger_vbox = QtWidgets.QVBoxLayout(grp_stagger)
-        _stagger_vbox.setContentsMargins(8, 4, 8, 4)
-        _stagger_vbox.setSpacing(2)
+        _stagger_vbox.setContentsMargins(_dpi(8), _dpi(4), _dpi(8), _dpi(4))
+        _stagger_vbox.setSpacing(_dpi(2))
 
         stagger_row = QtWidgets.QHBoxLayout()
         stagger_row.setContentsMargins(0, 0, 0, 0)
-        stagger_row.setSpacing(4)
+        stagger_row.setSpacing(_dpi(4))
         _stagger_vbox.addLayout(stagger_row)
 
         self._le_stagger_ctrl = QtWidgets.QLineEdit()
         self._le_stagger_ctrl.setPlaceholderText("controller")
-        self._le_stagger_ctrl.setFixedWidth(140)
+        self._le_stagger_ctrl.setFixedWidth(_dpi(140))
         stagger_row.addWidget(self._le_stagger_ctrl)
 
         stagger_row.addStretch(1)
@@ -2244,19 +2270,19 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._combo_stagger_axis.addItems(self._ATTR_ITEMS)
         self._combo_stagger_axis.setCurrentIndex(-1)
         self._combo_stagger_axis.lineEdit().setPlaceholderText("attribute")
-        self._combo_stagger_axis.setFixedWidth(75)
+        self._combo_stagger_axis.setFixedWidth(_dpi(75))
         stagger_row.addWidget(self._combo_stagger_axis)
 
         stagger_row.addStretch(1)
 
         self._stagger_sign = 1.0
         self.btn_stagger_sign = QtWidgets.QToolButton()
-        self.btn_stagger_sign.setFixedSize(26, 34)
+        self.btn_stagger_sign.setFixedSize(_dpi(26), _dpi(34))
         self.btn_stagger_sign.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
         self.btn_stagger_sign.setText("+")
         self.btn_stagger_sign.setEnabled(False)
         self.btn_stagger_sign.setAutoRaise(True)
-        self.btn_stagger_sign.setStyleSheet("""
+        self.btn_stagger_sign.setStyleSheet(_ss("""
             QToolButton {
                 background-color: transparent;
                 border: none;
@@ -2266,7 +2292,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
             }
             QToolButton:hover   { background-color: rgba(255,255,255,30); }
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
-        """)
+        """))
         self.btn_stagger_sign.setToolTip(
             "Symmetric only — controls which side is positive.\n"
             "+: left half ->'+', right half ->'\u2212'.\n"
@@ -2279,7 +2305,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         self._combo_stagger_mode = QtWidgets.QComboBox()
         self._combo_stagger_mode.addItems(["Linear", "Symmetric", "Mirror"])
-        self._combo_stagger_mode.setFixedWidth(90)
+        self._combo_stagger_mode.setFixedWidth(_dpi(90))
         self._combo_stagger_mode.setToolTip(
             "Linear   : sequential slots [0→1] for each shape.\n"
             "Symmetric: outer shapes activate last, centre shape first.\n"
@@ -2294,7 +2320,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         stagger_row.addWidget(QtWidgets.QLabel("In Max"))
         self._sb_stagger_inmax = QtWidgets.QLineEdit("0.000")
-        self._sb_stagger_inmax.setFixedWidth(70)
+        self._sb_stagger_inmax.setFixedWidth(_dpi(70))
         self._sb_stagger_inmax.setAlignment(QtCore.Qt.AlignCenter)
         _inmax_v = QtGui.QDoubleValidator(0.0, 9999.0, 3, self._sb_stagger_inmax)
         _inmax_v.setLocale(QtCore.QLocale(QtCore.QLocale.English))
@@ -2305,7 +2331,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         self._combo_stagger_curve = QtWidgets.QComboBox()
         self._combo_stagger_curve.addItems(["Uniform", "Ease In", "Ease Out", "Smooth"])
-        self._combo_stagger_curve.setFixedWidth(82)
+        self._combo_stagger_curve.setFixedWidth(_dpi(82))
         self._combo_stagger_curve.setToolTip(
             "Interpolation curve applied to the slot positions.\n"
             "Uniform  : uniform spacing (default).\n"
@@ -2318,7 +2344,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         stagger_row.addWidget(QtWidgets.QLabel("Blend"))
         self._sb_stagger_falloff = QtWidgets.QLineEdit("0.000")
-        self._sb_stagger_falloff.setFixedWidth(70)
+        self._sb_stagger_falloff.setFixedWidth(_dpi(70))
         self._sb_stagger_falloff.setAlignment(QtCore.Qt.AlignCenter)
         _falloff_v = QtGui.QDoubleValidator(0.0, 9999.0, 3, self._sb_stagger_falloff)
         _falloff_v.setLocale(QtCore.QLocale(QtCore.QLocale.English))
@@ -2348,16 +2374,16 @@ class RigConnectorDialog(QtWidgets.QDialog):
         stagger_row.setAlignment(self._chk_stagger_proxies, QtCore.Qt.AlignVCenter)
         btn_stagger = QtWidgets.QToolButton()
         btn_stagger.setAutoRaise(True)
-        btn_stagger.setStyleSheet("""
+        btn_stagger.setStyleSheet(_ss("""
             QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
             QToolButton:hover   { background-color: rgba(255,255,255,30); }
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
-        """)
+        """))
         _pix_stagger = QtGui.QPixmap(f"{_idir}/stagger.png")
         if not _pix_stagger.isNull():
             btn_stagger.setIcon(QtGui.QIcon(_pix_stagger))
-            btn_stagger.setIconSize(QtCore.QSize(34, 34))
-        btn_stagger.setFixedSize(36, 36)
+            btn_stagger.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
+        btn_stagger.setFixedSize(_dpi(36), _dpi(36))
         btn_stagger.setToolTip(
             "Apply stagger In Min / In Max to the selected rows.\n"
             "As Proxies ON: creates a proxy sub-row per shape driven by the stagger controller.\n"
@@ -2372,7 +2398,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._center_row_widget = QtWidgets.QWidget()
         _cr = QtWidgets.QHBoxLayout(self._center_row_widget)
         _cr.setContentsMargins(0, 0, 0, 0)
-        _cr.setSpacing(6)
+        _cr.setSpacing(_dpi(6))
 
         _cr.addStretch(1)
         _cr.addWidget(QtWidgets.QLabel("Center"))
@@ -2380,7 +2406,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._stagger_center_slider = QtWidgets.QSlider(QtCore.Qt.Horizontal)
         self._stagger_center_slider.setRange(0, 100)
         self._stagger_center_slider.setValue(50)
-        self._stagger_center_slider.setFixedWidth(120)
+        self._stagger_center_slider.setFixedWidth(_dpi(120))
         self._stagger_center_slider.setToolTip(
             "Shift the peak of the stagger distribution.\n"
             "0.5 = middle row (default). 0.8 = peak at 80% of the row range.\n"
@@ -2388,7 +2414,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         _cr.addWidget(self._stagger_center_slider)
 
         self._stagger_center_le = QtWidgets.QLineEdit("0.50")
-        self._stagger_center_le.setFixedWidth(48)
+        self._stagger_center_le.setFixedWidth(_dpi(48))
         self._stagger_center_le.setAlignment(QtCore.Qt.AlignCenter)
         _cv = QtGui.QDoubleValidator(0.0, 1.0, 2, self._stagger_center_le)
         _cv.setLocale(QtCore.QLocale(QtCore.QLocale.English))
@@ -2431,16 +2457,16 @@ class RigConnectorDialog(QtWidgets.QDialog):
             "QPushButton:hover { background-color: rgba(255,255,255,38); }"
         )
         sb_header = QtWidgets.QPushButton()
-        sb_header.setStyleSheet(_HDR_STYLE)
+        sb_header.setStyleSheet(_ss(_HDR_STYLE))
         sb_header.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
                                 QtWidgets.QSizePolicy.Fixed)
-        sb_header.setFixedHeight(22)
+        sb_header.setFixedHeight(_dpi(22))
 
         sb_body = QtWidgets.QWidget()
         sb_body.setVisible(False)           # closed by default
         lay_sb = QtWidgets.QVBoxLayout(sb_body)
-        lay_sb.setContentsMargins(4, 4, 4, 4)
-        lay_sb.setSpacing(3)
+        lay_sb.setContentsMargins(_dpi(4), _dpi(4), _dpi(4), _dpi(4))
+        lay_sb.setSpacing(_dpi(3))
 
         _sb_open = [False]
 
@@ -2466,17 +2492,17 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._tbl_pairs.verticalHeader().setVisible(False)
         self._tbl_pairs.setSelectionBehavior(QtWidgets.QAbstractItemView.SelectRows)
         self._tbl_pairs.setAlternatingRowColors(True)
-        self._tbl_pairs.verticalHeader().setDefaultSectionSize(22)
+        self._tbl_pairs.verticalHeader().setDefaultSectionSize(_dpi(22))
         hh_sb = self._tbl_pairs.horizontalHeader()
         hh_sb.setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
         hh_sb.setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
         hh_sb.setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
-        self._tbl_pairs.setColumnWidth(2, 24)
+        self._tbl_pairs.setColumnWidth(2, _dpi(24))
 
         pair_btn_row = QtWidgets.QHBoxLayout()
-        pair_btn_row.setSpacing(4)
+        pair_btn_row.setSpacing(_dpi(4))
         btn_add_pair = QtWidgets.QPushButton("+ Add Pair")
-        btn_add_pair.setFixedWidth(80)
+        btn_add_pair.setFixedWidth(_dpi(80))
         btn_add_pair.setToolTip(
             "Define a Soft Blend pair: two opposite shapes (e.g. mouth_lft / mouth_rgt)\n"
             "will be driven by an animCurveUU with smooth tangents at neutral\n"
@@ -2486,7 +2512,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         pair_btn_row.addStretch()
 
         _left_col = QtWidgets.QVBoxLayout()
-        _left_col.setSpacing(3)
+        _left_col.setSpacing(_dpi(3))
         _left_col.addWidget(self._tbl_pairs)
         _left_col.addLayout(pair_btn_row)
 
@@ -2496,22 +2522,22 @@ class RigConnectorDialog(QtWidgets.QDialog):
 
         # Graph controls: Reset Curve | U | V | Tangent
         graph_ctrl_row = QtWidgets.QHBoxLayout()
-        graph_ctrl_row.setSpacing(4)
+        graph_ctrl_row.setSpacing(_dpi(4))
 
         btn_reset_curve = QtWidgets.QPushButton("Reset Curve")
-        btn_reset_curve.setFixedWidth(80)
+        btn_reset_curve.setFixedWidth(_dpi(80))
         btn_reset_curve.setToolTip("Reset the soft blend curve to the default 5-key preset.")
         btn_reset_curve.clicked.connect(self._reset_soft_blend_curve)
         graph_ctrl_row.addWidget(btn_reset_curve)
 
         graph_ctrl_row.addStretch()
-        graph_ctrl_row.addSpacing(8)
+        graph_ctrl_row.addSpacing(_dpi(8))
         graph_ctrl_row.addWidget(QtWidgets.QLabel("U:"))
         self._sb_key_u = QtWidgets.QDoubleSpinBox()
         self._sb_key_u.setRange(-1.0, 1.0)
         self._sb_key_u.setDecimals(3)
         self._sb_key_u.setSingleStep(0.01)
-        self._sb_key_u.setFixedWidth(65)
+        self._sb_key_u.setFixedWidth(_dpi(65))
         self._sb_key_u.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self._sb_key_u.valueChanged.connect(self._on_key_u_changed)
         graph_ctrl_row.addWidget(self._sb_key_u)
@@ -2521,7 +2547,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._sb_key_v.setRange(-1.0, 1.0)
         self._sb_key_v.setDecimals(3)
         self._sb_key_v.setSingleStep(0.01)
-        self._sb_key_v.setFixedWidth(65)
+        self._sb_key_v.setFixedWidth(_dpi(65))
         self._sb_key_v.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self._sb_key_v.valueChanged.connect(self._on_key_v_changed)
         graph_ctrl_row.addWidget(self._sb_key_v)
@@ -2529,17 +2555,17 @@ class RigConnectorDialog(QtWidgets.QDialog):
         graph_ctrl_row.addWidget(QtWidgets.QLabel("Tangent:"))
         self._combo_key_tang = QtWidgets.QComboBox()
         self._combo_key_tang.addItems(["smooth", "auto", "linear"])
-        self._combo_key_tang.setFixedWidth(76)
+        self._combo_key_tang.setFixedWidth(_dpi(76))
         self._combo_key_tang.currentTextChanged.connect(self._on_key_tangent_changed)
         graph_ctrl_row.addWidget(self._combo_key_tang)
 
         _right_col = QtWidgets.QVBoxLayout()
-        _right_col.setSpacing(3)
+        _right_col.setSpacing(_dpi(3))
         _right_col.addWidget(self._graph)
         _right_col.addLayout(graph_ctrl_row)
 
         _sb_split = QtWidgets.QHBoxLayout()
-        _sb_split.setSpacing(6)
+        _sb_split.setSpacing(_dpi(6))
         _sb_split.addLayout(_left_col, 7)
         _sb_split.addLayout(_right_col, 3)
         lay_sb.addLayout(_sb_split)
@@ -2547,7 +2573,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._updating_controls = False
         self._refresh_key_controls()
 
-        self.setStyleSheet("QLineEdit { border: none; border-radius: 3px; padding: 0px 4px; }")
+        self.setStyleSheet(_ss("QLineEdit { border: none; border-radius: 3px; padding: 0px 4px; }"))
         # Restore native look on the editable combo's internal QLineEdit
         self._combo_stagger_axis.lineEdit().setStyleSheet("")
 
@@ -3102,7 +3128,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         # Col 9 — Status
         lbl_stat = QtWidgets.QLabel(d["stat_text"])
         lbl_stat.setAlignment(QtCore.Qt.AlignCenter)
-        lbl_stat.setStyleSheet(d["stat_style"])
+        lbl_stat.setStyleSheet(_ss(d["stat_style"]))
         lbl_stat.setToolTip(d["stat_tip"])
         self._table.setCellWidget(pos, self._COL_STAT, lbl_stat)
 
@@ -3274,7 +3300,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._tbl_pairs.setItem(r, 0, QtWidgets.QTableWidgetItem(shape_a))
         self._tbl_pairs.setItem(r, 1, QtWidgets.QTableWidgetItem(shape_b))
         btn_rm = QtWidgets.QPushButton("\u00d7")
-        btn_rm.setFixedWidth(22)
+        btn_rm.setFixedWidth(_dpi(22))
         btn_rm.clicked.connect(lambda checked=False, b=btn_rm: self._remove_pair_row(b))
         self._tbl_pairs.setCellWidget(r, 2, btn_rm)
 
@@ -4217,7 +4243,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
         super().__init__(parent_ui)
         self._parent_ui = parent_ui
         self.setWindowTitle("Naming Convention")
-        self.setMinimumWidth(440)
+        self.setMinimumWidth(_dpi(440))
         self._user_data = _load_user_duos()
         self._build_ui()
         self._init_from_parent()
@@ -4225,15 +4251,15 @@ class NamingConventionDialog(QtWidgets.QDialog):
     # ── Build ──────────────────────────────────────────────────────────────
     def _build_ui(self):
         root = QtWidgets.QVBoxLayout(self)
-        root.setSpacing(10)
-        root.setContentsMargins(10, 10, 10, 10)
+        root.setSpacing(_dpi(10))
+        root.setContentsMargins(_dpi(10), _dpi(10), _dpi(10), _dpi(10))
 
         # ── Tool's Auto-naming ─────────────────────────────────────────────
         grp_auto = QtWidgets.QGroupBox("Tool's Auto-naming")
-        grp_auto.setStyleSheet("QGroupBox { font-size: 11px; }")
+        grp_auto.setStyleSheet(_ss("QGroupBox { font-size: 11px; }"))
         lay_auto = QtWidgets.QVBoxLayout(grp_auto)
-        lay_auto.setContentsMargins(8, 8, 8, 8)
-        lay_auto.setSpacing(6)
+        lay_auto.setContentsMargins(_dpi(8), _dpi(8), _dpi(8), _dpi(8))
+        lay_auto.setSpacing(_dpi(6))
 
         # Preset combo
         row_preset = QtWidgets.QHBoxLayout()
@@ -4250,16 +4276,16 @@ class NamingConventionDialog(QtWidgets.QDialog):
         self._token_list.setDragDropMode(QtWidgets.QAbstractItemView.InternalMove)
         self._token_list.setDefaultDropAction(QtCore.Qt.MoveAction)
         self._token_list.setSelectionMode(QtWidgets.QAbstractItemView.SingleSelection)
-        self._token_list.setFixedHeight(36)
+        self._token_list.setFixedHeight(_dpi(36))
         self._token_list.setWrapping(False)
-        self._token_list.setSpacing(3)
-        self._token_list.setStyleSheet(self._TOKEN_SS)
+        self._token_list.setSpacing(_dpi(3))
+        self._token_list.setStyleSheet(_ss(self._TOKEN_SS))
         lay_auto.addWidget(self._token_list)
 
         # Live preview
         self._lbl_preview = QtWidgets.QLabel("")
         self._lbl_preview.setStyleSheet(
-            "color: #888888; font-size: 11px; font-style: italic; padding: 0 2px;")
+            _ss("color: #888888; font-size: 11px; font-style: italic; padding: 0 2px;"))
         lay_auto.addWidget(self._lbl_preview)
 
         # Prefix field
@@ -4281,9 +4307,9 @@ class NamingConventionDialog(QtWidgets.QDialog):
             ("_edit_side_right",  "Right",  "Token used for the right side  (e.g. R)"),
         ):
             lbl = QtWidgets.QLabel(label)
-            lbl.setStyleSheet("color: #888888; font-size: 10px;")
+            lbl.setStyleSheet(_ss("color: #888888; font-size: 10px;"))
             edit = QtWidgets.QLineEdit()
-            edit.setFixedWidth(40)
+            edit.setFixedWidth(_dpi(40))
             edit.setToolTip(tip)
             row_sides.addWidget(lbl)
             row_sides.addWidget(edit)
@@ -4301,15 +4327,15 @@ class NamingConventionDialog(QtWidgets.QDialog):
 
         # ── Opposite Target — Naming Pairs ─────────────────────────────────
         grp_pairs = QtWidgets.QGroupBox("Opposite Target — Naming Pairs")
-        grp_pairs.setStyleSheet("QGroupBox { font-size: 11px; }")
+        grp_pairs.setStyleSheet(_ss("QGroupBox { font-size: 11px; }"))
         lay_pairs = QtWidgets.QVBoxLayout(grp_pairs)
-        lay_pairs.setContentsMargins(8, 8, 8, 8)
-        lay_pairs.setSpacing(6)
+        lay_pairs.setContentsMargins(_dpi(8), _dpi(8), _dpi(8), _dpi(8))
+        lay_pairs.setSpacing(_dpi(6))
 
         lbl_info = QtWidgets.QLabel(
             "Built-in pairs are shown in grey (read-only). "
             "Custom pairs extend Create Opposite Target recognition.")
-        lbl_info.setStyleSheet("color: #888888; font-size: 10px; font-style: italic;")
+        lbl_info.setStyleSheet(_ss("color: #888888; font-size: 10px; font-style: italic;"))
         lbl_info.setWordWrap(True)
         lay_pairs.addWidget(lbl_info)
 
@@ -4320,15 +4346,15 @@ class NamingConventionDialog(QtWidgets.QDialog):
         for axis in self._AXES:
             tab = QtWidgets.QWidget()
             tab_lay = QtWidgets.QVBoxLayout(tab)
-            tab_lay.setSpacing(6)
-            tab_lay.setContentsMargins(6, 8, 6, 6)
+            tab_lay.setSpacing(_dpi(6))
+            tab_lay.setContentsMargins(_dpi(6), _dpi(8), _dpi(6), _dpi(6))
 
             tbl = QtWidgets.QTableWidget(0, 3)
             tbl.setHorizontalHeaderLabels(["Token A", "Token B", ""])
             tbl.horizontalHeader().setSectionResizeMode(0, QtWidgets.QHeaderView.Stretch)
             tbl.horizontalHeader().setSectionResizeMode(1, QtWidgets.QHeaderView.Stretch)
             tbl.horizontalHeader().setSectionResizeMode(2, QtWidgets.QHeaderView.Fixed)
-            tbl.setColumnWidth(2, 30)
+            tbl.setColumnWidth(2, _dpi(30))
             tbl.verticalHeader().setVisible(False)
             tbl.setEditTriggers(QtWidgets.QAbstractItemView.NoEditTriggers)
             tbl.setSelectionMode(QtWidgets.QAbstractItemView.NoSelection)
@@ -4348,7 +4374,7 @@ class NamingConventionDialog(QtWidgets.QDialog):
             edit_b = QtWidgets.QLineEdit()
             edit_b.setPlaceholderText("Token B  (e.g. brow_dn)")
             btn_add = QtWidgets.QPushButton("Add")
-            btn_add.setFixedWidth(50)
+            btn_add.setFixedWidth(_dpi(50))
             btn_add.setToolTip("Add this pair")
             self._add_fields[axis] = (edit_a, edit_b)
             btn_add.clicked.connect(lambda _=False, ax=axis: self._on_add(ax))
@@ -4368,11 +4394,11 @@ class NamingConventionDialog(QtWidgets.QDialog):
         btn_row = QtWidgets.QHBoxLayout()
         btn_row.addStretch()
         btn_save = QtWidgets.QPushButton("Save")
-        btn_save.setFixedWidth(70)
+        btn_save.setFixedWidth(_dpi(70))
         btn_save.setToolTip("Apply and save")
         btn_save.clicked.connect(self._on_save)
         btn_cancel = QtWidgets.QPushButton("Cancel")
-        btn_cancel.setFixedWidth(70)
+        btn_cancel.setFixedWidth(_dpi(70))
         btn_cancel.clicked.connect(self.reject)
         btn_row.addWidget(btn_save)
         btn_row.addWidget(btn_cancel)
@@ -4441,16 +4467,16 @@ class NamingConventionDialog(QtWidgets.QDialog):
             tbl.setItem(row, 0, item_a)
             tbl.setItem(row, 1, item_b)
             btn_del = QtWidgets.QPushButton("✕")
-            btn_del.setFixedSize(22, 20)
+            btn_del.setFixedSize(_dpi(22), _dpi(20))
             btn_del.setStyleSheet(
-                "QPushButton { color: #cc5555; font-size: 10px; border: none; }"
-                "QPushButton:hover { color: #ff4444; }"
+                _ss("QPushButton { color: #cc5555; font-size: 10px; border: none; }"
+                "QPushButton:hover { color: #ff4444; }")
             )
             btn_del.setToolTip("Remove this pair")
             btn_del.clicked.connect(lambda _=False, t=tbl, b=btn_del: self._on_delete(t, b))
             cell_w = QtWidgets.QWidget()
             cell_lay = QtWidgets.QHBoxLayout(cell_w)
-            cell_lay.setContentsMargins(3, 0, 3, 0)
+            cell_lay.setContentsMargins(_dpi(3), 0, _dpi(3), 0)
             cell_lay.addWidget(btn_del)
             tbl.setCellWidget(row, 2, cell_w)
 
@@ -4512,8 +4538,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.setWindowTitle("Blendshape Editor")
         # Shelf width: 9 btns×36 + 2 seps×6 + 10 gaps×2 + margins 4+4
         # + scrollbar width (~12 px) so scroll content aligns with shelf buttons
-        _SHELF_W = 9 * 36 + 2 * 6 + 10 * 2 + 8 + 12  # 376 px
-        _DEFAULT_H = 900
+        _SHELF_W = _dpi(9 * 36 + 2 * 6 + 10 * 2 + 8 + 12)  # 376 px
+        _DEFAULT_H = _dpi(900)
         self.setMinimumWidth(_SHELF_W)
         self._corrective_delete_mesh = False
         # Create Opposite axis state (set via right-click context menu on the shelf button)
@@ -4664,7 +4690,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         if not pix.isNull():
             self._icon_target_lbl.setPixmap(pix)
         self._lbl_active_target.setStyleSheet(
-            "color: #555555;" if hidden else "color: #aaaaaa;")
+            _ss("color: #555555;" if hidden else "color: #aaaaaa;"))
         self._slider_target_weight.setEnabled(not hidden and state is not None)
         self._btn_edit_target.setEnabled(not hidden and state is not None)
 
@@ -4686,8 +4712,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         Maya-style icon+button: icon in a QLabel on the left, QPushButton text-only on the right.
         Both share the same height and border so they look like one unified control.
         """
-        ICON_SIZE  = 32
-        BTN_HEIGHT = 34
+        ICON_SIZE  = _dpi(32)
+        BTN_HEIGHT = _dpi(34)
 
         container = QtWidgets.QWidget()
         container.setFixedHeight(BTN_HEIGHT)
@@ -4703,7 +4729,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 QtCore.Qt.KeepAspectRatio,
                 QtCore.Qt.SmoothTransformation
             ))
-        lbl.setFixedSize(ICON_SIZE + 8, BTN_HEIGHT)
+        lbl.setFixedSize(ICON_SIZE + _dpi(8), BTN_HEIGHT)
         lbl.setAlignment(QtCore.Qt.AlignCenter)
         lbl.setStyleSheet("""
             QLabel {
@@ -4730,31 +4756,31 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         fm = labels[0].fontMetrics()
         max_w = max(fm.horizontalAdvance(lbl.text()) for lbl in labels)
         for lbl in labels:
-            lbl.setFixedWidth(max_w + 6)
+            lbl.setFixedWidth(max_w + _dpi(6))
 
     def _label_icon_btn(self, icon_path, label, tooltip=""):
         """
         Inverted icon+button: QLabel text on the left (expanding), QToolButton icon on the right (shelf-style).
         Same return signature as _icon_btn: (container, btn).
         """
-        BTN_HEIGHT = 34
-        ICON_SIZE  = 32
+        BTN_HEIGHT = _dpi(34)
+        ICON_SIZE  = _dpi(32)
 
         container = QtWidgets.QWidget()
         container.setFixedHeight(BTN_HEIGHT)
         layout = QtWidgets.QHBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(_dpi(4))
 
         lbl = QtWidgets.QLabel(label)
         lbl.setAlignment(QtCore.Qt.AlignLeft | QtCore.Qt.AlignVCenter)
         layout.addWidget(lbl)
 
         btn = QtWidgets.QToolButton()
-        btn.setFixedSize(BTN_HEIGHT + 2, BTN_HEIGHT)
+        btn.setFixedSize(BTN_HEIGHT + _dpi(2), BTN_HEIGHT)
         btn.setIconSize(QtCore.QSize(ICON_SIZE, ICON_SIZE))
         btn.setAutoRaise(True)
-        btn.setStyleSheet("""
+        btn.setStyleSheet(_ss("""
             QToolButton {
                 background-color: transparent;
                 border: none;
@@ -4763,7 +4789,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             }
             QToolButton:hover   { background-color: rgba(255,255,255,30); }
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
-        """)
+        """))
         pix = QtGui.QPixmap(icon_path)
         if not pix.isNull():
             btn.setIcon(QtGui.QIcon(pix))
@@ -4817,8 +4843,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         header = QtWidgets.QToolButton()
         header.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
         header.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        header.setFixedHeight(22)
-        header.setStyleSheet(HEADER_STYLE)
+        header.setFixedHeight(_dpi(22))
+        header.setStyleSheet(_ss(HEADER_STYLE))
 
         # ── Compact shelf ─────────────────────────────────────────────────
         shelf_widget = QtWidgets.QWidget()
@@ -4826,18 +4852,18 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         if compact_rows >= 2:
             # Grid mode: buttons placed in zigzag order (row = idx%compact_rows, col = idx//compact_rows)
             shelf_grid = QtWidgets.QGridLayout(shelf_widget)
-            shelf_grid.setContentsMargins(4, 2, 4, 2)
-            shelf_grid.setSpacing(4)
+            shelf_grid.setContentsMargins(_dpi(4), _dpi(2), _dpi(4), _dpi(2))
+            shelf_grid.setSpacing(_dpi(4))
             shelf_btn_idx = [0]
         else:
             # Single/multi-row mode with manual row breaks
             shelf_vlay = QtWidgets.QVBoxLayout(shelf_widget)
-            shelf_vlay.setContentsMargins(4, 2, 4, 2)
-            shelf_vlay.setSpacing(2)
+            shelf_vlay.setContentsMargins(_dpi(4), _dpi(2), _dpi(4), _dpi(2))
+            shelf_vlay.setSpacing(_dpi(2))
 
             def _new_shelf_row():
                 row = QtWidgets.QHBoxLayout()
-                row.setSpacing(4)
+                row.setSpacing(_dpi(4))
                 row.addStretch()
                 shelf_vlay.addLayout(row)
                 return row
@@ -4847,8 +4873,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # ── Full body ─────────────────────────────────────────────────────
         body     = QtWidgets.QWidget()
         body_lay = QtWidgets.QVBoxLayout(body)
-        body_lay.setContentsMargins(0, 4, 0, 4)
-        body_lay.setSpacing(4)
+        body_lay.setContentsMargins(0, _dpi(4), 0, _dpi(4))
+        body_lay.setSpacing(_dpi(4))
 
         # State: 2=full, 1=compact, 0=closed
         state      = [initial_state if initial_state is not None else (2 if expanded else 0)]
@@ -4897,17 +4923,17 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # ── Helpers to register compact actions after UI build ────────────
         def _make_compact_btn(icon_path, tooltip, callback):
             btn = QtWidgets.QToolButton()
-            btn.setFixedSize(40, 40)
+            btn.setFixedSize(_dpi(40), _dpi(40))
             btn.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
             btn.setToolTip(tooltip)
-            btn.setStyleSheet(SHELF_BTN_STYLE)
+            btn.setStyleSheet(_ss(SHELF_BTN_STYLE))
             px = QtGui.QPixmap(icon_path)
             if not px.isNull():
-                scaled = px.scaled(32, 32,
+                scaled = px.scaled(_dpi(32), _dpi(32),
                                    QtCore.Qt.KeepAspectRatio,
                                    QtCore.Qt.SmoothTransformation)
                 btn.setIcon(QtGui.QIcon(scaled))
-                btn.setIconSize(QtCore.QSize(32, 32))
+                btn.setIconSize(QtCore.QSize(_dpi(32), _dpi(32)))
             btn.clicked.connect(callback)
             return btn
 
@@ -4919,11 +4945,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
             def add_compact_text_btn(label, tooltip, callback):
                 btn = QtWidgets.QToolButton()
-                btn.setFixedHeight(40)
+                btn.setFixedHeight(_dpi(40))
                 btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
                 btn.setText(label)
                 btn.setToolTip(tooltip)
-                btn.setStyleSheet(SHELF_BTN_STYLE)
+                btn.setStyleSheet(_ss(SHELF_BTN_STYLE))
                 btn.clicked.connect(callback)
                 _pending_compact.append(btn)
 
@@ -4957,11 +4983,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
             def add_compact_text_btn(label, tooltip, callback):
                 btn = QtWidgets.QToolButton()
-                btn.setFixedHeight(40)
+                btn.setFixedHeight(_dpi(40))
                 btn.setToolButtonStyle(QtCore.Qt.ToolButtonTextOnly)
                 btn.setText(label)
                 btn.setToolTip(tooltip)
-                btn.setStyleSheet(SHELF_BTN_STYLE)
+                btn.setStyleSheet(_ss(SHELF_BTN_STYLE))
                 btn.clicked.connect(callback)
                 row = shelf_cur_row[0]
                 row.insertWidget(row.count() - 1, btn)
@@ -5062,35 +5088,35 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         inner.setPalette(_inner_pal)
         inner.setAutoFillBackground(True)
         root = QtWidgets.QVBoxLayout(inner)
-        root.setContentsMargins(8, 8, 8, 8)
-        root.setSpacing(10)
+        root.setContentsMargins(_dpi(8), _dpi(8), _dpi(8), _dpi(8))
+        root.setSpacing(_dpi(10))
 
         # ── Maya Tools Shelf ──────────────────────────────────────────────
         shelf_frame = QtWidgets.QFrame()
         shelf_frame.setFrameShape(QtWidgets.QFrame.NoFrame)
         shelf_frame.setPalette(_app_pal)
         shelf_frame.setAutoFillBackground(True)
-        shelf_frame.setFixedHeight(80)
+        shelf_frame.setFixedHeight(_dpi(80))
         shelf_vlay = QtWidgets.QVBoxLayout(shelf_frame)
-        shelf_vlay.setContentsMargins(4, 3, 4, 3)
-        shelf_vlay.setSpacing(2)
+        shelf_vlay.setContentsMargins(_dpi(4), _dpi(3), _dpi(4), _dpi(3))
+        shelf_vlay.setSpacing(_dpi(2))
 
         shelf_lay = QtWidgets.QHBoxLayout()   # row 1 — sculpt / shape tools
         shelf_lay.setContentsMargins(0, 0, 0, 0)
-        shelf_lay.setSpacing(2)
+        shelf_lay.setSpacing(_dpi(2))
         shelf_vlay.addLayout(shelf_lay)
 
         row2_lay = QtWidgets.QHBoxLayout()    # row 2 — node-level tools
         row2_lay.setContentsMargins(0, 0, 0, 0)
-        row2_lay.setSpacing(2)
+        row2_lay.setSpacing(_dpi(2))
         shelf_vlay.addLayout(row2_lay)
 
         def _shelf_btn(icon_path, tooltip, mel_cmd=None, callback=None, dbl_click=None):
             btn = QtWidgets.QToolButton()
-            btn.setFixedSize(36, 36)
-            btn.setIconSize(QtCore.QSize(34, 34))
+            btn.setFixedSize(_dpi(36), _dpi(36))
+            btn.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
             btn.setAutoRaise(True)
-            btn.setStyleSheet("""
+            btn.setStyleSheet(_ss("""
                 QToolButton {
                     background-color: transparent;
                     border: none;
@@ -5099,7 +5125,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                 }
                 QToolButton:hover   { background-color: rgba(255,255,255,30); }
                 QToolButton:pressed { background-color: rgba(0,0,0,40); }
-            """)
+            """))
             btn.setToolTip(tooltip)
             pix = QtGui.QPixmap(icon_path)
             if not pix.isNull():
@@ -5118,7 +5144,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             sep = QtWidgets.QFrame()
             sep.setFrameShape(QtWidgets.QFrame.VLine)
             sep.setFrameShadow(QtWidgets.QFrame.Sunken)
-            sep.setFixedWidth(6)
+            sep.setFixedWidth(_dpi(6))
             layout.addWidget(sep)
             layout.addStretch(1)
 
@@ -5240,8 +5266,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # Shelf pinned above the scroll — always visible
         shelf_wrapper = QtWidgets.QWidget()
         shelf_wrapper_lay = QtWidgets.QVBoxLayout(shelf_wrapper)
-        shelf_wrapper_lay.setContentsMargins(8, 4, 8, 2)
-        shelf_wrapper_lay.setSpacing(4)
+        shelf_wrapper_lay.setContentsMargins(_dpi(8), _dpi(4), _dpi(8), _dpi(2))
+        shelf_wrapper_lay.setSpacing(_dpi(4))
 
         # ── Tool Settings (inline collapsible like Edge Loop Options) ──
         self._ts_toggle = QtWidgets.QToolButton()
@@ -5249,22 +5275,22 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._ts_toggle.setArrowType(QtCore.Qt.RightArrow)
         self._ts_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
         self._ts_toggle.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self._ts_toggle.setFixedHeight(18)
+        self._ts_toggle.setFixedHeight(_dpi(18))
         self._ts_toggle.setStyleSheet(
-            "QToolButton { background: transparent; border: none; "
+            _ss("QToolButton { background: transparent; border: none; "
             "font-size: 10px; color: #888888; text-align: center; }"
-            "QToolButton:hover { color: #aaaaaa; }")
+            "QToolButton:hover { color: #aaaaaa; }"))
 
         ts_widget = QtWidgets.QWidget()
         ts_widget.setVisible(False)
         lay_ts = QtWidgets.QVBoxLayout(ts_widget)
-        lay_ts.setContentsMargins(12, 2, 0, 0)
-        lay_ts.setSpacing(6)
+        lay_ts.setContentsMargins(_dpi(12), _dpi(2), 0, 0)
+        lay_ts.setSpacing(_dpi(6))
 
         # Surface/Volume + Symmetry combos
         combos_row = QtWidgets.QHBoxLayout()
-        combos_row.setSpacing(4)
-        combos_row.addSpacing(4)
+        combos_row.setSpacing(_dpi(4))
+        combos_row.addSpacing(_dpi(4))
         combos_row.addWidget(QtWidgets.QLabel("Falloff"))
         self.combo_tool_surf_vol = QtWidgets.QComboBox()
         for _lbl, _val in [("Surface/Volume", 0), ("Surface", 1), ("Volume", 2)]:
@@ -5272,7 +5298,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.combo_tool_surf_vol.setCurrentIndex(1)
         self.combo_tool_surf_vol.currentIndexChanged.connect(self._on_tool_surf_vol_changed)
         combos_row.addWidget(self.combo_tool_surf_vol, 1)
-        combos_row.addSpacing(16)
+        combos_row.addSpacing(_dpi(16))
         combos_row.addWidget(QtWidgets.QLabel("Symmetry"))
         self.combo_tool_symmetry = QtWidgets.QComboBox()
         for _lbl, _val in [
@@ -5286,14 +5312,14 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # Strength slider + spinbox
         strength_row = QtWidgets.QHBoxLayout()
-        strength_row.setSpacing(4)
-        strength_row.addSpacing(4)
+        strength_row.setSpacing(_dpi(4))
+        strength_row.addSpacing(_dpi(4))
         strength_row.addWidget(QtWidgets.QLabel("Strength"))
         self.spin_tool_strength = QtWidgets.QDoubleSpinBox()
         self.spin_tool_strength.setRange(0.0, 100.0)
         self.spin_tool_strength.setDecimals(3)
         self.spin_tool_strength.setValue(50.0)
-        self.spin_tool_strength.setFixedWidth(68)
+        self.spin_tool_strength.setFixedWidth(_dpi(68))
         self.spin_tool_strength.setButtonSymbols(QtWidgets.QAbstractSpinBox.NoButtons)
         self.spin_tool_strength.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self.spin_tool_strength.valueChanged.connect(self._on_tool_strength_spin)
@@ -5307,10 +5333,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Connect From File ──────────────────────────────────────────────
         cff_row = QtWidgets.QHBoxLayout()
-        cff_row.setSpacing(4)
+        cff_row.setSpacing(_dpi(4))
         btn_rig_browse = QtWidgets.QToolButton()
         btn_rig_browse.setAutoRaise(True)
-        btn_rig_browse.setStyleSheet("""
+        btn_rig_browse.setStyleSheet(_ss("""
             QToolButton {
                 background-color: transparent;
                 border: none;
@@ -5319,16 +5345,16 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             }
             QToolButton:hover   { background-color: rgba(255,255,255,30); }
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
-        """)
+        """))
         _pix_browse = QtGui.QPixmap(f"{_icons_dir}/path.png")
         if not _pix_browse.isNull():
             btn_rig_browse.setIcon(QtGui.QIcon(_pix_browse))
-            btn_rig_browse.setIconSize(QtCore.QSize(34, 34))
-        btn_rig_browse.setFixedSize(36, 36)
+            btn_rig_browse.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
+        btn_rig_browse.setFixedSize(_dpi(36), _dpi(36))
         btn_rig_browse.setToolTip("Browse for a rig mapping JSON file")
         self.line_rig_json = QtWidgets.QLineEdit()
         self.line_rig_json.setReadOnly(True)
-        self.line_rig_json.setFixedHeight(23)
+        self.line_rig_json.setFixedHeight(_dpi(23))
         self.line_rig_json.setPlaceholderText("C:/path/to/rig_mapping.mapng")
         self.btn_rig_connect = QtWidgets.QToolButton()
         btn_rig_connect = self.btn_rig_connect
@@ -5336,7 +5362,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         btn_rig_connect.setToolTip(
             "Build and connect the rig for all targets defined in the referenced JSON mapping file.\n"
             "The blendShape node is automatically detected from the current mesh selection.")
-        btn_rig_connect.setStyleSheet("""
+        btn_rig_connect.setStyleSheet(_ss("""
             QToolButton {
                 background-color: transparent;
                 border: none;
@@ -5345,12 +5371,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             }
             QToolButton:hover   { background-color: rgba(255,255,255,30); }
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
-        """)
+        """))
         _pix_connect = QtGui.QPixmap(f"{_icons_dir}/connect_rig.png")
         if not _pix_connect.isNull():
             btn_rig_connect.setIcon(QtGui.QIcon(_pix_connect))
-            btn_rig_connect.setIconSize(QtCore.QSize(34, 34))
-        btn_rig_connect.setFixedSize(36, 36)
+            btn_rig_connect.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
+        btn_rig_connect.setFixedSize(_dpi(36), _dpi(36))
         cff_row.addWidget(btn_rig_browse)
         cff_row.addWidget(self.line_rig_json, 1)
         cff_row.addWidget(btn_rig_connect)
@@ -5358,11 +5384,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Active Target indicator row ────────────────────────────────────────
         active_row = QtWidgets.QHBoxLayout()
-        active_row.setSpacing(4)
+        active_row.setSpacing(_dpi(4))
         active_row.setContentsMargins(0, 0, 0, 0)
         self._icon_target_lbl = QtWidgets.QLabel()
         self._pix_tgt_on  = QtGui.QPixmap(f"{_icons_dir}/target_object_space.png").scaled(
-            20, 20, QtCore.Qt.IgnoreAspectRatio, QtCore.Qt.SmoothTransformation)
+            _dpi(20), _dpi(20), QtCore.Qt.IgnoreAspectRatio, QtCore.Qt.SmoothTransformation)
         # Generate OFF version from ON — guarantees identical pixel dimensions
         _pm_off = QtGui.QPixmap(self._pix_tgt_on.size())
         _pm_off.fill(QtCore.Qt.transparent)
@@ -5373,7 +5399,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._pix_tgt_off = _pm_off
         if not self._pix_tgt_on.isNull():
             self._icon_target_lbl.setPixmap(self._pix_tgt_on)
-        self._icon_target_lbl.setFixedSize(22, 22)
+        self._icon_target_lbl.setFixedSize(_dpi(22), _dpi(22))
         self._icon_target_lbl.setAlignment(QtCore.Qt.AlignCenter)
         _icon_lbl = self._icon_target_lbl
         self._lbl_active_target = _ClickableLabel("—")
@@ -5398,8 +5424,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Red: edit mode ON — the target is live and ready to sculpt.\n"
             "Gray: edit mode OFF.\n"
             "Stays in sync with the native Shape Editor edit mode.")
-        self._btn_edit_target.setFixedWidth(40)
-        self._btn_edit_target.setFixedHeight(22)
+        self._btn_edit_target.setFixedWidth(_dpi(40))
+        self._btn_edit_target.setFixedHeight(_dpi(22))
         self._btn_edit_target.setEnabled(False)
         self._btn_edit_target.setStyleSheet(
             "QPushButton { background-color: #5a5a5a; color: #cccccc; border: none; }"
@@ -5411,29 +5437,29 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._btn_target_vis = QtWidgets.QPushButton()
         self._btn_target_vis.setCheckable(True)
         self._btn_target_vis.setChecked(False)
-        self._btn_target_vis.setFixedSize(10, 10)
+        self._btn_target_vis.setFixedSize(_dpi(10), _dpi(10))
         self._btn_target_vis.setEnabled(False)
         self._btn_target_vis.setToolTip(
             "Toggle target visibility in the Shape Editor.\n"
             "White = visible  ·  Black = hidden")
         self._btn_target_vis.setStyleSheet(
-            "QPushButton { background-color: #cccccc; border-radius: 5px; border: none; }"
+            _ss("QPushButton { background-color: #cccccc; border-radius: 5px; border: none; }"
             "QPushButton:hover:!checked { background-color: #ffffff; }"
             "QPushButton:checked { background-color: #1a1a1a; border-radius: 5px; border: none; }"
             "QPushButton:hover:checked { background-color: #333333; }"
-            "QPushButton:disabled { background-color: #505050; border-radius: 5px; border: none; }"
+            "QPushButton:disabled { background-color: #505050; border-radius: 5px; border: none; }")
         )
         self._btn_target_vis.toggled.connect(self._on_target_vis_toggled)
         active_row.addWidget(self._btn_target_vis)
         active_row.addWidget(_icon_lbl)
         active_row.addWidget(self._lbl_active_target)
-        active_row.addSpacing(5)
+        active_row.addSpacing(_dpi(5))
         active_row.addWidget(self._slider_target_weight)
         active_row.addWidget(self._btn_edit_target)
         active_inner = QtWidgets.QFrame()
-        active_inner.setStyleSheet("QFrame { background-color: #383838; border-radius: 2px; }")
+        active_inner.setStyleSheet(_ss("QFrame { background-color: #383838; border-radius: 2px; }"))
         active_inner_lay = QtWidgets.QHBoxLayout(active_inner)
-        active_inner_lay.setContentsMargins(4, 3, 4, 3)
+        active_inner_lay.setContentsMargins(_dpi(4), _dpi(3), _dpi(4), _dpi(3))
         active_inner_lay.setSpacing(0)
         active_inner_lay.addLayout(active_row)
         # ── end Active Target ──────────────────────────────────────────────────
@@ -5476,19 +5502,19 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Nomenclature ──────────────────────────────────────────────────────
         grp_nom, _body_nom, lay_nom = self._collapsible_section("Nomenclature", two_state=True, initial_state=0)
-        lay_nom.setSpacing(6)
+        lay_nom.setSpacing(_dpi(6))
 
         # ── Rename Targets group ───────────────────────────────────────────
         grp_rename = QtWidgets.QGroupBox("Rename Targets")
-        grp_rename.setStyleSheet("QGroupBox { font-size: 11px; }")
+        grp_rename.setStyleSheet(_ss("QGroupBox { font-size: 11px; }"))
         lay_rename = QtWidgets.QVBoxLayout(grp_rename)
-        lay_rename.setContentsMargins(8, 6, 8, 6)
-        lay_rename.setSpacing(4)
+        lay_rename.setContentsMargins(_dpi(8), _dpi(6), _dpi(8), _dpi(6))
+        lay_rename.setSpacing(_dpi(4))
 
         # ── Rename Tools (Prefix / Suffix / Search & Replace) ─────────────
-        _REN_BTN_W = 44
+        _REN_BTN_W = _dpi(44)
         ren_grid = QtWidgets.QGridLayout()
-        ren_grid.setSpacing(4)
+        ren_grid.setSpacing(_dpi(4))
         ren_grid.setColumnStretch(1, 1)
         ren_grid.setColumnStretch(3, 1)
 
@@ -5520,8 +5546,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.edit_search.setPlaceholderText("search")
         self.edit_search.setToolTip("String to find in target names")
         btn_swap_sr = QtWidgets.QPushButton("⇄")
-        btn_swap_sr.setFixedSize(30, 30)
-        btn_swap_sr.setStyleSheet("font-size: 16px;")
+        btn_swap_sr.setFixedSize(_dpi(30), _dpi(30))
+        btn_swap_sr.setStyleSheet(_ss("font-size: 16px;"))
         btn_swap_sr.setToolTip("Swap search and replace texts")
         def _swap_sr():
             a, b = self.edit_search.text(), self.edit_replace.text()
@@ -5548,19 +5574,19 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_swap = QtWidgets.QHBoxLayout()
         row_swap.addStretch(1)
         self.btn_swap_names = QtWidgets.QToolButton()
-        self.btn_swap_names.setFixedSize(36, 36)
+        self.btn_swap_names.setFixedSize(_dpi(36), _dpi(36))
         self.btn_swap_names.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         self.btn_swap_names.setToolTip(
             "Swap Target Names\n"
             "Swaps the names of exactly 2 selected targets in the Shape Editor.\n"
             "Select 2 targets, then click — their names are exchanged instantly.")
-        self.btn_swap_names.setStyleSheet("""
+        self.btn_swap_names.setStyleSheet(_ss("""
             QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
             QToolButton:hover { background-color: rgba(255,255,255,30); }
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
-        """)
+        """))
         self.btn_swap_names.setIcon(QtGui.QIcon(f"{_icons_dir}/swap_names.png"))
-        self.btn_swap_names.setIconSize(QtCore.QSize(34, 34))
+        self.btn_swap_names.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         self.btn_swap_names.clicked.connect(self._run_swap_names)
         row_swap.addWidget(self.btn_swap_names)
         row_swap.addStretch(1)
@@ -5573,7 +5599,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Split (includes Locator controls) ─────────────────────────────
         grp_split, _body_split, lay_split = self._collapsible_section("Split", two_state=True, initial_state=2)
-        lay_split.setSpacing(6)
+        lay_split.setSpacing(_dpi(6))
         self._suffix_template = "abc"  # "abc" or "positional"
 
         # ── Locators ──────────────────────────────────────────────────────
@@ -5584,8 +5610,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         #   [↑][↓]
         #   [🔗][⛓]
         #
-        _BW = 32  # button size (square)
-        _SP = 2   # grid spacing
+        _BW = _dpi(32)  # button size (square)
+        _SP = _dpi(2)   # grid spacing
         _grid_h = 4 * _BW + 3 * _SP  # drives table height too (4 rows)
         self._loc_grid_h = _grid_h   # minimum table height (= button block height)
 
@@ -5605,10 +5631,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             b.setFixedSize(_BW, _BW)
             b.setFocusPolicy(QtCore.Qt.NoFocus)
             b.setStyleSheet(
-                "QPushButton { font-size: 16px; font-weight: bold;"
+                _ss("QPushButton { font-size: 16px; font-weight: bold;"
                 " background-color: rgba(255,255,255,18); border: none; border-radius: 3px; }"
                 "QPushButton:hover { background-color: rgba(255,255,255,30); }"
-                "QPushButton:pressed { background-color: rgba(0,0,0,40); }"
+                "QPushButton:pressed { background-color: rgba(0,0,0,40); }")
             )
             b.setToolTip(tooltip)
             b.clicked.connect(callback)
@@ -5621,9 +5647,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             b.setToolTip(tooltip)
             px = QtGui.QPixmap(icon_path)
             if not px.isNull():
-                b.setIcon(QtGui.QIcon(px.scaled(24, 24,
+                b.setIcon(QtGui.QIcon(px.scaled(_dpi(24), _dpi(24),
                     QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
-                b.setIconSize(QtCore.QSize(24, 24))
+                b.setIconSize(QtCore.QSize(_dpi(24), _dpi(24)))
             b.clicked.connect(callback)
             return b
 
@@ -5643,17 +5669,17 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Connect L locators to R locators via multiplyDivide nodes (X-axis mirror).\n"
             "Requires Symmetric L/R ON with L and R sides assigned.",
             self._run_link_mirrors)
-        btn_link.setStyleSheet(_ICON_BTN_STYLE)
+        btn_link.setStyleSheet(_ss(_ICON_BTN_STYLE))
         btn_unlink = _side_icon_btn(
             f"{_icons_dir}/unlink_locs.png",
             "Remove mirror connections. R locators keep their current position.",
             self._run_unlink_mirrors)
-        btn_unlink.setStyleSheet(_ICON_BTN_STYLE)
+        btn_unlink.setStyleSheet(_ss(_ICON_BTN_STYLE))
 
         btn_create_loc = QtWidgets.QToolButton()
         btn_create_loc.setFixedSize(_BW, _BW)
         btn_create_loc.setAutoRaise(True)
-        btn_create_loc.setStyleSheet(_ICON_BTN_STYLE)
+        btn_create_loc.setStyleSheet(_ss(_ICON_BTN_STYLE))
         btn_create_loc.setToolTip("Create a locator at the origin and add it to the table")
         _px_loc = QtGui.QPixmap(f"{_icons_dir}/locator.png")
         if not _px_loc.isNull():
@@ -5665,7 +5691,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         btn_clear_table = QtWidgets.QToolButton()
         btn_clear_table.setFixedSize(_BW, _BW)
         btn_clear_table.setAutoRaise(True)
-        btn_clear_table.setStyleSheet(_ICON_BTN_STYLE)
+        btn_clear_table.setStyleSheet(_ss(_ICON_BTN_STYLE))
         btn_clear_table.setToolTip("Remove all locators from the table")
         _px_clear = QtGui.QPixmap(f"{_icons_dir}/clear_table.png")
         if not _px_clear.isNull():
@@ -5712,13 +5738,13 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         _side_w = 2 * _BW + 3 * _SP          # total width of side_grid incl. margins
 
         preset_row = QtWidgets.QHBoxLayout()
-        preset_row.setSpacing(4)
+        preset_row.setSpacing(_dpi(4))
         preset_row.setContentsMargins(0, 0, 0, 0)
 
         btn_load_preset = QtWidgets.QToolButton()
-        btn_load_preset.setFixedSize(32, 32)
+        btn_load_preset.setFixedSize(_dpi(32), _dpi(32))
         btn_load_preset.setAutoRaise(True)
-        btn_load_preset.setStyleSheet(_ICON_BTN_STYLE)
+        btn_load_preset.setStyleSheet(_ss(_ICON_BTN_STYLE))
         btn_load_preset.setToolTip(
             "Select a locator group in the scene and click to load its presets into the list.\n\n"
             "Right-click:\n"
@@ -5727,8 +5753,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         _px_lp = QtGui.QPixmap(f"{_icons_dir}/path.png")
         if not _px_lp.isNull():
             btn_load_preset.setIcon(QtGui.QIcon(_px_lp.scaled(
-                30, 30, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
-            btn_load_preset.setIconSize(QtCore.QSize(30, 30))
+                _dpi(30), _dpi(30), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
+            btn_load_preset.setIconSize(QtCore.QSize(_dpi(30), _dpi(30)))
         else:
             btn_load_preset.setText("Load")
         btn_load_preset.clicked.connect(self._on_load_split_preset_grp)
@@ -5740,9 +5766,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._combo_split_preset.activated.connect(self._on_split_preset_activated)
 
         btn_save_preset = QtWidgets.QToolButton()
-        btn_save_preset.setFixedSize(_side_w, 32)
+        btn_save_preset.setFixedSize(_side_w, _dpi(32))
         btn_save_preset.setAutoRaise(True)
-        btn_save_preset.setStyleSheet(_ICON_BTN_STYLE)
+        btn_save_preset.setStyleSheet(_ss(_ICON_BTN_STYLE))
         btn_save_preset.setToolTip(
             "Save the current locators and settings into the selected preset group\n"
             "(or create a new preset group if none is selected).\n"
@@ -5752,8 +5778,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         _px_sp = QtGui.QPixmap(f"{_icons_dir}/save.png")
         if not _px_sp.isNull():
             btn_save_preset.setIcon(QtGui.QIcon(_px_sp.scaled(
-                30, 30, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
-            btn_save_preset.setIconSize(QtCore.QSize(30, 30))
+                _dpi(30), _dpi(30), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
+            btn_save_preset.setIconSize(QtCore.QSize(_dpi(30), _dpi(30)))
         else:
             btn_save_preset.setText("Save")
         btn_save_preset.clicked.connect(self._on_save_split_preset)
@@ -5771,7 +5797,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_split.addLayout(preset_row)
 
         loc_row = QtWidgets.QHBoxLayout()
-        loc_row.setSpacing(4)
+        loc_row.setSpacing(_dpi(4))
         loc_row.setContentsMargins(0, 0, 0, 0)
         loc_row.addWidget(self.table, 1)
         loc_row.addLayout(side_grid)
@@ -5779,10 +5805,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Axis group ────────────────────────────────────────────────
         grp_axis = QtWidgets.QGroupBox("Axis Options")
-        grp_axis.setStyleSheet("QGroupBox { font-size: 11px; }")
+        grp_axis.setStyleSheet(_ss("QGroupBox { font-size: 11px; }"))
         lay_axis = QtWidgets.QHBoxLayout(grp_axis)
-        lay_axis.setContentsMargins(8, 4, 8, 4)
-        lay_axis.setSpacing(8)
+        lay_axis.setContentsMargins(_dpi(8), _dpi(4), _dpi(8), _dpi(4))
+        lay_axis.setSpacing(_dpi(8))
 
         self.chk_x = QtWidgets.QCheckBox("X")
         self.chk_y = QtWidgets.QCheckBox("Y")
@@ -5832,10 +5858,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Falloff options group (same style as Axis groupbox, no title) ──────
         grp_falloff = QtWidgets.QGroupBox("Falloff Options")
-        grp_falloff.setStyleSheet("QGroupBox { font-size: 11px; }")
+        grp_falloff.setStyleSheet(_ss("QGroupBox { font-size: 11px; }"))
         lay_falloff = QtWidgets.QVBoxLayout(grp_falloff)
-        lay_falloff.setContentsMargins(8, 6, 8, 6)
-        lay_falloff.setSpacing(4)
+        lay_falloff.setContentsMargins(_dpi(8), _dpi(6), _dpi(8), _dpi(6))
+        lay_falloff.setSpacing(_dpi(4))
 
         # Row: Radial falloff + Curve type
         row_curve = QtWidgets.QHBoxLayout()
@@ -5883,7 +5909,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.radius_label = QtWidgets.QLabel("")
 
         self.spin_radius = QtWidgets.QLineEdit("1.00")
-        self.spin_radius.setFixedWidth(38)
+        self.spin_radius.setFixedWidth(_dpi(38))
         self.spin_radius.setAlignment(QtCore.Qt.AlignCenter)
         _rv = QtGui.QDoubleValidator(0.0, 15.0, 2, self.spin_radius)
         _rv.setLocale(QtCore.QLocale(QtCore.QLocale.English))
@@ -5915,35 +5941,35 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_split_actions = QtWidgets.QHBoxLayout()
 
         _half_split = QtWidgets.QHBoxLayout()
-        _half_split.setSpacing(4)
+        _half_split.setSpacing(_dpi(4))
         _lbl_split = QtWidgets.QLabel("Split Target")
         _half_split.addWidget(_lbl_split)
         self.btn_split = QtWidgets.QToolButton()
-        self.btn_split.setFixedSize(36, 36)
+        self.btn_split.setFixedSize(_dpi(36), _dpi(36))
         self.btn_split.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         self.btn_split.setToolTip("Creates split targets in the blendShape node")
-        self.btn_split.setStyleSheet(_split_btn_ss)
+        self.btn_split.setStyleSheet(_ss(_split_btn_ss))
         self.btn_split.setIcon(QtGui.QIcon(f"{_icons_dir}/split.png"))
-        self.btn_split.setIconSize(QtCore.QSize(34, 34))
+        self.btn_split.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         self.btn_split.clicked.connect(self._run_split)
         _half_split.addWidget(self.btn_split)
         _half_split.addStretch(1)
 
         _half_els = QtWidgets.QHBoxLayout()
-        _half_els.setSpacing(4)
+        _half_els.setSpacing(_dpi(4))
         _lbl_els = QtWidgets.QLabel("Edge Loop Split")
         _half_els.addWidget(_lbl_els)
         self.btn_edge_loop_split = QtWidgets.QToolButton()
-        self.btn_edge_loop_split.setFixedSize(36, 36)
+        self.btn_edge_loop_split.setFixedSize(_dpi(36), _dpi(36))
         self.btn_edge_loop_split.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         self.btn_edge_loop_split.setToolTip(
             "Splits selected targets along the stored edge loop.\n"
             "Set Vertices and Edgeloop via the Setup section below.\n"
             "The Radius setting controls the falloff blend at the seam (default: 1).\n"
             "Enable Radius and increase the value for a softer transition.")
-        self.btn_edge_loop_split.setStyleSheet(_split_btn_ss)
+        self.btn_edge_loop_split.setStyleSheet(_ss(_split_btn_ss))
         self.btn_edge_loop_split.setIcon(QtGui.QIcon(f"{_icons_dir}/edge_split.png"))
-        self.btn_edge_loop_split.setIconSize(QtCore.QSize(34, 34))
+        self.btn_edge_loop_split.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         self.btn_edge_loop_split.clicked.connect(self._run_edge_loop_split)
         _half_els.addWidget(self.btn_edge_loop_split)
         _half_els.addStretch(1)
@@ -5952,9 +5978,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_split_actions.addLayout(_half_els, 1)
 
         grp_split_actions = QtWidgets.QGroupBox()
-        grp_split_actions.setStyleSheet("QGroupBox { font-size: 11px; }")
+        grp_split_actions.setStyleSheet(_ss("QGroupBox { font-size: 11px; }"))
         lay_split_actions_grp = QtWidgets.QVBoxLayout(grp_split_actions)
-        lay_split_actions_grp.setContentsMargins(8, 6, 8, 6)
+        lay_split_actions_grp.setContentsMargins(_dpi(8), _dpi(6), _dpi(8), _dpi(6))
         lay_split_actions_grp.setSpacing(0)
         lay_split_actions_grp.addLayout(row_split_actions)
         lay_split.addWidget(grp_split_actions)
@@ -5966,19 +5992,19 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._els_setup_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
         self._els_setup_toggle.setSizePolicy(
             QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
-        self._els_setup_toggle.setFixedHeight(18)
+        self._els_setup_toggle.setFixedHeight(_dpi(18))
         self._els_setup_toggle.setStyleSheet(
-            "QToolButton { background: transparent; border: none; "
+            _ss("QToolButton { background: transparent; border: none; "
             "font-size: 10px; color: #888888; "
             "text-align: center; }"
-            "QToolButton:hover { color: #aaaaaa; }")
+            "QToolButton:hover { color: #aaaaaa; }"))
         lay_split.addWidget(self._els_setup_toggle)
 
         els_setup_widget = QtWidgets.QWidget()
         els_setup_widget.setVisible(False)
         els_setup_lay = QtWidgets.QVBoxLayout(els_setup_widget)
-        els_setup_lay.setContentsMargins(12, 2, 0, 2)
-        els_setup_lay.setSpacing(4)
+        els_setup_lay.setContentsMargins(_dpi(12), _dpi(2), 0, _dpi(2))
+        els_setup_lay.setSpacing(_dpi(4))
 
         def _els_field(edit_attr, placeholder, get_handler):
             row = QtWidgets.QHBoxLayout()
@@ -5986,7 +6012,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             edit.setReadOnly(True)
             edit.setPlaceholderText(placeholder)
             btn_get = QtWidgets.QPushButton("Get")
-            btn_get.setFixedWidth(40)
+            btn_get.setFixedWidth(_dpi(40))
             btn_get.clicked.connect(get_handler)
             row.addWidget(edit)
             row.addWidget(btn_get)
@@ -6040,14 +6066,14 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             f"{_icons_dir}/edge_split.png", "Edge Loop Split", self._run_edge_loop_split)
         # ── Modify ────────────────────────────────────────────────────────
         grp_mod, _body_mod, lay_mod = self._collapsible_section("Modify Deltas", initial_state=2, compact_rows=1)
-        lay_mod.setSpacing(4)
+        lay_mod.setSpacing(_dpi(4))
 
         _GRP_STYLE = "QGroupBox { font-size: 11px; }"
-        _GRP_MARGINS = (8, 6, 8, 6)
+        _GRP_MARGINS = tuple(_dpi(v) for v in (8, 6, 8, 6))
 
         def _make_factor_field(default="1.0"):
             field = QtWidgets.QLineEdit(default)
-            field.setFixedWidth(52)
+            field.setFixedWidth(_dpi(52))
             field.setAlignment(QtCore.Qt.AlignCenter)
             validator = QtGui.QRegularExpressionValidator(
                 QtCore.QRegularExpression(r"-?\d*\.?\d*"), field)
@@ -6056,17 +6082,17 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Scalar ────────────────────────────────────────────────────────────
         grp_scalar = QtWidgets.QGroupBox("Deltas Scale")
-        grp_scalar.setStyleSheet(_GRP_STYLE)
+        grp_scalar.setStyleSheet(_ss(_GRP_STYLE))
         lay_scalar = QtWidgets.QVBoxLayout(grp_scalar)
         lay_scalar.setContentsMargins(*_GRP_MARGINS)
-        lay_scalar.setSpacing(4)
+        lay_scalar.setSpacing(_dpi(4))
 
         self._mult_labels = []
         self._mult_fields = []
         for idx, axis in enumerate(('X', 'Y', 'Z')):
             lbl = QtWidgets.QPushButton(axis)
             lbl.setCheckable(True)
-            lbl.setFixedSize(22, 22)
+            lbl.setFixedSize(_dpi(22), _dpi(22))
             lbl.setToolTip("Click to select — Shift+click to multi-select.\n"
                            "Typing in a selected field updates all selected fields.")
             fld = _make_factor_field("1.2")
@@ -6089,13 +6115,13 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # X/Y/Z labels + fields
         row_xyz = QtWidgets.QHBoxLayout()
-        row_xyz.setSpacing(4)
+        row_xyz.setSpacing(_dpi(4))
         self._mult_sign = 1.0
         self.btn_mult_sign = QtWidgets.QToolButton()
-        self.btn_mult_sign.setFixedSize(40, 34)
-        self.btn_mult_sign.setIconSize(QtCore.QSize(34, 34))
+        self.btn_mult_sign.setFixedSize(_dpi(40), _dpi(34))
+        self.btn_mult_sign.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         self.btn_mult_sign.setAutoRaise(True)
-        self.btn_mult_sign.setStyleSheet("""
+        self.btn_mult_sign.setStyleSheet(_ss("""
             QToolButton {
                 background-color: transparent;
                 border: none;
@@ -6104,7 +6130,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             }
             QToolButton:hover   { background-color: rgba(255,255,255,30); }
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
-        """)
+        """))
         self.btn_mult_sign.setToolTip("Toggle sign: click to switch between + and −.\n− negates all X/Y/Z factors before applying.")
         _ico_plus  = QtGui.QIcon(f"{_icons_dir}/plus.png")
         _ico_minus = QtGui.QIcon(f"{_icons_dir}/minus.png")
@@ -6119,7 +6145,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.btn_mult_sign.clicked.connect(_on_mult_sign_clicked)
         row_xyz.addWidget(self.btn_mult_sign)
         for _lbl, _fld in zip(self._mult_labels, self._mult_fields):
-            _fld.setFixedWidth(16777215)
+            _fld.setFixedWidth(_dpi(16777215))
             _fld.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
             row_xyz.addWidget(_lbl)
             row_xyz.addWidget(_fld, 1)
@@ -6128,10 +6154,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._btn_normal_mode = QtWidgets.QToolButton()
         self._btn_normal_mode.setCheckable(True)
         self._btn_normal_mode.setChecked(False)
-        self._btn_normal_mode.setFixedSize(36, 34)
-        self._btn_normal_mode.setIconSize(QtCore.QSize(32, 32))
+        self._btn_normal_mode.setFixedSize(_dpi(36), _dpi(34))
+        self._btn_normal_mode.setIconSize(QtCore.QSize(_dpi(32), _dpi(32)))
         self._btn_normal_mode.setAutoRaise(True)
-        self._btn_normal_mode.setStyleSheet("""
+        self._btn_normal_mode.setStyleSheet(_ss("""
             QToolButton {
                 background-color: transparent;
                 border: none;
@@ -6142,7 +6168,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
             QToolButton:checked { background-color: rgba(80,120,200,60);
                                   border: 1px solid rgba(100,150,255,150); }
-        """)
+        """))
         _px_normal = QtGui.QPixmap(f"{_icons_dir}/normal_push.png")
         if not _px_normal.isNull():
             self._btn_normal_mode.setIcon(QtGui.QIcon(_px_normal))
@@ -6186,10 +6212,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Between 2 Targets ─────────────────────────────────────────────────
         grp_2tgt = QtWidgets.QGroupBox("Deltas Exchange")
-        grp_2tgt.setStyleSheet(_GRP_STYLE)
+        grp_2tgt.setStyleSheet(_ss(_GRP_STYLE))
         lay_2tgt = QtWidgets.QVBoxLayout(grp_2tgt)
         lay_2tgt.setContentsMargins(*_GRP_MARGINS)
-        lay_2tgt.setSpacing(4)
+        lay_2tgt.setSpacing(_dpi(4))
 
         _tt_add = (
             "Add — Adds donor deltas onto the receiver target.\n"
@@ -6263,7 +6289,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._align_label_icon_btns([_w_add, _w_sub, _w_xfer, _w_swap])
         self._align_label_icon_btns([_w_apply, _w_bake])
         grid_2tgt = QtWidgets.QGridLayout()
-        grid_2tgt.setSpacing(4)
+        grid_2tgt.setSpacing(_dpi(4))
         grid_2tgt.addWidget(_w_add,   0, 0)
         grid_2tgt.addWidget(_w_sub,   0, 1)
         grid_2tgt.addWidget(_w_apply, 0, 2)
@@ -6277,22 +6303,22 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Smooth & Relax ────────────────────────────────────────────────────
         grp_smooth = QtWidgets.QGroupBox("Deltas Distribution")
-        grp_smooth.setStyleSheet(_GRP_STYLE)
+        grp_smooth.setStyleSheet(_ss(_GRP_STYLE))
         lay_smooth = QtWidgets.QVBoxLayout(grp_smooth)
         lay_smooth.setContentsMargins(*_GRP_MARGINS)
-        lay_smooth.setSpacing(4)
+        lay_smooth.setSpacing(_dpi(4))
 
         row_opacity = QtWidgets.QHBoxLayout()
-        row_opacity.setSpacing(4)
+        row_opacity.setSpacing(_dpi(4))
         lbl_opacity = QtWidgets.QLabel("Opacity")
-        lbl_opacity.setFixedWidth(52)
+        lbl_opacity.setFixedWidth(_dpi(52))
         _opacity_tip = (
             "Strength for Smooth, Relax, Hammer and Average.\n"
             "Smooth / Relax: maps to 1–10 iterative passes.\n"
             "Hammer: blends between original and fully-converged result (100% = full hammer).\n"
             "Average: blend weight between original and averaged value.")
         self.spin_smooth_opacity = QtWidgets.QLineEdit("1.00")
-        self.spin_smooth_opacity.setFixedWidth(55)
+        self.spin_smooth_opacity.setFixedWidth(_dpi(55))
         self.spin_smooth_opacity.setAlignment(QtCore.Qt.AlignCenter)
         _ov = QtGui.QDoubleValidator(0.01, 1.0, 2, self.spin_smooth_opacity)
         _ov.setLocale(QtCore.QLocale(QtCore.QLocale.English))
@@ -6313,7 +6339,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_smooth.addLayout(row_opacity)
 
         row_sr = QtWidgets.QHBoxLayout()
-        row_sr.setSpacing(2)
+        row_sr.setSpacing(_dpi(2))
         _w_smt, self.btn_smooth = self._label_icon_btn(
             f"{_icons_dir}/smooth_delta.png", "Smooth Deltas",
             "Laplacian smoothing of the delta field.\n"
@@ -6333,7 +6359,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_smooth.addLayout(row_sr)
 
         row_ha = QtWidgets.QHBoxLayout()
-        row_ha.setSpacing(2)
+        row_ha.setSpacing(_dpi(2))
         _w_hammer, self.btn_hammer = self._label_icon_btn(
             f"{_icons_dir}/hammer_delta.png", "Hammer Deltas",
             "Replaces each selected vertex's delta with the IDW-weighted average\n"
@@ -6354,9 +6380,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_smooth.addLayout(row_ha)
 
         row_neighbors = QtWidgets.QHBoxLayout()
-        row_neighbors.setSpacing(2)
+        row_neighbors.setSpacing(_dpi(2))
         lbl_smooth_neighbors = QtWidgets.QLabel("Mode")
-        lbl_smooth_neighbors.setFixedWidth(40)
+        lbl_smooth_neighbors.setFixedWidth(_dpi(40))
         self.combo_smooth_falloff = QtWidgets.QComboBox()
         self.combo_smooth_falloff.addItem("Surface", "surface")
         self.combo_smooth_falloff.addItem("Volume",  "volume")
@@ -6378,7 +6404,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                            "applied after the Hammer iterations.\n"
                            "0 = no smoothing.")
         self.spin_hammer_lap = QtWidgets.QLineEdit("1")
-        self.spin_hammer_lap.setFixedWidth(36)
+        self.spin_hammer_lap.setFixedWidth(_dpi(36))
         self.spin_hammer_lap.setAlignment(QtCore.Qt.AlignCenter)
         self.spin_hammer_lap.setValidator(QtGui.QIntValidator(0, 10, self.spin_hammer_lap))
         self.spin_hammer_lap.setToolTip(lbl_lap.toolTip())
@@ -6386,7 +6412,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         _w_nb_left = QtWidgets.QWidget()
         _lay_nb_left = QtWidgets.QHBoxLayout(_w_nb_left)
         _lay_nb_left.setContentsMargins(0, 0, 0, 0)
-        _lay_nb_left.setSpacing(4)
+        _lay_nb_left.setSpacing(_dpi(4))
         _lay_nb_left.addWidget(lbl_smooth_neighbors)
         _lay_nb_left.addWidget(self.combo_smooth_falloff)
         _lay_nb_left.addStretch()
@@ -6394,7 +6420,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         _w_nb_right = QtWidgets.QWidget()
         _lay_nb_right = QtWidgets.QHBoxLayout(_w_nb_right)
         _lay_nb_right.setContentsMargins(0, 0, 0, 0)
-        _lay_nb_right.setSpacing(4)
+        _lay_nb_right.setSpacing(_dpi(4))
         _lay_nb_right.addWidget(lbl_lap)
         _lay_nb_right.addWidget(self.spin_hammer_lap)
         _lay_nb_right.addStretch()
@@ -6406,10 +6432,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Selection ─────────────────────────────────────────────────────────
         grp_sel = QtWidgets.QGroupBox("Deltas Clipboard")
-        grp_sel.setStyleSheet(_GRP_STYLE)
+        grp_sel.setStyleSheet(_ss(_GRP_STYLE))
         lay_sel = QtWidgets.QVBoxLayout(grp_sel)
         lay_sel.setContentsMargins(*_GRP_MARGINS)
-        lay_sel.setSpacing(4)
+        lay_sel.setSpacing(_dpi(4))
 
         _w_copy_delta, self.btn_copy_delta = self._label_icon_btn(
             f"{_icons_dir}/copy_delta.png", "Copy Delta",
@@ -6425,7 +6451,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.btn_paste_delta.clicked.connect(self._run_paste_delta)
 
         self.spin_prune_tol = QtWidgets.QLineEdit("0.001")
-        self.spin_prune_tol.setFixedWidth(52)
+        self.spin_prune_tol.setFixedWidth(_dpi(52))
         self.spin_prune_tol.setAlignment(QtCore.Qt.AlignCenter)
         self.spin_prune_tol.setValidator(QtGui.QRegularExpressionValidator(
             QtCore.QRegularExpression(r"\d*\.?\d*"), self.spin_prune_tol))
@@ -6440,10 +6466,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
         """
         self.btn_prune = QtWidgets.QToolButton()
-        self.btn_prune.setFixedSize(34, 34)
-        self.btn_prune.setIconSize(QtCore.QSize(32, 32))
+        self.btn_prune.setFixedSize(_dpi(34), _dpi(34))
+        self.btn_prune.setIconSize(QtCore.QSize(_dpi(32), _dpi(32)))
         self.btn_prune.setAutoRaise(True)
-        self.btn_prune.setStyleSheet(_prune_style)
+        self.btn_prune.setStyleSheet(_ss(_prune_style))
         _px_prune = QtGui.QPixmap(f"{_icons_dir}/prune_delta.png")
         if not _px_prune.isNull():
             self.btn_prune.setIcon(QtGui.QIcon(_px_prune))
@@ -6452,10 +6478,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         _lbl_prune = QtWidgets.QLabel("Prune Small Deltas")
         _w_prune = QtWidgets.QWidget()
-        _w_prune.setFixedHeight(34)
+        _w_prune.setFixedHeight(_dpi(34))
         _lay_prune = QtWidgets.QHBoxLayout(_w_prune)
         _lay_prune.setContentsMargins(0, 0, 0, 0)
-        _lay_prune.setSpacing(4)
+        _lay_prune.setSpacing(_dpi(4))
         _lay_prune.addWidget(_lbl_prune)
         _lay_prune.addWidget(self.spin_prune_tol)
         _lay_prune.addWidget(self.btn_prune)
@@ -6467,7 +6493,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.btn_sel_delta.clicked.connect(self._run_select_delta_vertices)
 
         grid_cps = QtWidgets.QGridLayout()
-        grid_cps.setSpacing(4)
+        grid_cps.setSpacing(_dpi(4))
         grid_cps.addWidget(_w_copy_delta,  0, 0)
         grid_cps.addWidget(_w_sel_delta,   0, 1)
         grid_cps.addWidget(_w_paste_delta, 1, 0)
@@ -6481,10 +6507,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Rig Extraction ────────────────────────────────────────────────────
         grp_rig = QtWidgets.QGroupBox("Deltas to Rig")
-        grp_rig.setStyleSheet(_GRP_STYLE)
+        grp_rig.setStyleSheet(_ss(_GRP_STYLE))
         lay_rig = QtWidgets.QVBoxLayout(grp_rig)
         lay_rig.setContentsMargins(*_GRP_MARGINS)
-        lay_rig.setSpacing(4)
+        lay_rig.setSpacing(_dpi(4))
 
         _w_dc, self.btn_delta_cluster = self._label_icon_btn(
             f"{_icons_dir}/delta_cluster.png", "Create Delta Cluster",
@@ -6526,10 +6552,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lay_rig.addLayout(row_delta_opts)
         # ── Wrap Extract ──────────────────────────────────────────────────────
         grp_wrap_setup = QtWidgets.QGroupBox("Wrap Extract")
-        grp_wrap_setup.setStyleSheet(_GRP_STYLE)
+        grp_wrap_setup.setStyleSheet(_ss(_GRP_STYLE))
         lay_wrap_setup = QtWidgets.QVBoxLayout(grp_wrap_setup)
         lay_wrap_setup.setContentsMargins(*_GRP_MARGINS)
-        lay_wrap_setup.setSpacing(4)
+        lay_wrap_setup.setSpacing(_dpi(4))
 
 
         _w_wrap, self.btn_wrap_extract = self._label_icon_btn(
@@ -6568,14 +6594,14 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Overwrite OFF — keep the existing target and append a numeric suffix\n"
             "to the new one (e.g. 'jaw' ->'jaw1'), like Maya's native behaviour.")
         row_wrap_row1 = QtWidgets.QHBoxLayout()
-        row_wrap_row1.setSpacing(8)
+        row_wrap_row1.setSpacing(_dpi(8))
         row_wrap_row1.addWidget(self.chk_connect_targets)
         row_wrap_row1.addWidget(self.chk_wrap_overwrite)
         row_wrap_row1.addStretch()
         lay_wrap_setup.addLayout(row_wrap_row1)
 
         row_bake_rig = QtWidgets.QHBoxLayout()
-        row_bake_rig.setSpacing(4)
+        row_bake_rig.setSpacing(_dpi(4))
         row_bake_rig.addWidget(grp_wrap_setup, 9)
         row_bake_rig.addWidget(grp_rig, 11)
         lay_mod.addLayout(row_bake_rig)
@@ -6615,18 +6641,18 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # ── Compact XYZ row (prepended at top of compact shelf) ───────────────
         _cxyz_w = QtWidgets.QWidget()
         _cxyz_lay = QtWidgets.QHBoxLayout(_cxyz_w)
-        _cxyz_lay.setContentsMargins(2, 2, 2, 2)
-        _cxyz_lay.setSpacing(4)
+        _cxyz_lay.setContentsMargins(_dpi(2), _dpi(2), _dpi(2), _dpi(2))
+        _cxyz_lay.setSpacing(_dpi(4))
 
         self._compact_sign_btn = QtWidgets.QToolButton()
-        self._compact_sign_btn.setFixedSize(28, 28)
-        self._compact_sign_btn.setIconSize(QtCore.QSize(24, 24))
+        self._compact_sign_btn.setFixedSize(_dpi(28), _dpi(28))
+        self._compact_sign_btn.setIconSize(QtCore.QSize(_dpi(24), _dpi(24)))
         self._compact_sign_btn.setAutoRaise(True)
-        self._compact_sign_btn.setStyleSheet("""
+        self._compact_sign_btn.setStyleSheet(_ss("""
             QToolButton { background: transparent; border: none; border-radius: 3px; padding: 1px; }
             QToolButton:hover   { background: rgba(255,255,255,30); }
             QToolButton:pressed { background: rgba(0,0,0,40); }
-        """)
+        """))
         self._compact_sign_btn.setIcon(QtGui.QIcon(f"{_icons_dir}/plus.png"))
         def _cxyz_sign_clicked():
             self._mult_sign *= -1.0
@@ -6649,16 +6675,16 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self._compact_normal_btn = QtWidgets.QToolButton()
         self._compact_normal_btn.setCheckable(True)
         self._compact_normal_btn.setChecked(False)
-        self._compact_normal_btn.setFixedSize(28, 28)
-        self._compact_normal_btn.setIconSize(QtCore.QSize(24, 24))
+        self._compact_normal_btn.setFixedSize(_dpi(28), _dpi(28))
+        self._compact_normal_btn.setIconSize(QtCore.QSize(_dpi(24), _dpi(24)))
         self._compact_normal_btn.setAutoRaise(True)
-        self._compact_normal_btn.setStyleSheet("""
+        self._compact_normal_btn.setStyleSheet(_ss("""
             QToolButton { background: transparent; border: none; border-radius: 3px; padding: 1px; }
             QToolButton:hover   { background: rgba(255,255,255,30); }
             QToolButton:pressed { background: rgba(0,0,0,40); }
             QToolButton:checked { background: rgba(80,120,200,60);
                                   border: 1px solid rgba(100,150,255,150); }
-        """)
+        """))
         if not _px_normal.isNull():
             self._compact_normal_btn.setIcon(QtGui.QIcon(_px_normal))
         self._compact_normal_btn.setToolTip("Normal Push mode.")
@@ -6685,31 +6711,31 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Tools ─────────────────────────────────────────────────────────────
         grp_tools, _body_tools, lay_tools = self._collapsible_section("Tools", two_state=True, initial_state=0)
-        lay_tools.setSpacing(6)
+        lay_tools.setSpacing(_dpi(6))
 
         lay_tools.addWidget(grp_split)
 
 
         grp_wire, _body_wire, lay_wire = self._collapsible_section(
             "Wire Setup", two_state=True, initial_state=0)
-        lay_wire.setSpacing(6)
+        lay_wire.setSpacing(_dpi(6))
 
         # Paint Wire Weights — shelf button
         _wire_shelf_row = QtWidgets.QHBoxLayout()
-        _wire_shelf_row.setSpacing(2)
+        _wire_shelf_row.setSpacing(_dpi(2))
         btn_paint_wire = QtWidgets.QToolButton()
-        btn_paint_wire.setFixedSize(36, 36)
+        btn_paint_wire.setFixedSize(_dpi(36), _dpi(36))
         btn_paint_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         btn_paint_wire.setToolTip("Paint Wire Weights\nOpens the Paint Attributes tool on wire_setup_wire.weights.")
-        btn_paint_wire.setStyleSheet("""
+        btn_paint_wire.setStyleSheet(_ss("""
             QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
             QToolButton:hover { background-color: rgba(255,255,255,30); }
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
-        """)
+        """))
         _pw_px = QtGui.QPixmap(f"{_icons_dir}/paint_wire.png")
         if not _pw_px.isNull():
             btn_paint_wire.setIcon(QtGui.QIcon(_pw_px))
-            btn_paint_wire.setIconSize(QtCore.QSize(34, 34))
+            btn_paint_wire.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         btn_paint_wire.clicked.connect(self._run_paint_wire)
         btn_paint_wire.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         btn_paint_wire.customContextMenuRequested.connect(
@@ -6721,7 +6747,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # Mirror Wire Weights — shelf button
         btn_mirror_wire = QtWidgets.QToolButton()
-        btn_mirror_wire.setFixedSize(36, 36)
+        btn_mirror_wire.setFixedSize(_dpi(36), _dpi(36))
         btn_mirror_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         btn_mirror_wire.setToolTip(
             "Mirror Wire Weights (YZ)\n"
@@ -6729,15 +6755,15 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "WARNING: Your mesh must be symmetrical and in neutral pose,\n"
             "otherwise results will be unpredictable."
         )
-        btn_mirror_wire.setStyleSheet("""
+        btn_mirror_wire.setStyleSheet(_ss("""
             QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
             QToolButton:hover { background-color: rgba(255,255,255,30); }
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
-        """)
+        """))
         _mw_px = QtGui.QPixmap(f"{_icons_dir}/mirror_wire.png")
         if not _mw_px.isNull():
             btn_mirror_wire.setIcon(QtGui.QIcon(_mw_px))
-            btn_mirror_wire.setIconSize(QtCore.QSize(34, 34))
+            btn_mirror_wire.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         btn_mirror_wire.clicked.connect(self._run_mirror_wire_weights)
         btn_mirror_wire.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         btn_mirror_wire.customContextMenuRequested.connect(
@@ -6753,58 +6779,58 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             QToolButton:disabled { opacity: 0.4; }
         """
         self.btn_copy_wire_delta = QtWidgets.QToolButton()
-        self.btn_copy_wire_delta.setFixedSize(36, 36)
+        self.btn_copy_wire_delta.setFixedSize(_dpi(36), _dpi(36))
         self.btn_copy_wire_delta.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         self.btn_copy_wire_delta.setToolTip(
             "Copy Wire Weight\n"
             "Select exactly 1 vertex on a mesh with a wire deformer.\n"
             "Copies the wire weight value of that vertex into the clipboard.")
-        self.btn_copy_wire_delta.setStyleSheet(_wire_btn_ss2)
+        self.btn_copy_wire_delta.setStyleSheet(_ss(_wire_btn_ss2))
         _cpw_px = QtGui.QPixmap(f"{_icons_dir}/copy_weight.png")
         if not _cpw_px.isNull():
             self.btn_copy_wire_delta.setIcon(QtGui.QIcon(_cpw_px))
-            self.btn_copy_wire_delta.setIconSize(QtCore.QSize(34, 34))
+            self.btn_copy_wire_delta.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         self.btn_copy_wire_delta.clicked.connect(self._run_copy_wire_delta)
         _wire_shelf_row.addWidget(self.btn_copy_wire_delta)
 
         self.btn_paste_wire_delta = QtWidgets.QToolButton()
-        self.btn_paste_wire_delta.setFixedSize(36, 36)
+        self.btn_paste_wire_delta.setFixedSize(_dpi(36), _dpi(36))
         self.btn_paste_wire_delta.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         self.btn_paste_wire_delta.setToolTip(
             "Paste Wire Weight\n"
             "Select one or more vertices on a mesh with a wire deformer.\n"
             "Applies the copied weight value to all selected vertices. Undoable.")
-        self.btn_paste_wire_delta.setStyleSheet(_wire_btn_ss2)
+        self.btn_paste_wire_delta.setStyleSheet(_ss(_wire_btn_ss2))
         self.btn_paste_wire_delta.setEnabled(False)
         _ppw_px = QtGui.QPixmap(f"{_icons_dir}/paste_weight.png")
         if not _ppw_px.isNull():
             self.btn_paste_wire_delta.setIcon(QtGui.QIcon(_ppw_px))
-            self.btn_paste_wire_delta.setIconSize(QtCore.QSize(34, 34))
+            self.btn_paste_wire_delta.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         self.btn_paste_wire_delta.clicked.connect(self._run_paste_wire_delta)
         _wire_shelf_row.addWidget(self.btn_paste_wire_delta)
 
         btn_hammer_wire = QtWidgets.QToolButton()
-        btn_hammer_wire.setFixedSize(36, 36)
+        btn_hammer_wire.setFixedSize(_dpi(36), _dpi(36))
         btn_hammer_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         btn_hammer_wire.setToolTip(
             "Hammer Wire Weights\n"
             "Select vertices on the mesh, then click.\n"
             "Averages each selected vertex's wire weight\n"
             "with its topological 1-ring neighbours.")
-        btn_hammer_wire.setStyleSheet("""
+        btn_hammer_wire.setStyleSheet(_ss("""
             QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
             QToolButton:hover { background-color: rgba(255,255,255,30); }
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
-        """)
+        """))
         _hw_px = QtGui.QPixmap(f"{_icons_dir}/hammer_wire.png")
         if not _hw_px.isNull():
             btn_hammer_wire.setIcon(QtGui.QIcon(_hw_px))
-            btn_hammer_wire.setIconSize(QtCore.QSize(34, 34))
+            btn_hammer_wire.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         btn_hammer_wire.clicked.connect(self._run_hammer_wire_weights)
         _wire_shelf_row.addWidget(btn_hammer_wire)
 
         btn_smooth_wire = QtWidgets.QToolButton()
-        btn_smooth_wire.setFixedSize(36, 36)
+        btn_smooth_wire.setFixedSize(_dpi(36), _dpi(36))
         btn_smooth_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         btn_smooth_wire.setToolTip(
             "Smooth / Flood Wire Weights\n"
@@ -6812,36 +6838,36 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "to Smooth, then floods.\n"
             "If vertices are selected (F9 mask), only those are smoothed.\n"
             "Otherwise the smooth applies to the entire mesh.")
-        btn_smooth_wire.setStyleSheet("""
+        btn_smooth_wire.setStyleSheet(_ss("""
             QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
             QToolButton:hover { background-color: rgba(255,255,255,30); }
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
-        """)
+        """))
         _smw_px = QtGui.QPixmap(f"{_icons_dir}/smooth_weights.png")
         if not _smw_px.isNull():
             btn_smooth_wire.setIcon(QtGui.QIcon(_smw_px))
-            btn_smooth_wire.setIconSize(QtCore.QSize(34, 34))
+            btn_smooth_wire.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         btn_smooth_wire.clicked.connect(self._run_smooth_wire_weights)
         _wire_shelf_row.addWidget(btn_smooth_wire)
 
         self.btn_delete_wire = QtWidgets.QToolButton()
-        self.btn_delete_wire.setFixedSize(36, 36)
+        self.btn_delete_wire.setFixedSize(_dpi(36), _dpi(36))
         self.btn_delete_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         self.btn_delete_wire.setToolTip(
             "Delete Wire Setup\n"
             "Removes wire_setup_grp and all its children\n"
             "(wire_setup_msh, wire_crv, wire_bs, shape curves,\n"
             "wire_setup_wire). Undoable.")
-        self.btn_delete_wire.setStyleSheet("""
+        self.btn_delete_wire.setStyleSheet(_ss("""
             QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
             QToolButton:hover { background-color: rgba(255,80,80,60); }
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
             QToolButton:disabled { opacity: 0.35; }
-        """)
+        """))
         _dw_px = QtGui.QPixmap(f"{_icons_dir}/delete_wire.png")
         if not _dw_px.isNull():
             self.btn_delete_wire.setIcon(QtGui.QIcon(_dw_px))
-            self.btn_delete_wire.setIconSize(QtCore.QSize(34, 34))
+            self.btn_delete_wire.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         self.btn_delete_wire.setEnabled(cmds.objExists("wire_setup_grp"))
         self.btn_delete_wire.clicked.connect(self._run_delete_wire_setup)
 
@@ -6850,7 +6876,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # Base Mesh
         row_wbase = QtWidgets.QHBoxLayout()
         lbl_wbase = QtWidgets.QLabel("Base Mesh")
-        lbl_wbase.setFixedWidth(70)
+        lbl_wbase.setFixedWidth(_dpi(70))
         self.edit_wire_base = QtWidgets.QLineEdit()
         self.edit_wire_base.setPlaceholderText("mesh transform")
         self.edit_wire_base.setToolTip(
@@ -6859,7 +6885,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "as the neutral mesh on which the wire setup will be built."
         )
         btn_wire_get_base = QtWidgets.QPushButton("Get")
-        btn_wire_get_base.setFixedWidth(40)
+        btn_wire_get_base.setFixedWidth(_dpi(40))
         btn_wire_get_base.setToolTip("Set the currently selected object as the base mesh")
         btn_wire_get_base.clicked.connect(self._wire_get_base)
         row_wbase.addWidget(lbl_wbase)
@@ -6870,7 +6896,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # Edges
         row_wedge = QtWidgets.QHBoxLayout()
         lbl_wedge = QtWidgets.QLabel("Edges")
-        lbl_wedge.setFixedWidth(70)
+        lbl_wedge.setFixedWidth(_dpi(70))
         self.edit_wire_edges = QtWidgets.QLineEdit()
         self.edit_wire_edges.setReadOnly(True)
         self.edit_wire_edges.setPlaceholderText("select an edge loop then click Get")
@@ -6885,7 +6911,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "at the corners so the ring can close cleanly)."
         )
         btn_wire_get_edges = QtWidgets.QPushButton("Get")
-        btn_wire_get_edges.setFixedWidth(40)
+        btn_wire_get_edges.setFixedWidth(_dpi(40))
         btn_wire_get_edges.setToolTip("Capture current edge selection")
         btn_wire_get_edges.clicked.connect(self._wire_get_edges)
         row_wedge.addWidget(lbl_wedge)
@@ -6902,10 +6928,10 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Useful for lips or any edge loop that should remain planar.\n"
             "Disable for curved surfaces (cheeks, eyelids…).")
         row_curve_opts.addWidget(self.chk_wire_flat)
-        row_curve_opts.addSpacing(12)
+        row_curve_opts.addSpacing(_dpi(12))
         row_curve_opts.addWidget(QtWidgets.QLabel("Spans"))
         self.spin_wire_spans = QtWidgets.QLineEdit("4")
-        self.spin_wire_spans.setFixedWidth(44)
+        self.spin_wire_spans.setFixedWidth(_dpi(44))
         self.spin_wire_spans.setAlignment(QtCore.Qt.AlignCenter)
         self.spin_wire_spans.setValidator(QtGui.QIntValidator(1, 64, self.spin_wire_spans))
         self.spin_wire_spans.setToolTip(
@@ -6923,7 +6949,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             0, QtCore.Qt.AlignCenter)
         self.list_wire_shapes.headerItem().setTextAlignment(
             1, QtCore.Qt.AlignCenter)
-        self.list_wire_shapes.setFixedHeight(116)
+        self.list_wire_shapes.setFixedHeight(_dpi(116))
         self.list_wire_shapes.setRootIsDecorated(False)
         self.list_wire_shapes.setUniformRowHeights(True)
         self.list_wire_shapes.setAlternatingRowColors(True)
@@ -6934,8 +6960,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.list_wire_shapes.setHorizontalScrollBarPolicy(
             QtCore.Qt.ScrollBarAlwaysOff)
         self.list_wire_shapes.setStyleSheet(
-            "QTreeWidget::item { height: 22px; padding: 0px;"
-            " border-bottom: 1px solid rgba(255,255,255,18); }")
+            _ss("QTreeWidget::item { height: 22px; padding: 0px;"
+            " border-bottom: 1px solid rgba(255,255,255,18); }"))
         self.list_wire_shapes.setEditTriggers(
             QtWidgets.QAbstractItemView.DoubleClicked)
         self.list_wire_shapes.setToolTip(
@@ -6966,33 +6992,33 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             QToolButton:pressed { background-color: rgba(0,0,0,40); }
         """
         _cv_preset_row = QtWidgets.QHBoxLayout()
-        _cv_preset_row.setSpacing(4)
+        _cv_preset_row.setSpacing(_dpi(4))
         _cv_preset_row.setContentsMargins(0, 0, 0, 0)
 
         btn_preset_export = QtWidgets.QToolButton()
-        btn_preset_export.setFixedSize(32, 32)
+        btn_preset_export.setFixedSize(_dpi(32), _dpi(32))
         btn_preset_export.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
-        btn_preset_export.setStyleSheet(_wire_icon_btn_ss)
+        btn_preset_export.setStyleSheet(_ss(_wire_icon_btn_ss))
         btn_preset_export.setToolTip("Export all CV presets to a .wirepreset file.")
         _px_exp = QtGui.QPixmap(f"{_icons_dir}/save.png")
         if not _px_exp.isNull():
             btn_preset_export.setIcon(QtGui.QIcon(_px_exp.scaled(
-                30, 30, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
-            btn_preset_export.setIconSize(QtCore.QSize(30, 30))
+                _dpi(30), _dpi(30), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
+            btn_preset_export.setIconSize(QtCore.QSize(_dpi(30), _dpi(30)))
         else:
             btn_preset_export.setText("Exp")
         btn_preset_export.clicked.connect(self._wire_preset_export)
 
         btn_preset_import = QtWidgets.QToolButton()
-        btn_preset_import.setFixedSize(32, 32)
+        btn_preset_import.setFixedSize(_dpi(32), _dpi(32))
         btn_preset_import.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
-        btn_preset_import.setStyleSheet(_wire_icon_btn_ss)
+        btn_preset_import.setStyleSheet(_ss(_wire_icon_btn_ss))
         btn_preset_import.setToolTip("Import CV presets from a .wirepreset file.")
         _px_imp = QtGui.QPixmap(f"{_icons_dir}/path.png")
         if not _px_imp.isNull():
             btn_preset_import.setIcon(QtGui.QIcon(_px_imp.scaled(
-                30, 30, QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
-            btn_preset_import.setIconSize(QtCore.QSize(30, 30))
+                _dpi(30), _dpi(30), QtCore.Qt.KeepAspectRatio, QtCore.Qt.SmoothTransformation)))
+            btn_preset_import.setIconSize(QtCore.QSize(_dpi(30), _dpi(30)))
         else:
             btn_preset_import.setText("Imp")
         btn_preset_import.clicked.connect(self._wire_preset_import)
@@ -7007,39 +7033,39 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         _psb_ss = "font-size: 11px;"
 
         btn_preset_save = QtWidgets.QPushButton("Save")
-        btn_preset_save.setFixedWidth(44)
+        btn_preset_save.setFixedWidth(_dpi(44))
         btn_preset_save.setFocusPolicy(QtCore.Qt.NoFocus)
-        btn_preset_save.setStyleSheet(_psb_ss)
+        btn_preset_save.setStyleSheet(_ss(_psb_ss))
         btn_preset_save.setToolTip(
             "Save the CV positions of the selected shape curve(s) as a preset.\n"
             "If nothing is selected, saves all shapes.")
         btn_preset_save.clicked.connect(self._wire_preset_save)
 
         btn_preset_apply = QtWidgets.QPushButton("Apply")
-        btn_preset_apply.setFixedWidth(44)
+        btn_preset_apply.setFixedWidth(_dpi(44))
         btn_preset_apply.setFocusPolicy(QtCore.Qt.NoFocus)
-        btn_preset_apply.setStyleSheet(_psb_ss)
+        btn_preset_apply.setStyleSheet(_ss(_psb_ss))
         btn_preset_apply.setToolTip(
             "Apply the saved CV positions to the selected shape curve(s) in the scene.\n"
             "If nothing is selected, applies all shapes that have a preset.")
         btn_preset_apply.clicked.connect(self._wire_preset_apply)
 
         btn_wire_add_shape = QtWidgets.QPushButton("+")
-        btn_wire_add_shape.setFixedWidth(44)
+        btn_wire_add_shape.setFixedWidth(_dpi(44))
         btn_wire_add_shape.setFocusPolicy(QtCore.Qt.NoFocus)
-        btn_wire_add_shape.setStyleSheet(_wire_btn_ss)
+        btn_wire_add_shape.setStyleSheet(_ss(_wire_btn_ss))
         btn_wire_add_shape.setToolTip("Add a new shape — edit the name directly in the table.")
         btn_wire_add_shape.clicked.connect(self._wire_add_shape)
 
         btn_wire_rm_shape = QtWidgets.QPushButton("−")
-        btn_wire_rm_shape.setFixedWidth(44)
+        btn_wire_rm_shape.setFixedWidth(_dpi(44))
         btn_wire_rm_shape.setFocusPolicy(QtCore.Qt.NoFocus)
-        btn_wire_rm_shape.setStyleSheet(_wire_btn_ss)
+        btn_wire_rm_shape.setStyleSheet(_ss(_wire_btn_ss))
         btn_wire_rm_shape.setToolTip("Remove selected shape from the list.")
         btn_wire_rm_shape.clicked.connect(self._wire_remove_shape)
 
         _sidebar = QtWidgets.QVBoxLayout()
-        _sidebar.setSpacing(2)
+        _sidebar.setSpacing(_dpi(2))
         _sidebar.setContentsMargins(0, 0, 0, 0)
         _sidebar.addWidget(btn_preset_save)
         _sidebar.addWidget(btn_preset_apply)
@@ -7048,12 +7074,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         _sidebar.addStretch(1)
 
         _list_col = QtWidgets.QVBoxLayout()
-        _list_col.setSpacing(2)
+        _list_col.setSpacing(_dpi(2))
         _list_col.addWidget(self.list_wire_shapes)
         _list_col.addLayout(row_curve_opts)
 
         _list_row = QtWidgets.QHBoxLayout()
-        _list_row.setSpacing(4)
+        _list_row.setSpacing(_dpi(4))
         _list_row.addLayout(_list_col, 1)
         _list_row.addLayout(_sidebar)
         lay_wire.addLayout(_list_row)
@@ -7062,17 +7088,17 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_wparams = QtWidgets.QHBoxLayout()
         row_wparams.addWidget(QtWidgets.QLabel("Dropoff"))
         self.spin_wire_dropoff = QtWidgets.QLineEdit("100.0")
-        self.spin_wire_dropoff.setFixedWidth(60)
+        self.spin_wire_dropoff.setFixedWidth(_dpi(60))
         self.spin_wire_dropoff.setAlignment(QtCore.Qt.AlignCenter)
         _dv = QtGui.QDoubleValidator(0.1, 9999.0, 1, self.spin_wire_dropoff)
         _dv.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self.spin_wire_dropoff.setValidator(_dv)
         self.spin_wire_dropoff.setToolTip("Wire deformer dropoff distance")
         row_wparams.addWidget(self.spin_wire_dropoff)
-        row_wparams.addSpacing(8)
+        row_wparams.addSpacing(_dpi(8))
         row_wparams.addWidget(QtWidgets.QLabel("Rotation"))
         self.spin_wire_rotation = QtWidgets.QLineEdit("0.00")
-        self.spin_wire_rotation.setFixedWidth(50)
+        self.spin_wire_rotation.setFixedWidth(_dpi(50))
         self.spin_wire_rotation.setAlignment(QtCore.Qt.AlignCenter)
         _rv = QtGui.QDoubleValidator(0.0, 1.0, 2, self.spin_wire_rotation)
         _rv.setLocale(QtCore.QLocale(QtCore.QLocale.English))
@@ -7084,7 +7110,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # Flat Curve + Auto-Paint row
         row_wire_opts = QtWidgets.QHBoxLayout()
-        row_wire_opts.setSpacing(6)
+        row_wire_opts.setSpacing(_dpi(6))
 
         self.chk_wire_autopaint = QtWidgets.QCheckBox("Auto-Paint")
         self.chk_wire_autopaint.setChecked(True)
@@ -7105,7 +7131,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lbl_ap_min = QtWidgets.QLabel("Min")
         row_wire_opts.addWidget(lbl_ap_min)
         self.edit_wire_ap_min = QtWidgets.QLineEdit("1.0")
-        self.edit_wire_ap_min.setFixedWidth(46)
+        self.edit_wire_ap_min.setFixedWidth(_dpi(46))
         self.edit_wire_ap_min.setAlignment(QtCore.Qt.AlignCenter)
         _apv_min = QtGui.QDoubleValidator(0.0, 9999.0, 2, self.edit_wire_ap_min)
         _apv_min.setLocale(QtCore.QLocale(QtCore.QLocale.English))
@@ -7119,7 +7145,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         lbl_ap_max = QtWidgets.QLabel("Max")
         row_wire_opts.addWidget(lbl_ap_max)
         self.edit_wire_ap_max = QtWidgets.QLineEdit("3.0")
-        self.edit_wire_ap_max.setFixedWidth(46)
+        self.edit_wire_ap_max.setFixedWidth(_dpi(46))
         self.edit_wire_ap_max.setAlignment(QtCore.Qt.AlignCenter)
         _apv_max = QtGui.QDoubleValidator(0.0, 9999.0, 2, self.edit_wire_ap_max)
         _apv_max.setLocale(QtCore.QLocale(QtCore.QLocale.English))
@@ -7145,31 +7171,31 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_create_wire = QtWidgets.QHBoxLayout()
         row_create_wire.setSpacing(0)
         row_create_wire.addWidget(QtWidgets.QLabel("Create Wire Setup"))
-        row_create_wire.addSpacing(4)
+        row_create_wire.addSpacing(_dpi(4))
         btn_create_wire = QtWidgets.QToolButton()
-        btn_create_wire.setFixedSize(36, 36)
+        btn_create_wire.setFixedSize(_dpi(36), _dpi(36))
         btn_create_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         btn_create_wire.setToolTip(
             "Creates wire_setup_msh, wire_crv, wire_bs and the wire deformer\n"
             "from the base mesh and edge selection above.")
-        btn_create_wire.setStyleSheet(_wire_action_ss)
+        btn_create_wire.setStyleSheet(_ss(_wire_action_ss))
         btn_create_wire.setIcon(QtGui.QIcon(f"{_icons_dir}/create_wire_setup.png"))
-        btn_create_wire.setIconSize(QtCore.QSize(34, 34))
+        btn_create_wire.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         btn_create_wire.clicked.connect(self._run_create_wire_setup)
         row_create_wire.addWidget(btn_create_wire)
-        row_create_wire.addSpacing(8)
+        row_create_wire.addSpacing(_dpi(8))
         row_create_wire.addWidget(self.btn_delete_wire)
         _sep_wire = QtWidgets.QFrame()
         _sep_wire.setFrameShape(QtWidgets.QFrame.VLine)
         _sep_wire.setFrameShadow(QtWidgets.QFrame.Sunken)
         row_create_wire.addWidget(_sep_wire)
         row_create_wire.addStretch(1)
-        row_create_wire.addSpacing(8)
+        row_create_wire.addSpacing(_dpi(8))
         row_create_wire.addWidget(QtWidgets.QLabel("Bake Wire to Mesh"))
-        row_create_wire.addSpacing(4)
+        row_create_wire.addSpacing(_dpi(4))
         self._wire_delete_after_bake = False
         btn_bake_wire = QtWidgets.QToolButton()
-        btn_bake_wire.setFixedSize(36, 36)
+        btn_bake_wire.setFixedSize(_dpi(36), _dpi(36))
         btn_bake_wire.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         btn_bake_wire.setToolTip(
             "Bake Shapes to Base Mesh\n"
@@ -7179,11 +7205,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "base mesh's BS node. Existing targets with the same name are\n"
             "overwritten.\n\n"
             "Right-click to toggle Delete Wire at Bake.")
-        btn_bake_wire.setStyleSheet(_wire_action_ss)
+        btn_bake_wire.setStyleSheet(_ss(_wire_action_ss))
         _bw_px = QtGui.QPixmap(f"{_icons_dir}/bake_wire.png")
         if not _bw_px.isNull():
             btn_bake_wire.setIcon(QtGui.QIcon(_bw_px))
-            btn_bake_wire.setIconSize(QtCore.QSize(34, 34))
+            btn_bake_wire.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         btn_bake_wire.clicked.connect(self._run_bake_wire)
         btn_bake_wire.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         def _bake_wire_ctx_menu(pos):
@@ -7202,11 +7228,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # ── Cluster to Joint ───────────────────────────────────────────────
         grp_ctj, _body_ctj, lay_ctj = self._collapsible_section(
             "Cluster to Joint", two_state=True, initial_state=0)
-        lay_ctj.setSpacing(6)
+        lay_ctj.setSpacing(_dpi(6))
 
         # Shelf row — Paint / Mirror / Copy / Paste cluster weights
         _ctj_shelf_row = QtWidgets.QHBoxLayout()
-        _ctj_shelf_row.setSpacing(2)
+        _ctj_shelf_row.setSpacing(_dpi(2))
         _ctj_shelf_ss = """
             QToolButton { background-color: transparent; border: none; border-radius: 3px; padding: 2px; }
             QToolButton:hover { background-color: rgba(255,255,255,30); }
@@ -7215,17 +7241,17 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         _ctj_shelf_ss_dis = _ctj_shelf_ss + "QToolButton:disabled { opacity: 0.4; }"
 
         btn_paint_ctj = QtWidgets.QToolButton()
-        btn_paint_ctj.setFixedSize(36, 36)
+        btn_paint_ctj.setFixedSize(_dpi(36), _dpi(36))
         btn_paint_ctj.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         btn_paint_ctj.setToolTip(
             "Paint Cluster Weights\n"
             "Selects the mesh and opens the Paint Attributes tool on cluster.weights.\n"
             "Right-click or double-click to open Tool Settings.")
-        btn_paint_ctj.setStyleSheet(_ctj_shelf_ss)
+        btn_paint_ctj.setStyleSheet(_ss(_ctj_shelf_ss))
         _pctj_px = QtGui.QPixmap(f"{_icons_dir}/paint_cluster.png")
         if not _pctj_px.isNull():
             btn_paint_ctj.setIcon(QtGui.QIcon(_pctj_px))
-            btn_paint_ctj.setIconSize(QtCore.QSize(34, 34))
+            btn_paint_ctj.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         btn_paint_ctj.clicked.connect(self._run_paint_ctj)
         btn_paint_ctj.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         btn_paint_ctj.customContextMenuRequested.connect(lambda _: self._open_tool_settings())
@@ -7234,18 +7260,18 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         _ctj_shelf_row.addWidget(btn_paint_ctj)
 
         btn_mirror_ctj = QtWidgets.QToolButton()
-        btn_mirror_ctj.setFixedSize(36, 36)
+        btn_mirror_ctj.setFixedSize(_dpi(36), _dpi(36))
         btn_mirror_ctj.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         btn_mirror_ctj.setToolTip(
             "Mirror Cluster Weights (YZ)\n"
             "Mirrors cluster weights from -X to +X.\n\n"
             "WARNING: Mesh must be symmetrical and in neutral pose.\n"
             "Right-click to open Mirror Deformer Weights options.")
-        btn_mirror_ctj.setStyleSheet(_ctj_shelf_ss)
+        btn_mirror_ctj.setStyleSheet(_ss(_ctj_shelf_ss))
         _mctj_px = QtGui.QPixmap(f"{_icons_dir}/mirror_wire.png")
         if not _mctj_px.isNull():
             btn_mirror_ctj.setIcon(QtGui.QIcon(_mctj_px))
-            btn_mirror_ctj.setIconSize(QtCore.QSize(34, 34))
+            btn_mirror_ctj.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         btn_mirror_ctj.clicked.connect(self._run_mirror_ctj)
         btn_mirror_ctj.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         btn_mirror_ctj.customContextMenuRequested.connect(
@@ -7253,54 +7279,54 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         _ctj_shelf_row.addWidget(btn_mirror_ctj)
 
         self.btn_copy_ctj_weight = QtWidgets.QToolButton()
-        self.btn_copy_ctj_weight.setFixedSize(36, 36)
+        self.btn_copy_ctj_weight.setFixedSize(_dpi(36), _dpi(36))
         self.btn_copy_ctj_weight.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         self.btn_copy_ctj_weight.setToolTip(
             "Copy Cluster Weight\n"
             "Select exactly 1 vertex on the mesh.\n"
             "Copies its cluster weight value into the clipboard.")
-        self.btn_copy_ctj_weight.setStyleSheet(_ctj_shelf_ss_dis)
+        self.btn_copy_ctj_weight.setStyleSheet(_ss(_ctj_shelf_ss_dis))
         _cpctj_px = QtGui.QPixmap(f"{_icons_dir}/copy_weight.png")
         if not _cpctj_px.isNull():
             self.btn_copy_ctj_weight.setIcon(QtGui.QIcon(_cpctj_px))
-            self.btn_copy_ctj_weight.setIconSize(QtCore.QSize(34, 34))
+            self.btn_copy_ctj_weight.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         self.btn_copy_ctj_weight.clicked.connect(self._run_copy_ctj_weight)
         _ctj_shelf_row.addWidget(self.btn_copy_ctj_weight)
 
         self.btn_paste_ctj_weight = QtWidgets.QToolButton()
-        self.btn_paste_ctj_weight.setFixedSize(36, 36)
+        self.btn_paste_ctj_weight.setFixedSize(_dpi(36), _dpi(36))
         self.btn_paste_ctj_weight.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         self.btn_paste_ctj_weight.setToolTip(
             "Paste Cluster Weight\n"
             "Select one or more vertices.\n"
             "Applies the copied weight to all selected vertices. Undoable.")
-        self.btn_paste_ctj_weight.setStyleSheet(_ctj_shelf_ss_dis)
+        self.btn_paste_ctj_weight.setStyleSheet(_ss(_ctj_shelf_ss_dis))
         self.btn_paste_ctj_weight.setEnabled(False)
         _ppctj_px = QtGui.QPixmap(f"{_icons_dir}/paste_weight.png")
         if not _ppctj_px.isNull():
             self.btn_paste_ctj_weight.setIcon(QtGui.QIcon(_ppctj_px))
-            self.btn_paste_ctj_weight.setIconSize(QtCore.QSize(34, 34))
+            self.btn_paste_ctj_weight.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         self.btn_paste_ctj_weight.clicked.connect(self._run_paste_ctj_weight)
         _ctj_shelf_row.addWidget(self.btn_paste_ctj_weight)
 
         btn_hammer_ctj = QtWidgets.QToolButton()
-        btn_hammer_ctj.setFixedSize(36, 36)
+        btn_hammer_ctj.setFixedSize(_dpi(36), _dpi(36))
         btn_hammer_ctj.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         btn_hammer_ctj.setToolTip(
             "Hammer Cluster Weights\n"
             "Select vertices on the mesh, then click.\n"
             "Averages each selected vertex's cluster weight\n"
             "with its topological 1-ring neighbours.")
-        btn_hammer_ctj.setStyleSheet(_ctj_shelf_ss)
+        btn_hammer_ctj.setStyleSheet(_ss(_ctj_shelf_ss))
         _hctj_px = QtGui.QPixmap(f"{_icons_dir}/hammer_cluster.png")
         if not _hctj_px.isNull():
             btn_hammer_ctj.setIcon(QtGui.QIcon(_hctj_px))
-            btn_hammer_ctj.setIconSize(QtCore.QSize(34, 34))
+            btn_hammer_ctj.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         btn_hammer_ctj.clicked.connect(self._run_hammer_ctj_weights)
         _ctj_shelf_row.addWidget(btn_hammer_ctj)
 
         btn_smooth_ctj = QtWidgets.QToolButton()
-        btn_smooth_ctj.setFixedSize(36, 36)
+        btn_smooth_ctj.setFixedSize(_dpi(36), _dpi(36))
         btn_smooth_ctj.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         btn_smooth_ctj.setToolTip(
             "Smooth / Flood Cluster Weights\n"
@@ -7308,16 +7334,16 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "to Smooth, then floods.\n"
             "If vertices are selected (F9 mask), only those are smoothed.\n"
             "Otherwise the smooth applies to the entire mesh.")
-        btn_smooth_ctj.setStyleSheet(_ctj_shelf_ss)
+        btn_smooth_ctj.setStyleSheet(_ss(_ctj_shelf_ss))
         _smc_px = QtGui.QPixmap(f"{_icons_dir}/smooth_weights.png")
         if not _smc_px.isNull():
             btn_smooth_ctj.setIcon(QtGui.QIcon(_smc_px))
-            btn_smooth_ctj.setIconSize(QtCore.QSize(34, 34))
+            btn_smooth_ctj.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         btn_smooth_ctj.clicked.connect(self._run_smooth_ctj_weights)
         _ctj_shelf_row.addWidget(btn_smooth_ctj)
 
         self.btn_delete_ctj = QtWidgets.QToolButton()
-        self.btn_delete_ctj.setFixedSize(36, 36)
+        self.btn_delete_ctj.setFixedSize(_dpi(36), _dpi(36))
         self.btn_delete_ctj.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         self.btn_delete_ctj.setToolTip(
             "Delete CTJ Setup\n"
@@ -7328,11 +7354,11 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                        .replace("QToolButton:hover { background-color: rgba(255,255,255,30); }",
                                 "QToolButton:hover { background-color: rgba(255,80,80,60); }")
                        + " QToolButton:disabled { opacity: 0.35; }")
-        self.btn_delete_ctj.setStyleSheet(_ctj_del_ss)
+        self.btn_delete_ctj.setStyleSheet(_ss(_ctj_del_ss))
         _dctj_px = QtGui.QPixmap(f"{_icons_dir}/delete_cluster.png")
         if not _dctj_px.isNull():
             self.btn_delete_ctj.setIcon(QtGui.QIcon(_dctj_px))
-            self.btn_delete_ctj.setIconSize(QtCore.QSize(34, 34))
+            self.btn_delete_ctj.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         self.btn_delete_ctj.setEnabled(False)   # updated by _ctj_refresh_delete_btn
         self.btn_delete_ctj.clicked.connect(self._run_delete_ctj_setup)
 
@@ -7341,13 +7367,13 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # Mesh
         row_ctj_mesh = QtWidgets.QHBoxLayout()
         lbl_ctj_mesh = QtWidgets.QLabel("Mesh")
-        lbl_ctj_mesh.setFixedWidth(60)
+        lbl_ctj_mesh.setFixedWidth(_dpi(60))
         self.edit_ctj_mesh = QtWidgets.QLineEdit()
         self.edit_ctj_mesh.setPlaceholderText("mesh transform")
         self.edit_ctj_mesh.setToolTip("Mesh that has the cluster deformer")
         self.edit_ctj_mesh.textChanged.connect(self._ctj_refresh_clusters)
         btn_ctj_pick = QtWidgets.QPushButton("Pick")
-        btn_ctj_pick.setFixedWidth(40)
+        btn_ctj_pick.setFixedWidth(_dpi(40))
         btn_ctj_pick.setToolTip("Use currently selected object as mesh")
         btn_ctj_pick.clicked.connect(self._ctj_pick_mesh)
         row_ctj_mesh.addWidget(lbl_ctj_mesh)
@@ -7358,7 +7384,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # Cluster
         row_ctj_cls = QtWidgets.QHBoxLayout()
         lbl_ctj_cls = QtWidgets.QLabel("Cluster")
-        lbl_ctj_cls.setFixedWidth(60)
+        lbl_ctj_cls.setFixedWidth(_dpi(60))
         self.combo_ctj_cluster = QtWidgets.QComboBox()
         self.combo_ctj_cluster.setToolTip("Cluster deformer on the mesh above")
         self.combo_ctj_cluster.currentTextChanged.connect(self._ctj_try_restore_setup)
@@ -7376,18 +7402,18 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         row_ctj_setup = QtWidgets.QHBoxLayout()
         row_ctj_setup.setSpacing(0)
         row_ctj_setup.addWidget(QtWidgets.QLabel("Cluster to Joint Setup"))
-        row_ctj_setup.addSpacing(4)
+        row_ctj_setup.addSpacing(_dpi(4))
         btn_ctj_setup = QtWidgets.QToolButton()
-        btn_ctj_setup.setFixedSize(36, 36)
+        btn_ctj_setup.setFixedSize(_dpi(36), _dpi(36))
         btn_ctj_setup.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         btn_ctj_setup.setToolTip(
             "Copy cluster weights to a new joint+skinCluster.\n"
             "The cluster is disabled so you can paint skin weights freely.")
-        btn_ctj_setup.setStyleSheet(_ctj_action_ss)
+        btn_ctj_setup.setStyleSheet(_ss(_ctj_action_ss))
         _ctj_px = QtGui.QPixmap(f"{_icons_dir}/cluster_to_joint.png")
         if not _ctj_px.isNull():
             btn_ctj_setup.setIcon(QtGui.QIcon(_ctj_px))
-            btn_ctj_setup.setIconSize(QtCore.QSize(34, 34))
+            btn_ctj_setup.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         btn_ctj_setup.clicked.connect(self._run_ctj_setup)
         row_ctj_setup.addWidget(btn_ctj_setup)
         row_ctj_setup.addStretch(1)
@@ -7396,20 +7422,20 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         _sep_ctj.setFrameShape(QtWidgets.QFrame.VLine)
         _sep_ctj.setFrameShadow(QtWidgets.QFrame.Sunken)
         row_ctj_setup.addWidget(_sep_ctj)
-        row_ctj_setup.addSpacing(8)
+        row_ctj_setup.addSpacing(_dpi(8))
         row_ctj_setup.addWidget(QtWidgets.QLabel("Bake to Cluster"))
-        row_ctj_setup.addSpacing(4)
+        row_ctj_setup.addSpacing(_dpi(4))
         btn_ctj_bake = QtWidgets.QToolButton()
-        btn_ctj_bake.setFixedSize(36, 36)
+        btn_ctj_bake.setFixedSize(_dpi(36), _dpi(36))
         btn_ctj_bake.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
         btn_ctj_bake.setToolTip(
             "Write the current skinCluster joint weights back into the cluster\n"
             "and re-enable the cluster deformer.")
-        btn_ctj_bake.setStyleSheet(_ctj_action_ss)
+        btn_ctj_bake.setStyleSheet(_ss(_ctj_action_ss))
         _ctj_bake_px = QtGui.QPixmap(f"{_icons_dir}/bake_to_cluster.png")
         if not _ctj_bake_px.isNull():
             btn_ctj_bake.setIcon(QtGui.QIcon(_ctj_bake_px))
-            btn_ctj_bake.setIconSize(QtCore.QSize(34, 34))
+            btn_ctj_bake.setIconSize(QtCore.QSize(_dpi(34), _dpi(34)))
         btn_ctj_bake.clicked.connect(self._run_ctj_bake)
         row_ctj_setup.addWidget(btn_ctj_bake)
         lay_ctj.addLayout(row_ctj_setup)
@@ -7429,24 +7455,24 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # ── Copy Deformer Weights ──────────────────────────────────────────
         grp_cdw, _body_cdw, lay_cdw = self._collapsible_section(
             "Copy Deformer Weights", two_state=True, initial_state=0)
-        lay_cdw.setSpacing(6)
+        lay_cdw.setSpacing(_dpi(6))
 
         # Source label
         lbl_cdw_src_hdr = QtWidgets.QLabel("Source")
-        lbl_cdw_src_hdr.setStyleSheet("color: #aaaaaa; font-size: 10px;")
+        lbl_cdw_src_hdr.setStyleSheet(_ss("color: #aaaaaa; font-size: 10px;"))
         lay_cdw.addWidget(lbl_cdw_src_hdr)
 
         # Source Mesh
         row_cdw_src_mesh = QtWidgets.QHBoxLayout()
         lbl_cdw_sm = QtWidgets.QLabel("Mesh")
-        lbl_cdw_sm.setFixedWidth(60)
+        lbl_cdw_sm.setFixedWidth(_dpi(60))
         self.edit_cdw_src_mesh = QtWidgets.QLineEdit()
         self.edit_cdw_src_mesh.setPlaceholderText("source mesh")
         self.edit_cdw_src_mesh.setToolTip("Mesh that holds the source deformer")
         self.edit_cdw_src_mesh.textChanged.connect(
             lambda: self._cdw_refresh_deformers(src=True))
         btn_cdw_pick_src = QtWidgets.QPushButton("Pick")
-        btn_cdw_pick_src.setFixedWidth(40)
+        btn_cdw_pick_src.setFixedWidth(_dpi(40))
         btn_cdw_pick_src.setToolTip("Use sel[0] as source mesh")
         btn_cdw_pick_src.clicked.connect(self._cdw_pick_source)
         row_cdw_src_mesh.addWidget(lbl_cdw_sm)
@@ -7457,7 +7483,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # Source Deformer
         row_cdw_src_def = QtWidgets.QHBoxLayout()
         lbl_cdw_sd = QtWidgets.QLabel("Deformer")
-        lbl_cdw_sd.setFixedWidth(60)
+        lbl_cdw_sd.setFixedWidth(_dpi(60))
         self.combo_cdw_src_deformer = QtWidgets.QComboBox()
         self.combo_cdw_src_deformer.setToolTip("Source deformer (auto-populated from mesh above)")
         row_cdw_src_def.addWidget(lbl_cdw_sd)
@@ -7470,19 +7496,19 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # Target label
         lbl_cdw_tgt_hdr = QtWidgets.QLabel("Target")
-        lbl_cdw_tgt_hdr.setStyleSheet("color: #aaaaaa; font-size: 10px;")
+        lbl_cdw_tgt_hdr.setStyleSheet(_ss("color: #aaaaaa; font-size: 10px;"))
         lay_cdw.addWidget(lbl_cdw_tgt_hdr)
 
         # Target Mesh
         row_cdw_tgt_mesh = QtWidgets.QHBoxLayout()
         lbl_cdw_tm = QtWidgets.QLabel("Mesh")
-        lbl_cdw_tm.setFixedWidth(60)
+        lbl_cdw_tm.setFixedWidth(_dpi(60))
         self.edit_cdw_tgt_mesh = QtWidgets.QLineEdit()
         self.edit_cdw_tgt_mesh.setReadOnly(True)
         self.edit_cdw_tgt_mesh.setPlaceholderText("target mesh(es)")
         self.edit_cdw_tgt_mesh.setToolTip("One or more target meshes")
         btn_cdw_pick_tgt = QtWidgets.QPushButton("Pick")
-        btn_cdw_pick_tgt.setFixedWidth(40)
+        btn_cdw_pick_tgt.setFixedWidth(_dpi(40))
         btn_cdw_pick_tgt.setToolTip(
             "Pick target mesh(es) from selection.\n"
             "If source is already set and is first in selection, uses sel[1:].")
@@ -7495,7 +7521,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # Target Deformer
         row_cdw_tgt_def = QtWidgets.QHBoxLayout()
         lbl_cdw_td = QtWidgets.QLabel("Deformer")
-        lbl_cdw_td.setFixedWidth(60)
+        lbl_cdw_td.setFixedWidth(_dpi(60))
         self.combo_cdw_tgt_deformer = QtWidgets.QComboBox()
         self.combo_cdw_tgt_deformer.setToolTip(
             "Target deformer (auto-populated from first target mesh).\n"
@@ -7519,12 +7545,12 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # ── Joints Setup ──────────────────────────────────────────────────
         grp_joints, _body_joints, lay_joints = self._collapsible_section(
             "Joints Setup", two_state=True, initial_state=0)
-        lay_joints.setSpacing(6)
+        lay_joints.setSpacing(_dpi(6))
 
         # Middle Edge row
         row_mid = QtWidgets.QHBoxLayout()
         lbl_mid = QtWidgets.QLabel("Middle Edge")
-        lbl_mid.setFixedWidth(80)
+        lbl_mid.setFixedWidth(_dpi(80))
         self.line_joints_middle = QtWidgets.QLineEdit()
         self.line_joints_middle.setReadOnly(True)
         self.line_joints_middle.setPlaceholderText("— select an edge —")
@@ -7532,7 +7558,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             "Edge on the edge loop that defines bone/controller positions.\n"
             "The full edge loop is extracted and split into upper/lower arcs.")
         btn_mid_get = QtWidgets.QPushButton("Get")
-        btn_mid_get.setFixedWidth(40)
+        btn_mid_get.setFixedWidth(_dpi(40))
         btn_mid_get.clicked.connect(self._joints_get_middle)
         row_mid.addWidget(lbl_mid)
         row_mid.addWidget(self.line_joints_middle)
@@ -7565,18 +7591,18 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         self.lbl_top_status = QtWidgets.QLabel("— no selection —")
         self.lbl_top_status.setAlignment(QtCore.Qt.AlignCenter)
-        self.lbl_top_status.setStyleSheet("color: #666666; font-size: 11px; padding-top: 4px; padding-bottom: 4px;")
+        self.lbl_top_status.setStyleSheet(_ss("color: #666666; font-size: 11px; padding-top: 4px; padding-bottom: 4px;"))
 
         self.lbl_status = QtWidgets.QLabel("")
         self.lbl_status.setAlignment(QtCore.Qt.AlignCenter | QtCore.Qt.AlignVCenter)
 
         lbl_version = QtWidgets.QLabel(self.VERSION)
         lbl_version.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
-        lbl_version.setStyleSheet("color: #7a7a7a; font-size: 10px;")
+        lbl_version.setStyleSheet(_ss("color: #7a7a7a; font-size: 10px;"))
 
         bottom_wrapper = QtWidgets.QWidget()
         bottom_lay = QtWidgets.QVBoxLayout(bottom_wrapper)
-        bottom_lay.setContentsMargins(8, 2, 8, 4)
+        bottom_lay.setContentsMargins(_dpi(8), _dpi(2), _dpi(8), _dpi(4))
         bottom_lay.setSpacing(0)
         bottom_lay.addWidget(self.progress_bar)
         bottom_lay.addWidget(self.lbl_top_status)
@@ -7584,7 +7610,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         bottom_lay.addWidget(lbl_version)
         outer_layout.addWidget(bottom_wrapper)
 
-        self.setStyleSheet("QLineEdit { border: none; border-radius: 3px; padding: 0px 4px; }")
+        self.setStyleSheet(_ss("QLineEdit { border: none; border-radius: 3px; padding: 0px 4px; }"))
 
         self._update_single_loc_state()
 
@@ -7764,9 +7790,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         # Dialog
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("Rename Locators")
-        dlg.setMinimumWidth(420)
+        dlg.setMinimumWidth(_dpi(420))
         lay = QtWidgets.QVBoxLayout(dlg)
-        lay.setSpacing(6)
+        lay.setSpacing(_dpi(6))
 
         lbl = QtWidgets.QLabel(
             f"Proposed renames for preset <b>{preset_name}</b>.<br>"
@@ -9024,7 +9050,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                         name_e = cmds.aliasAttr(f"{bs_node_e}.weight[{idx_e}]", query=True) or "?"
                         self.lbl_top_status.setText(f"{bs_node_e}  ·  {name_e}  (edit)")
                         self.lbl_top_status.setStyleSheet(
-                            "color: #ff6666; font-size: 11px; padding-top: 4px; padding-bottom: 4px;")
+                            _ss("color: #ff6666; font-size: 11px; padding-top: 4px; padding-bottom: 4px;"))
                         self._cached_phantom_count = 0
                         self._lbl_active_target.setText(name_e)
                         self._lbl_active_target.setCursor(QtCore.Qt.PointingHandCursor)
@@ -9045,7 +9071,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
                     except Exception:
                         pass
                 self.lbl_top_status.setText("— no selection —")
-                self.lbl_top_status.setStyleSheet("color: #666666; font-size: 11px; padding-top: 4px; padding-bottom: 4px;")
+                self.lbl_top_status.setStyleSheet(_ss("color: #666666; font-size: 11px; padding-top: 4px; padding-bottom: 4px;"))
                 self._cached_phantom_count = 0
                 self._lbl_active_target.setText("—")
                 self._lbl_active_target.setStyleSheet("color: #aaaaaa;")
@@ -9090,7 +9116,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
             self.lbl_top_status.setText("  ·  ".join(parts))
             color = "#c8a030" if self._cached_phantom_count else "#aaaaaa"
-            self.lbl_top_status.setStyleSheet(f"color: {color}; font-size: 11px; padding-top: 4px; padding-bottom: 4px;")
+            self.lbl_top_status.setStyleSheet(_ss(f"color: {color}; font-size: 11px; padding-top: 4px; padding-bottom: 4px;"))
 
             # Update active target label; reset edit state only on target change
             bs_node_r, idx_r, name_r = results[0]
@@ -10186,13 +10212,13 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
     def _show_about(self):
         dlg = QtWidgets.QDialog(self)
         dlg.setWindowTitle("About Blendshape Editor")
-        dlg.setMinimumWidth(480)
+        dlg.setMinimumWidth(_dpi(480))
         lay = QtWidgets.QVBoxLayout(dlg)
-        lay.setSpacing(12)
+        lay.setSpacing(_dpi(12))
 
         lbl_title = QtWidgets.QLabel(
-            f"<b style='font-size:14px'>Blendshape Editor</b>"
-            f"&nbsp;&nbsp;<span style='font-size:11px; color:#aaa;'>{self.VERSION}</span>")
+            f"<b style='font-size:{_dpi(14)}px'>Blendshape Editor</b>"
+            f"&nbsp;&nbsp;<span style='font-size:{_dpi(11)}px; color:#aaa;'>{self.VERSION}</span>")
         lbl_title.setAlignment(QtCore.Qt.AlignCenter)
         lay.addWidget(lbl_title)
 
@@ -10225,8 +10251,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         )
         te = QtWidgets.QPlainTextEdit(license_text)
         te.setReadOnly(True)
-        te.setFixedHeight(220)
-        te.setStyleSheet("font-size: 10px; color: #aaa;")
+        te.setFixedHeight(_dpi(220))
+        te.setStyleSheet(_ss("font-size: 10px; color: #aaa;"))
         lay.addWidget(te)
 
         btn_close = QtWidgets.QPushButton("Close")

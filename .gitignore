@@ -5,10 +5,16 @@ docs/_build/
 .idea/
 #debug/
 resources/icons.psd
+resources/icons/icons.psd
 resources/icons/OLD/
 
 # Unused icons (not referenced in blendshape_ui.py)
 resources/icons/BS.png
+resources/icons/clean_bsnode.png
+resources/icons/constraint.svg
+resources/icons/mult_delta.png
+resources/icons/replace_delta.png
+resources/icons/transformXYZ.png
 resources/icons/amplify.png
 resources/icons/attributs.png
 resources/icons/bake_bs.png
