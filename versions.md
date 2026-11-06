@@ -1,5 +1,21 @@
 # Changelog — Blendshape Editor
 
+## v.05.60
+
+**Faster delta ops + Wrap / Extract fixes + Shape Editor groups + Rig Connector UI**
+
+- **Delta ops 3-10x faster**: `_pnts_batch(mesh)` reads the regen mesh `pnts[]` once and writes them back in ranges (regen, split, edge loop split, mesh moves, magnitudes, cluster / joint). Same results as before
+- **Wrap — fixed settings**: the wrap is created with Maya's factory settings (`WRAP_SETTINGS`), so the result no longer depends on each user's Wrap options
+- **Wrap — bind fix**: the wrap is evaluated right after creation; before, after an undo, the first extracted target could come out empty
+- **Wrap — receiver at rest**: active targets of the receiver are set to 0 during the extraction, with a warning
+- **Full mesh names** used for the selection and the blendShape lookup
+- **Extract Only**: same capture as Extract Wrap (combinations OK), 3 selection modes: Shape Editor targets + mesh target, blendShape node + mesh target, source mesh + mesh target
+- **Overwrite**: only the deltas of the existing target are replaced; connections, index, group, painted weights, combination and in-betweens are kept
+- **Keep groups**: rebuilds the Shape Editor groups of the source on the receiver (Outliner groups for Extract Only)
+- **Skip empty**: targets that move no vertex by the threshold (field, default 0.001) are not extracted
+- **Extract Settings**: the Wrap options are in a collapsible block, like Tool Settings
+- **Rig Connector**: "Mapping File" and "BlendShape" groups; one-column "Row Options" sidebar (+ − ▲ ▼, Create Opposite, Connect / Disconnect Selected); bottom bar with Disconnect All (now asks for confirmation) and Build & Connect; Auto-stagger collapsible
+
 ## v.05.59
 
 **Code refactor + Bake Deformer combination fix + installer preset copy**
