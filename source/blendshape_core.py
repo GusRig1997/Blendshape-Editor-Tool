@@ -67,8 +67,86 @@ def _normalize_sculptTarget(result):
     return result if isinstance(result, str) else result[0]
 
 
+# ── Batched pnts[] access ─────────────────────────────────────────────────────
+# Reading or writing pnts[] one vertex at a time costs 3 getAttr/setAttr calls
+# per vertex. Inside a _pnts_batch(mesh) block, all pnts[] of the mesh are read
+# in one call, _read/_write_pnts_delta work on that copy, and the changed
+# vertices are written back in a few range setAttr calls when the block ends.
+# Outside a batch, both functions fall back to direct per-vertex access.
+
+_PNTS_BATCH = {}          # node name (as passed by callers) -> batch entry
+_PNTS_WRITE_CHUNK = 10000  # max vertices per setAttr call
+
+
+def _contiguous_ranges(sorted_indices):
+    """[1, 2, 3, 7, 8] -> [(1, 3), (7, 8)]"""
+    ranges = []
+    start = prev = None
+    for i in sorted_indices:
+        if start is None:
+            start = prev = i
+        elif i == prev + 1:
+            prev = i
+        else:
+            ranges.append((start, prev))
+            start = prev = i
+    if start is not None:
+        ranges.append((start, prev))
+    return ranges
+
+
+def _flush_pnts_batch(entry):
+    """Write the changed vertices of a batch entry back to pnts[]."""
+    vals, shape = entry["vals"], entry["shape"]
+    for a, b in _contiguous_ranges(sorted(entry["dirty"])):
+        for c in range(a, b + 1, _PNTS_WRITE_CHUNK):
+            d = min(b, c + _PNTS_WRITE_CHUNK - 1)
+            flat = [v for i in range(c, d + 1) for v in vals[i]]
+            cmds.setAttr(f"{shape}.pnts[{c}:{d}]", *flat)
+    entry["dirty"].clear()
+
+
+@contextmanager
+def _pnts_batch(mesh):
+    """Context manager: batch all _read/_write_pnts_delta calls on mesh
+    (transform or shape name). Nested blocks on the same mesh share one batch;
+    the write-back happens when the outermost block ends, even on error.
+    The mesh must still exist when the block ends."""
+    entry = _PNTS_BATCH.get(mesh)
+    if entry is not None:
+        entry["depth"] += 1
+        try:
+            yield
+        finally:
+            entry["depth"] -= 1
+        return
+
+    shape = _get_mesh_shape(mesh)
+    n = cmds.polyEvaluate(shape, vertex=True) or 0
+    vals = []
+    if n:
+        vals = [tuple(p) for p in cmds.getAttr(f"{shape}.pnts[0:{n - 1}]")]
+    entry = {"vals": vals, "dirty": set(), "depth": 1, "shape": shape}
+    # Callers mix transform and shape names: register every name of the node.
+    keys = {mesh, shape}
+    keys.update(cmds.listRelatives(shape, parent=True) or [])
+    for k in keys:
+        _PNTS_BATCH[k] = entry
+    try:
+        yield
+    finally:
+        try:
+            _flush_pnts_batch(entry)
+        finally:
+            for k in keys:
+                _PNTS_BATCH.pop(k, None)
+
+
 def _read_pnts_delta(mesh_shape, vi):
     """Read the (dx, dy, dz) pnts delta for vertex vi. Returns a 3-tuple."""
+    entry = _PNTS_BATCH.get(mesh_shape)
+    if entry is not None and 0 <= vi < len(entry["vals"]):
+        return entry["vals"][vi]
     return (
         cmds.getAttr(f"{mesh_shape}.pnts[{vi}].pntx"),
         cmds.getAttr(f"{mesh_shape}.pnts[{vi}].pnty"),
@@ -78,6 +156,11 @@ def _read_pnts_delta(mesh_shape, vi):
 
 def _write_pnts_delta(mesh_shape, vi, dx, dy, dz):
     """Write (dx, dy, dz) to pnts[vi]."""
+    entry = _PNTS_BATCH.get(mesh_shape)
+    if entry is not None and 0 <= vi < len(entry["vals"]):
+        entry["vals"][vi] = (float(dx), float(dy), float(dz))
+        entry["dirty"].add(vi)
+        return
     cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntx", dx)
     cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pnty", dy)
     cmds.setAttr(f"{mesh_shape}.pnts[{vi}].pntz", dz)
@@ -656,15 +739,16 @@ def apply_mesh_moves_to_target(bs_node, base_mesh, logical_index, vtx_indices=No
         # Zero any existing pnts[] that are no longer needed
         # (skip unselected vertices — their stored deltas must not be altered)
         existing_idx = cmds.getAttr(f"{regen_shape}.pnts", multiIndices=True) or []
-        for vi in existing_idx:
-            if vtx_set is not None and vi not in vtx_set:
-                continue
-            if vi not in new_deltas:
-                _write_pnts_delta(regen_shape, vi, 0.0, 0.0, 0.0)
+        with _pnts_batch(regen_shape):
+            for vi in existing_idx:
+                if vtx_set is not None and vi not in vtx_set:
+                    continue
+                if vi not in new_deltas:
+                    _write_pnts_delta(regen_shape, vi, 0.0, 0.0, 0.0)
 
-        # Write new deltas
-        for vi, (dx, dy, dz) in new_deltas.items():
-            _write_pnts_delta(regen_shape, vi, dx, dy, dz)
+            # Write new deltas
+            for vi, (dx, dy, dz) in new_deltas.items():
+                _write_pnts_delta(regen_shape, vi, dx, dy, dz)
 
         # 5. Remove tweak source
         if vtx_set is not None:
@@ -1073,7 +1157,9 @@ def regen_mesh(bs_node, logical_index):
     was not already live before entry."""
     mesh_shape, tgt_transform, was_live = _get_regen_mesh(bs_node, logical_index)
     try:
-        yield mesh_shape
+        # pnts[] writes are flushed before the regen mesh is deleted
+        with _pnts_batch(mesh_shape):
+            yield mesh_shape
     finally:
         if not was_live:
             cmds.delete(tgt_transform)
@@ -1403,13 +1489,14 @@ def create_split_target(bs_node, base_mesh, target_name, source_index, loc_idx, 
         regen_mesh = _normalize_sculptTarget(regen_mesh)
 
         # 3. Scale each delta by w — skip w==1 (vertex keeps full delta, no write needed)
-        for vi, (dx, dy, dz) in deltas.items():
-            w_list = weights.get(vi)
-            w      = w_list[loc_idx] if w_list is not None else 0.0
-            w      = max(0.0, min(1.0, w))
-            if abs(w - 1.0) < 1e-7:
-                continue
-            _write_pnts_delta(regen_mesh, vi, dx * w, dy * w, dz * w)
+        with _pnts_batch(regen_mesh):
+            for vi, (dx, dy, dz) in deltas.items():
+                w_list = weights.get(vi)
+                w      = w_list[loc_idx] if w_list is not None else 0.0
+                w      = max(0.0, min(1.0, w))
+                if abs(w - 1.0) < 1e-7:
+                    continue
+                _write_pnts_delta(regen_mesh, vi, dx * w, dy * w, dz * w)
 
         # 4. Delete regen mesh — bakes modified pnts[] back into the blendShape slot
         cmds.delete(regen_mesh)
@@ -2199,11 +2286,12 @@ def _collect_magnitudes(bs_node, logical_index):
         regen = _normalize_sculptTarget(cmds.sculptTarget(bs_node, e=True, target=logical_index, regenerate=True))
         n_verts = cmds.polyEvaluate(regen, vertex=True)
         magnitudes = {}
-        for i in range(n_verts):
-            dx, dy, dz = _read_pnts_delta(regen, i)
-            mag = math.sqrt(dx*dx + dy*dy + dz*dz)
-            if mag > 1e-6:
-                magnitudes[i] = mag
+        with _pnts_batch(regen):
+            for i in range(n_verts):
+                dx, dy, dz = _read_pnts_delta(regen, i)
+                mag = math.sqrt(dx*dx + dy*dy + dz*dz)
+                if mag > 1e-6:
+                    magnitudes[i] = mag
         cmds.delete(regen)
     return magnitudes, n_verts
 
@@ -2307,11 +2395,12 @@ def create_delta_cluster(bs_node, logical_index, target_name,
             if _precomputed is None:
                 n_verts = cmds.polyEvaluate(working_mesh, vertex=True)
                 magnitudes = {}
-                for i in range(n_verts):
-                    dx, dy, dz = _read_pnts_delta(working_mesh, i)
-                    mag = math.sqrt(dx*dx + dy*dy + dz*dz)
-                    if mag > 1e-6:
-                        magnitudes[i] = mag
+                with _pnts_batch(working_mesh):
+                    for i in range(n_verts):
+                        dx, dy, dz = _read_pnts_delta(working_mesh, i)
+                        mag = math.sqrt(dx*dx + dy*dy + dz*dz)
+                        if mag > 1e-6:
+                            magnitudes[i] = mag
             else:
                 magnitudes, n_verts = _precomputed
 
@@ -2404,11 +2493,12 @@ def create_delta_joint(bs_node, logical_index, target_name,
             if _precomputed is None:
                 n_verts = cmds.polyEvaluate(working_mesh, vertex=True)
                 magnitudes = {}
-                for i in range(n_verts):
-                    dx, dy, dz = _read_pnts_delta(working_mesh, i)
-                    mag = math.sqrt(dx*dx + dy*dy + dz*dz)
-                    if mag > 1e-6:
-                        magnitudes[i] = mag
+                with _pnts_batch(working_mesh):
+                    for i in range(n_verts):
+                        dx, dy, dz = _read_pnts_delta(working_mesh, i)
+                        mag = math.sqrt(dx*dx + dy*dy + dz*dz)
+                        if mag > 1e-6:
+                            magnitudes[i] = mag
             else:
                 magnitudes, n_verts = _precomputed
 
@@ -2902,9 +2992,10 @@ def edge_loop_split_target(bs_node, logical_index, target_name,
                     f"A regen mesh named '{new_name}' already exists in the scene — "
                     f"delete it and try again.")
             regen = _normalize_sculptTarget(regen)
-            for vi, (dx, dy, dz) in deltas.items():
-                w = weight_map.get(vi, 0.0)
-                _write_pnts_delta(regen, vi, dx * w, dy * w, dz * w)
+            with _pnts_batch(regen):
+                for vi, (dx, dy, dz) in deltas.items():
+                    w = weight_map.get(vi, 0.0)
+                    _write_pnts_delta(regen, vi, dx * w, dy * w, dz * w)
             cmds.delete(regen)
         print(f"Created : {new_name}")
         return idx
@@ -3055,9 +3146,123 @@ def unlink_mirror_locators(locators):
 # TARGET WRAP EXTRACTION
 # ─────────────────────────────────────────────────────────────────────────────
 
+# ── Shape Editor groups (targetDirectory) ─────────────────────────────────────
+# Each blendShape stores its Shape Editor tree in targetDirectory[d]:
+#   directoryName, parentIndex, childIndices (>= 0 target, < 0 sub-group -d).
+# Directory 0 is the root.
+
+def get_shape_editor_tree(bs_node, directory=0):
+    """Shape Editor tree of bs_node, in display order:
+    [("target", name) | ("group", name, [children...]), ...]
+    A blendShape never opened in the Shape Editor has no tree: its targets are
+    returned flat, in index order."""
+    children = cmds.getAttr(f"{bs_node}.targetDirectory[{directory}].childIndices") or []
+    if directory == 0 and not children:
+        return [("target", name) for _bs, _idx, name in get_named_targets(bs_node)]
+    tree = []
+    for c in children:
+        if c >= 0:
+            alias = cmds.aliasAttr(f"{bs_node}.w[{c}]", q=True)
+            if alias:
+                tree.append(("target", alias))
+        else:
+            name = cmds.getAttr(f"{bs_node}.targetDirectory[{-c}].directoryName")
+            tree.append(("group", name, get_shape_editor_tree(bs_node, -c)))
+    return tree
+
+
+def _tree_has_target(children, names):
+    """True if any target of names is somewhere in children."""
+    for item in children:
+        if item[0] == "target" and item[1] in names:
+            return True
+        if item[0] == "group" and _tree_has_target(item[2], names):
+            return True
+    return False
+
+
+def _mel_str(s):
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def _find_child_group(bs_node, parent_dir, name):
+    """Index of the group called name directly under parent_dir, or None."""
+    for c in cmds.getAttr(f"{bs_node}.targetDirectory[{parent_dir}].childIndices") or []:
+        if c < 0 and cmds.getAttr(f"{bs_node}.targetDirectory[{-c}].directoryName") == name:
+            return -c
+    return None
+
+
+def rebuild_shape_editor_groups(src_bs, dst_bs, name_map):
+    """
+    Reproduces the Shape Editor groups of src_bs on dst_bs for the targets in
+    name_map ({source target name: target name on dst_bs}).
+
+    - Groups that already exist on dst_bs (same name, same place) are reused.
+    - Groups holding none of the mapped targets are not created.
+    - Targets of dst_bs that are not in name_map are left where they are.
+    - Mapped targets and groups are placed in the source order.
+    Returns the number of groups created.
+    """
+    dst_idx = {}
+    for name_src, name_dst in name_map.items():
+        try:
+            dst_idx[name_src] = get_bs_weight_attribute_logical_index(dst_bs, name_dst)
+        except RuntimeError:
+            pass
+    if not dst_idx:
+        return 0
+    anchor  = next(iter(dst_idx.values()))   # any target, needed to create a group
+    created = [0]
+
+    def walk(children, rd):
+        for item in children:
+            if item[0] == "target":
+                if item[1] in dst_idx:
+                    mel.eval(f"blendShapeTargetMove {dst_bs} {dst_idx[item[1]]} {rd} 0 3")
+                continue
+            _kind, gname, sub = item
+            if not _tree_has_target(sub, dst_idx):
+                continue
+            nd = _find_child_group(dst_bs, rd, gname)
+            if nd is None:
+                nd = mel.eval(f"blendShapeCreateEmptyDirectory {dst_bs} {anchor}")
+                if not nd:
+                    raise RuntimeError(f"Could not create group '{gname}' on {dst_bs}")
+                mel.eval(f"blendShapeRenameTargetDirectoryAlias {dst_bs} {nd} {_mel_str(gname)}")
+                created[0] += 1
+            mel.eval(f"blendShapeTargetMove {dst_bs} {-nd} {rd} 0 3")
+            walk(sub, nd)
+
+    walk(get_shape_editor_tree(src_bs), 0)
+    return created[0]
+
+
+def _dag_safe(name):
+    """Shape Editor group names may contain spaces etc., DAG names cannot."""
+    safe = _re.sub(r"\W", "_", name)
+    return safe if safe and not safe[0].isdigit() else f"_{safe}"
+
+
+def _parent_like_tree(tree, shapes_by_name, parent):
+    """Parents extracted meshes under transform groups mirroring the Shape
+    Editor tree (Extract Only). Returns the new long names of the meshes."""
+    placed = []
+    for item in tree:
+        if item[0] == "target":
+            shape = shapes_by_name.pop(item[1], None)
+            if shape:
+                placed += cmds.ls(cmds.parent(shape, parent, absolute=True), long=True)
+        elif _tree_has_target(item[2], shapes_by_name):
+            grp = cmds.group(empty=True, name=_dag_safe(item[1]), parent=parent)
+            grp = cmds.ls(grp, long=True)[0]
+            placed += _parent_like_tree(item[2], shapes_by_name, grp)
+    return placed
+
+
 def _find_blendshape_on_mesh(mesh):
     """Returns the first blendShape node found upstream on mesh, or None."""
-    shapes = cmds.listRelatives(mesh, shapes=True) or [mesh]
+    shapes = cmds.listRelatives(mesh, shapes=True, fullPath=True) or [mesh]
     for shape in shapes:
         history = cmds.listHistory(shape, pruneDagObjects=True) or []
         for n in history:
@@ -3066,9 +3271,29 @@ def _find_blendshape_on_mesh(mesh):
     return None
 
 
+# Fixed wrap settings (Maya factory defaults of Deform > Wrap options).
+# Fixed on purpose: CreateWrap reads each user's own Wrap option box,
+# so two artists could get different extracted shapes from the same scene.
+WRAP_SETTINGS = {
+    "weight_threshold":      0.0,
+    "max_distance":          1.0,    # 0.0 = no limit
+    "influence_type":        2,      # 1 = points, 2 = faces
+    "exclusive_bind":        0,      # 0 = smooth, 1 = exclusive
+    "auto_weight_threshold": 1,
+    "render_influences":     0,
+    "falloff_mode":          0,      # 0 = volume, 1 = surface
+}
+
+
+def _short_name(node):
+    """'|grp|ns:body' -> 'body' (for building new node names)."""
+    return node.split("|")[-1].split(":")[-1]
+
+
 def _create_wrap_deformer(driver_mesh, driven_mesh):
     """
-    Creates a wrap deformer: driven_mesh is deformed by driver_mesh.
+    Creates a wrap deformer: driven_mesh is deformed by driver_mesh,
+    always with WRAP_SETTINGS (never the user's Wrap option box).
     Returns (wrap_node, base_transform) for later cleanup.
     """
     before_wraps      = set(cmds.ls(type='wrap') or [])
@@ -3076,7 +3301,11 @@ def _create_wrap_deformer(driver_mesh, driven_mesh):
 
     # Select driven first, then driver — Maya wrap convention
     cmds.select([driven_mesh, driver_mesh])
-    mel.eval('CreateWrap')
+    s = WRAP_SETTINGS
+    args = [1, s["weight_threshold"], s["max_distance"], s["influence_type"],
+            s["exclusive_bind"], s["auto_weight_threshold"],
+            s["render_influences"], s["falloff_mode"]]
+    mel.eval('doWrapArgList "7" {%s}' % ", ".join(f'"{a}"' for a in args))
 
     after_wraps = set(cmds.ls(type='wrap') or [])
     new_wraps   = list(after_wraps - before_wraps)
@@ -3094,6 +3323,11 @@ def _create_wrap_deformer(driver_mesh, driven_mesh):
     new_transforms   = after_transforms - before_transforms
     base_transform   = list(new_transforms)[0] if new_transforms else None
 
+    # The wrap binds on its first evaluation. Force it now, while the driver is
+    # still neutral: otherwise the first target activated by the caller can be
+    # bound in its deformed state and come out empty (seen after an undo).
+    _mesh_points(driven_mesh)
+
     print(f"Wrap created : {wrap_node}  (base: {base_transform})")
     return wrap_node, base_transform
 
@@ -3108,10 +3342,16 @@ def _delete_wrap_deformer(wrap_node, base_transform):
 
 
 
-def _capture_target_shapes(bs_node, mesh_target, targets):
+SKIP_EMPTY_THRESHOLD = 0.001   # default: max vertex move below this = empty target
+
+
+def _capture_target_shapes(bs_node, mesh_target, targets, skip_threshold=None):
     """
     For each target: activates it, duplicates mesh_target (history deleted to bake
     the deformed position), resets weight to zero.
+
+    skip_threshold : if set, a target that moves no vertex of mesh_target by
+                     skip_threshold or more is not duplicated (empty target).
 
     zero_all_bs_weights() is assumed to have been called beforehand for non-combo
     targets.  Combination-output targets (skipped by zero_all_bs_weights) are
@@ -3120,12 +3360,15 @@ def _capture_target_shapes(bs_node, mesh_target, targets):
     reconnecting them once all captures are done.
 
     Returns:
-      (extracted, deferred_reconnects)
+      (extracted, deferred_reconnects, skipped)
       extracted           = [(target_name, temp_mesh, combo_info), ...]
       deferred_reconnects = [(src_plug, dst_attr), ...] to reconnect after all captures
+      skipped             = [target_name, ...] empty targets (skip_threshold)
     """
     extracted = []
     deferred  = []
+    skipped   = []
+    neutral   = _mesh_points(mesh_target) if skip_threshold is not None else None
     for _bs, _idx, target_name in targets:
         combo_info = get_combination_info(_bs, _idx)
         attr = f"{bs_node}.{target_name}"
@@ -3136,13 +3379,19 @@ def _capture_target_shapes(bs_node, mesh_target, targets):
             cmds.disconnectAttr(src, attr)
             deferred.append((src, attr))
         cmds.setAttr(attr, 1.0)
+        if neutral is not None and not _points_differ(
+                _mesh_points(mesh_target), neutral, skip_threshold):
+            cmds.setAttr(attr, 0.0)
+            skipped.append(target_name)
+            print(f"Skipped (empty, < {skip_threshold}): {target_name}")
+            continue
         temp_dup = cmds.duplicate(mesh_target, name=f"{target_name}_WRAP_TEMP")[0]
         cmds.delete(temp_dup, constructionHistory=True)
         cmds.setAttr(attr, 0.0)
         # Do NOT reconnect here — deferred to avoid per-target reconnect overhead
         extracted.append((target_name, temp_dup, combo_info))
         print(f"Captured: {target_name}")
-    return extracted, deferred
+    return extracted, deferred, skipped
 
 
 def _unique_target_name(bs_target, name):
@@ -3158,11 +3407,54 @@ def _unique_target_name(bs_target, name):
         i += 1
 
 
+def _target_item(bs_node, idx, item=6000):
+    return f"{bs_node}.inputTarget[0].inputTargetGroup[{idx}].inputTargetItem[{item}]"
+
+
+def _replace_target_in_place(bs_node, idx, base_mesh, new_mesh):
+    """
+    Replaces the deltas of target idx with the shape of new_mesh, keeping the
+    target itself: index, name, connections, Shape Editor group, painted target
+    weights and combination stay untouched.
+
+    new_mesh is added as a temporary target (Maya computes its deltas), its
+    stored deltas are copied over the existing ones, then it is deleted.
+    In-betweens of the existing target are kept (a warning lists them).
+    """
+    purge_empty_bs_slots(bs_node)
+    used    = cmds.getAttr(f"{bs_node}.w", multiIndices=True) or []
+    tmp_idx = (max(used) + 1) if used else 0
+    cmds.blendShape(bs_node, e=True, target=(base_mesh, tmp_idx, new_mesh, 1.0))
+    try:
+        src, dst = _target_item(bs_node, tmp_idx), _target_item(bs_node, idx)
+        # A live regen mesh would overwrite the stored deltas: disconnect it
+        for plug in cmds.listConnections(f"{dst}.inputGeomTarget", s=True, d=False,
+                                         plugs=True) or []:
+            cmds.disconnectAttr(plug, f"{dst}.inputGeomTarget")
+            cmds.warning(f"{bs_node}[{idx}]: live sculpt mesh disconnected before overwrite.")
+        pts   = cmds.getAttr(f"{src}.inputPointsTarget") or []
+        comps = cmds.getAttr(f"{src}.inputComponentsTarget") or []
+        cmds.setAttr(f"{dst}.inputPointsTarget", len(pts), *pts, type="pointArray")
+        cmds.setAttr(f"{dst}.inputComponentsTarget", len(comps), *comps, type="componentList")
+    finally:
+        mel.eval(f"blendShapeDeleteTargetGroup {bs_node} {tmp_idx};")
+
+    items = cmds.getAttr(f"{bs_node}.inputTarget[0].inputTargetGroup[{idx}].inputTargetItem",
+                         multiIndices=True) or []
+    inbetweens = [round((i - 5000) / 1000.0, 3) for i in items if i != 6000]
+    if inbetweens:
+        name = cmds.aliasAttr(f"{bs_node}.w[{idx}]", q=True)
+        cmds.warning(f"'{name}' on {bs_node}: in-betweens {inbetweens} kept from the "
+                     f"previous version — check they still fit the new shape.")
+    return inbetweens
+
+
 def _integrate_extracted_shapes(mesh_target, extracted, overwrite=True):
     """
     Finds or creates a blendShape on mesh_target, then integrates each extracted shape.
 
-    overwrite=True  (default) : replaces an existing target if the name already exists.
+    overwrite=True  (default) : if the name already exists, replaces the deltas of
+                                that target in place (connections, group, index kept).
     overwrite=False           : appends a numeric suffix to avoid collision
                                 (e.g. "jaw" ->"jaw1"), like Maya's native behaviour.
 
@@ -3197,10 +3489,15 @@ def _integrate_extracted_shapes(mesh_target, extracted, overwrite=True):
         if orig_name in existing_shapes:
             if overwrite:
                 existing_idx = get_bs_weight_attribute_logical_index(bs_target, orig_name)
-                mel.eval(f"blendShapeDeleteTargetGroup {bs_target} {existing_idx};")
-                was_replaced = True
-            else:
-                actual_name = _unique_target_name(bs_target, orig_name)
+                _replace_target_in_place(bs_target, existing_idx, mesh_target, temp_mesh)
+                cmds.delete(temp_mesh)
+                # Keep an existing combination; only add one the target lacks
+                if combo_info and not get_combination_info(bs_target, existing_idx):
+                    apply_combination(bs_target, orig_name, combo_info)
+                log.append((orig_name, orig_name, True))
+                print(f"Replaced: '{orig_name}' (deltas only) ->{bs_target}")
+                continue
+            actual_name = _unique_target_name(bs_target, orig_name)
 
         # Add at next available index
         purge_empty_bs_slots(bs_target)
@@ -3222,7 +3519,8 @@ def _integrate_extracted_shapes(mesh_target, extracted, overwrite=True):
     return bs_target, log
 
 
-def extract_targets_via_wrap(bs_node, base_mesh, mesh_target, targets, overwrite=True):
+def extract_targets_via_wrap(bs_node, base_mesh, mesh_target, targets, overwrite=True,
+                             keep_groups=True):
     """
     Extracts blendShape targets from bs_node onto mesh_target using a wrap deformer.
 
@@ -3235,34 +3533,54 @@ def extract_targets_via_wrap(bs_node, base_mesh, mesh_target, targets, overwrite
     targets : list of (bs_node, logical_index, target_name)
     Returns : (bs_target, log)  — log = [(orig_name, actual_name, was_replaced), ...]
     """
-    with frozen_bs_weights(bs_node):
-        # Duplicate mesh_target to get a clean neutral-pose proxy
-        proxy = cmds.duplicate(mesh_target, name=f"{mesh_target}_wrapProxy")[0]
-        cmds.delete(proxy, constructionHistory=True)
+    bs_target, log, _pruned = extract_targets_via_wrap_batch(
+        bs_node, base_mesh, [mesh_target], targets, overwrite=overwrite,
+        keep_groups=keep_groups)[0]
+    return bs_target, log
 
-        wrap_node, base_transform = _create_wrap_deformer(base_mesh, proxy)
-        extracted = []
-        deferred  = []
-        try:
-            extracted, deferred = _capture_target_shapes(bs_node, proxy, targets)
-        finally:
-            # Always clean up wrap + proxy regardless of success or failure
-            _delete_wrap_deformer(wrap_node, base_transform)
-            if cmds.objExists(proxy):
-                cmds.delete(proxy)
-            # Restore combo connections that were deferred during capture
-            for src, attr in deferred:
-                if cmds.objExists(src.split(".")[0]):
-                    try:
-                        cmds.connectAttr(src, attr, force=True)
-                    except Exception:
-                        pass
 
-    return _integrate_extracted_shapes(mesh_target, extracted, overwrite=overwrite)
+@contextmanager
+def _receiver_at_rest(mesh):
+    """Context manager: if mesh has its own blendShape with active weights,
+    zero them (with a warning) so they are not baked into the duplicate."""
+    rbs = _find_blendshape_on_mesh(mesh)
+    active = []
+    if rbs:
+        for idx in cmds.getAttr(f"{rbs}.w", multiIndices=True) or []:
+            if abs(cmds.getAttr(f"{rbs}.w[{idx}]")) > 1e-6:
+                active.append(cmds.aliasAttr(f"{rbs}.w[{idx}]", q=True) or f"w[{idx}]")
+    if not active:
+        yield
+        return
+    cmds.warning(f"'{_short_name(mesh)}' has active targets on {rbs} "
+                 f"({', '.join(active)}): set to 0 during the extraction.")
+    with frozen_bs_weights(rbs):
+        yield
+
+
+def _make_neutral_duplicate(mesh, name):
+    """Duplicate mesh with its own blendShape at rest, history deleted.
+    Returns the long name of the duplicate."""
+    with _receiver_at_rest(mesh):
+        dup = cmds.duplicate(mesh, name=name)[0]
+        dup = cmds.ls(dup, long=True)[0]
+        cmds.delete(dup, constructionHistory=True)
+    return dup
+
+
+def _reconnect_deferred(deferred):
+    """Reconnect (src_plug, dst_attr) pairs saved by _capture_target_shapes."""
+    for src, attr in deferred:
+        if cmds.objExists(src.split(".")[0]):
+            try:
+                cmds.connectAttr(src, attr, force=True)
+            except Exception as e:
+                print(f"  could not reconnect {src} -> {attr}: {e}")
 
 
 def extract_targets_via_wrap_batch(bs_node, base_mesh, receiver_meshes, targets,
-                                   overwrite=True, on_receiver_start=None):
+                                   overwrite=True, on_receiver_start=None,
+                                   keep_groups=True, skip_threshold=None):
     """
     Batch version of extract_targets_via_wrap: saves and restores all BS connections
     ONCE for all receivers instead of once per receiver.
@@ -3273,8 +3591,14 @@ def extract_targets_via_wrap_batch(bs_node, base_mesh, receiver_meshes, targets,
     on_receiver_start(receiver_idx, mesh_target_name) — optional progress callback
         called just before each receiver's wrap is created.
 
-    Returns [(bs_target, log), ...] — one entry per receiver_mesh, in order.
-    log = [(orig_name, actual_name, was_replaced), ...]
+    keep_groups    : rebuild the source Shape Editor groups on each receiver
+    skip_threshold : if set, targets that move no receiver vertex by this
+                     distance or more are not extracted (an existing target of
+                     the same name on the receiver is then left untouched)
+
+    Returns [(bs_target, log, skipped), ...] — one entry per receiver_mesh, in order.
+    log     = [(orig_name, actual_name, was_replaced), ...]
+    skipped = [target names not extracted because they were empty]
     """
     all_deferred = []   # combo connections to restore at the very end
     results      = []
@@ -3285,16 +3609,16 @@ def extract_targets_via_wrap_batch(bs_node, base_mesh, receiver_meshes, targets,
                 if on_receiver_start:
                     on_receiver_start(r_idx, mesh_target)
 
-                proxy = cmds.duplicate(mesh_target,
-                                       name=f"{mesh_target}_wrapProxy")[0]
-                cmds.delete(proxy, constructionHistory=True)
+                proxy = _make_neutral_duplicate(
+                    mesh_target, f"{_short_name(mesh_target)}_wrapProxy")
 
                 wrap_node, base_transform = _create_wrap_deformer(base_mesh, proxy)
                 extracted = []
                 deferred  = []
+                skipped   = []
                 try:
-                    extracted, deferred = _capture_target_shapes(
-                        bs_node, proxy, targets)
+                    extracted, deferred, skipped = _capture_target_shapes(
+                        bs_node, proxy, targets, skip_threshold=skip_threshold)
                     # Combo connections disconnected in this receiver are accumulated
                     # globally; subsequent receivers will find them already gone and
                     # produce empty deferred lists — no double-disconnect risk.
@@ -3306,17 +3630,14 @@ def extract_targets_via_wrap_batch(bs_node, base_mesh, receiver_meshes, targets,
 
                 bs_target, log = _integrate_extracted_shapes(
                     mesh_target, extracted, overwrite=overwrite)
-                results.append((bs_target, log))
+                if keep_groups and bs_target and log:
+                    rebuild_shape_editor_groups(
+                        bs_node, bs_target, {o: a for o, a, _r in log})
+                results.append((bs_target, log, skipped))
 
         finally:
             # Restore all deferred combo connections once, after all receivers are done
-            for src, attr in all_deferred:
-                node = src.split(".")[0]
-                if cmds.objExists(node):
-                    try:
-                        cmds.connectAttr(src, attr, force=True)
-                    except Exception:
-                        pass
+            _reconnect_deferred(all_deferred)
 
     return results
 
@@ -3338,29 +3659,71 @@ def connect_extracted_targets(bs_node, bs_target, target_names):
     return connected
 
 
-def extract_targets_only(bs_node, mesh_target, targets):
+def get_named_targets(bs_node):
+    """Every named target of bs_node as [(bs_node, logical_index, target_name), ...]."""
+    targets = []
+    for idx in cmds.getAttr(f"{bs_node}.w", multiIndices=True) or []:
+        alias = cmds.aliasAttr(f"{bs_node}.w[{idx}]", q=True)
+        if alias:
+            targets.append((bs_node, idx, alias))
+    return targets
+
+
+def _mesh_points(mesh):
+    """Object-space points of the visible (non-intermediate) shape of mesh."""
+    from maya.api import OpenMaya as om
+    shapes = cmds.listRelatives(mesh, shapes=True, fullPath=True,
+                                noIntermediate=True) or [mesh]
+    sel = om.MSelectionList()
+    sel.add(shapes[0])
+    return om.MFnMesh(sel.getDagPath(0)).getPoints(om.MSpace.kObject)
+
+
+def _points_differ(pts_a, pts_b, tolerance=1e-3):
+    """True when at least one vertex moved by tolerance or more."""
+    tol2 = tolerance * tolerance
+    return any((a - b).length() ** 2 >= tol2 for a, b in zip(pts_a, pts_b))
+
+
+def extract_targets_only(bs_node, mesh_target, targets=None, skip_threshold=None,
+                         keep_groups=True):
     """
     Extracts blendShape targets by duplicating the deformed mesh_target (which must
     already have a deformer chain set up by the user). No blendShape is created.
+
+    Each target is activated alone, like Wrap Extract: other weights are zeroed and
+    combination targets are disconnected during the capture, then reconnected.
 
     Each extracted shape:
       - Transform : {target_name}_TEMP
       - Shape node: {target_name}  (so blendShape > Add picks up the name automatically)
 
-    All shapes are grouped under {mesh_short}_extractedShapes_grp at world root.
+    All shapes are grouped under {mesh_short}_extractedShapes_grp at world root,
+    in sub-groups named like the Shape Editor groups of bs_node (keep_groups).
 
-    targets : list of (bs_node, logical_index, target_name)
-    Returns : (grp, [transform_names])
+    targets        : list of (bs_node, logical_index, target_name),
+                     or None for every named target of bs_node
+    skip_threshold : if set, targets that move no vertex of mesh_target by this
+                     distance or more are not extracted
+    Returns : (grp, [transform_names], [skipped_target_names])
     """
-    mesh_short = mesh_target.split(":")[-1].split("|")[-1]
+    if targets is None:
+        targets = get_named_targets(bs_node)
+    mesh_short = _short_name(mesh_target)
     extracted  = []
+    by_name    = {}   # {target name: extracted mesh}
+    skipped    = []
 
     with frozen_bs_weights(bs_node):
-        for _bs, _idx, target_name in targets:
-            cmds.setAttr(f"{bs_node}.{target_name}", 1.0)
-            temp_dup = cmds.duplicate(mesh_target, name=f"{target_name}_TEMP")[0]
-            cmds.delete(temp_dup, constructionHistory=True)
-            cmds.setAttr(f"{bs_node}.{target_name}", 0.0)
+        captured, deferred = [], []
+        try:
+            captured, deferred, skipped = _capture_target_shapes(
+                bs_node, mesh_target, targets, skip_threshold=skip_threshold)
+        finally:
+            _reconnect_deferred(deferred)
+
+        for target_name, temp_dup, _combo in captured:
+            temp_dup = cmds.rename(temp_dup, f"{target_name}_TEMP")
 
             # Remove all intermediate shapes (ShapeOrig, ShapeDeformed, etc.)
             all_shapes = cmds.listRelatives(temp_dup, shapes=True, fullPath=True) or []
@@ -3375,18 +3738,28 @@ def extract_targets_only(bs_node, mesh_target, targets):
                 cmds.delete(remaining[1:])
 
             # Rename the surviving shape so blendShape > Add picks up the target name
-            surviving = cmds.listRelatives(temp_dup, shapes=True) or []
+            surviving = cmds.listRelatives(temp_dup, shapes=True, fullPath=True) or []
             if surviving:
                 cmds.rename(surviving[0], target_name)
             extracted.append(temp_dup)
+            by_name[target_name] = temp_dup
             print(f"Extracted: {target_name}_TEMP  (shape: {target_name})")
 
         grp = None
         if extracted:
-            grp = cmds.group(*extracted, name=f"{mesh_short}_extractedShapes_grp", world=True)
+            grp = cmds.group(empty=True, name=f"{mesh_short}_extractedShapes_grp", world=True)
+            grp = cmds.ls(grp, long=True)[0]
+            placed = []
+            if keep_groups:
+                # Outliner groups mirroring the Shape Editor groups of bs_node
+                placed = _parent_like_tree(get_shape_editor_tree(bs_node), by_name, grp)
+            for t in by_name.values():   # not in the tree / keep_groups off
+                placed += cmds.ls(cmds.parent(t, grp, absolute=True), long=True)
+            extracted = placed
+            grp = cmds.ls(grp)[0]
             print(f"Grouped at world root: {grp}")
 
-        return grp, extracted
+        return grp, extracted, skipped
 
 
 @undo_chunk

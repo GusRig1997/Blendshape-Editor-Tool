@@ -33,9 +33,41 @@ deformer pipeline.
        is enabled, the new target weights are connected to the original
        blendShape weights so they drive in sync.
    * - **Extract Only**
-     - Same as above but skips the weight connection step regardless of
-       the checkbox state. Use this when you want targets on the secondary
-       mesh but prefer to set up the connections manually.
+     - Uses the deformer setup you already built on the mesh target (wrap,
+       proximity wrap, etc.): activates each target alone and duplicates the
+       mesh target. The shapes are grouped under
+       ``<mesh>_extractedShapes_grp``; no blendShape or deformer is created.
+       Selection, any of: targets in the Shape Editor + mesh target; a
+       blendShape node + mesh target (all its targets); a source mesh then the
+       mesh target (all targets of the source's blendShape).
+
+The options below are in **Extract Settings**, a collapsible block under the
+two buttons (closed by default, click it to open), like the shelf's
+**Tool Settings**.
+
+**Overwrite** *(checkbox, default ON)*
+  When a target with the same name already exists on the receiver, only its
+  deltas are replaced: its connections, Shape Editor group, index, painted
+  target weights and combination are kept. Its in-betweens are kept too (a
+  warning lists them). OFF: the new target gets a numeric suffix.
+
+**Skip empty** *(checkbox, default ON)*
+  For both extractions: a target that moves no vertex of the mesh target by
+  the threshold or more (default 0.001) is not extracted. With Overwrite, an
+  existing target of the same name is then left as is. The threshold is set
+  in the field next to the checkbox.
+
+**Keep groups** *(checkbox, default ON)*
+  Rebuilds the Shape Editor groups of the source blendShape: on the receiver
+  blendShape for **Extract Wrap Targets**, as Outliner groups under the
+  extracted shapes group for **Extract Only**. Groups that already exist with
+  the same name are reused, empty groups are not created, and the receiver's
+  own targets are not moved.
+
+Wrap settings are fixed (Maya factory defaults: smooth bind, max distance 1,
+volume falloff), so the result does not depend on each user's Wrap options.
+If a receiver has active targets of its own, they are set to 0 during the
+extraction (with a warning).
 
 **Connect extracted targets** *(checkbox, default ON)*
   When enabled, **Extract Wrap Targets** automatically connects each

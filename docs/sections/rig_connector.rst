@@ -87,6 +87,19 @@ Row Operations
   Reorders selected rows. Multi-row selection is supported; the relative
   order within the selection is preserved.
 
+**Sidebar** (right of the table, centred on its height)
+  One column under a **Row Options** header: Add, Remove, Move Up, Move
+  Down, then **Create Opposite** (duplicates the selected row with L/R
+  swapped). Below, after a gap: **Connect Selected** and **Disconnect
+  Selected**.
+
+**Bottom bar**
+  **Build & Connect** (main action) at the bottom right; **Disconnect All**
+  at the bottom left, far from it, with a confirmation.
+
+**Auto-stagger** and **Soft Blend Pairs** are collapsible sections under the
+table, closed by default.
+
 ----
 
 hasLimits Attribute

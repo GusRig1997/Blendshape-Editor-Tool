@@ -1868,14 +1868,14 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._scale_left_spacer.changeSize(scale_left_w, 0, _Fixed, _Fixed)
 
         # ── Scale right spacer: fills remaining space so save buttons sit at right edge
-        # Row items (10 items → 9 gaps of sp):
-        # [left_spacer][lbl_filter][le_search][scale_left][lbl_scale][4px][le_scale][scale_right][save_map][save_plus]
-        save_map_w  = self._btn_save_map.width()
-        save_plus_w = self._btn_save_plus.width()
+        # Row items (8 items → 7 gaps of sp):
+        # [left_spacer][lbl_filter][le_search][scale_left][lbl_scale][4px][le_scale][scale_right]
+        save_map_w  = 0   # save buttons moved to the Mapping File group
+        save_plus_w = 0
         row_w       = hh.width() + 2 * fw + sb_w
         fixed_sum   = (left_spacer_w + lbl_w + le_search_w + scale_left_w
                        + lbl_scale_w + 4 + le_scale_w + save_map_w + save_plus_w)
-        scale_right_w = max(0, row_w - fixed_sum - 9 * sp)
+        scale_right_w = max(0, row_w - fixed_sum - 7 * sp)
         self._scale_right_spacer.changeSize(scale_right_w, 0, _Fixed, _Fixed)
 
         self._search_row.invalidate()
@@ -1900,7 +1900,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         outer.setMenuBar(menu_bar)
 
         # ── Files Mapping ─────────────────────────────────────────────────────
-        grp_files = QtWidgets.QGroupBox("Files Mapping")
+        grp_files = QtWidgets.QGroupBox("Mapping File")
         grp_files.setStyleSheet(_ss("QGroupBox { font-size: 11px; }"))
         _fm_ss = (
             "QToolButton { background-color: transparent; border: none;"
@@ -1915,8 +1915,6 @@ class RigConnectorDialog(QtWidgets.QDialog):
         _FS = _dpi(6)  # uniform spacing between label / field / button
 
         # Mapping json
-        files_row.addWidget(QtWidgets.QLabel("Mapping .mapng"))
-        files_row.addSpacing(_FS)
         _fm_ss_nopad = _fm_ss.replace("padding: 2px;", "padding: 0px;")
         btn_save_map = QtWidgets.QToolButton()
         btn_save_map.setAutoRaise(True)
@@ -1962,6 +1960,10 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._le_mapping_path.setPlaceholderText("C:/path/to/rig_mapping.mapng")
         files_row.addWidget(self._le_mapping_path)
         files_row.addSpacing(_FS)
+        # File actions together: load, path, save, save +
+        files_row.addWidget(btn_save_map)
+        files_row.addWidget(btn_save_plus)
+        files_row.addSpacing(_FS)
         btn_json_autofill = QtWidgets.QToolButton()
         btn_json_autofill.setAutoRaise(True)
         btn_json_autofill.setStyleSheet(_ss(_fm_ss))
@@ -1975,11 +1977,14 @@ class RigConnectorDialog(QtWidgets.QDialog):
         btn_json_autofill.clicked.connect(self._autofill_from_json)
         files_row.addWidget(btn_json_autofill)
 
-        files_row.addStretch(1)
-
-        # BS Node
-        files_row.addWidget(QtWidgets.QLabel("BlendShape Node"))
-        files_row.addSpacing(_FS)
+        # BS Node: its own group, it is not a file
+        grp_bs = QtWidgets.QGroupBox("BlendShape")
+        grp_bs.setStyleSheet(_ss("QGroupBox { font-size: 11px; }"))
+        bs_row = QtWidgets.QHBoxLayout(grp_bs)
+        bs_row.setContentsMargins(_dpi(8), _dpi(4), _dpi(8), _dpi(4))
+        bs_row.setSpacing(0)
+        bs_row.addWidget(QtWidgets.QLabel("Node"))
+        bs_row.addSpacing(_FS)
         btn_get_bs = QtWidgets.QToolButton()
         btn_get_bs.setAutoRaise(True)
         btn_get_bs.setStyleSheet(_ss(_fm_ss))
@@ -1990,15 +1995,15 @@ class RigConnectorDialog(QtWidgets.QDialog):
         btn_get_bs.setFixedSize(_dpi(36), _dpi(36))
         btn_get_bs.setToolTip("Get the blendShape node from the current mesh selection or selected blendshape node")
         btn_get_bs.clicked.connect(self._get_bs_node)
-        files_row.addWidget(btn_get_bs)
-        files_row.addSpacing(_FS)
+        bs_row.addWidget(btn_get_bs)
+        bs_row.addSpacing(_FS)
         self._le_bs_node = QtWidgets.QLineEdit()
         self._le_bs_node.setReadOnly(True)
         self._le_bs_node.setFixedWidth(_dpi(160))
         self._le_bs_node.setFixedHeight(_dpi(23))
         self._le_bs_node.setPlaceholderText("blendShape node")
-        files_row.addWidget(self._le_bs_node)
-        files_row.addSpacing(_FS)
+        bs_row.addWidget(self._le_bs_node)
+        bs_row.addSpacing(_FS)
         btn_fill_bs = QtWidgets.QToolButton()
         btn_fill_bs.setAutoRaise(True)
         btn_fill_bs.setStyleSheet(_ss(_fm_ss))
@@ -2012,13 +2017,17 @@ class RigConnectorDialog(QtWidgets.QDialog):
             "Auto Fill from BS Node — populate the table with all targets\n"
             "from the current BS node (auto-detects if none is set).")
         btn_fill_bs.clicked.connect(self._fill_from_bs_node)
-        files_row.addWidget(btn_fill_bs)
+        bs_row.addWidget(btn_fill_bs)
 
         # backing store for _load_json_file / _populate_from_default_json (not displayed)
         self._le_json = QtWidgets.QLineEdit()
         self._le_json.setReadOnly(True)
 
-        outer.addWidget(grp_files)
+        _top_row = QtWidgets.QHBoxLayout()
+        _top_row.setSpacing(_dpi(6))
+        _top_row.addWidget(grp_files, 1)
+        _top_row.addWidget(grp_bs)
+        outer.addLayout(_top_row)
 
         # ── Search + Scale Ranges ─────────────────────────────────────────────
         self._search_row = QtWidgets.QHBoxLayout()
@@ -2060,8 +2069,6 @@ class RigConnectorDialog(QtWidgets.QDialog):
         search_row.addItem(self._scale_right_spacer)
         self._btn_save_map  = btn_save_map
         self._btn_save_plus = btn_save_plus
-        search_row.addWidget(btn_save_plus)
-        search_row.addWidget(btn_save_map)
 
         # search_row added below, after sidebar width is known
 
@@ -2160,13 +2167,16 @@ class RigConnectorDialog(QtWidgets.QDialog):
             self._add_row)
         btn_rm  = _rc_side_btn("−", "Delete the selected rows from the table",
                                self._remove_rows)
-        btn_up  = _rc_side_btn("↑", "Move selected rows up by one position",
+        btn_up  = _rc_side_btn("▲", "Move selected rows up by one position",
                                self._move_up)
-        btn_dn  = _rc_side_btn("↓", "Move selected rows down by one position",
+        btn_dn  = _rc_side_btn("▼", "Move selected rows down by one position",
                                self._move_down)
+        # Native Maya buttons, bigger glyphs
+        for _b, _size in ((btn_add, 22), (btn_rm, 22), (btn_up, 15), (btn_dn, 15)):
+            _b.setStyleSheet(_ss(f"font-size: {_size}px; font-weight: bold;"))
 
         btn_opp = _rc_side_btn(
-            "L→R",
+            "Create\nOpposite",
             "Duplicate the selected row with opposite names:\n"
             "swaps L/R (and other symmetric tokens) in the Shape and Controller fields.\n"
             "The new row is inserted directly below the source row.",
@@ -2177,57 +2187,57 @@ class RigConnectorDialog(QtWidgets.QDialog):
             f"{_idir}/link_locs.png",
             "Connect Selected — Build the rig network for the selected rows only.\n"
             "Useful for testing a single setup without rebuilding the full rig.",
-            self._connect_selected_rows, icon_size=26)
-
+            self._connect_selected_rows)
         btn_disc_sel = _rc_icon_btn(
             f"{_idir}/unlink_locs.png",
             "Disconnect Selected — Remove the rig network for the selected shapes\n"
             "(utility nodes deleted, blendShape weight disconnected).",
-            self._disconnect_selected, icon_size=26)
+            self._disconnect_selected)
+
+        # Bottom bar: Disconnect All far from Build & Connect
         btn_disc_all = _rc_icon_btn(
             f"{_idir}/disconnect_all.png",
             "Disconnect All — Remove the rig network for all shapes in the table\n"
-            "(utility nodes deleted, blendShape weights disconnected).",
+            "(utility nodes deleted, blendShape weights disconnected).\n"
+            "Asks for confirmation.",
             self._disconnect_all)
 
-        _build_ss = (
-            "QToolButton { background-color: transparent; border: none;"
-            " border-radius: 3px; padding: 2px; }"
-            "QToolButton:hover   { background-color: rgba(255,255,255,30); }"
-            "QToolButton:pressed { background-color: rgba(0,0,0,40); }"
-        )
-        self._btn_build = QtWidgets.QToolButton()
-        self._btn_build.setToolButtonStyle(QtCore.Qt.ToolButtonIconOnly)
-        self._btn_build.setToolTip(
-            "Build the rig network for all valid rows:\n"
+        self._btn_build = _rc_icon_btn(
+            f"{_idir}/connect_rig.png",
+            "Build & Connect — Build the rig network for all valid rows:\n"
             "  • Creates offset / normalize / clamp utility nodes per shape\n"
             "  • Applies transform limits and locks unused axes on each controller\n"
-            "  • Optionally generates scale shapes (if Auto Scale Shapes is checked)")
-        self._btn_build.setStyleSheet(_ss(_build_ss))
-        _pix_connect = QtGui.QPixmap(f"{_idir}/connect_rig.png")
-        if not _pix_connect.isNull():
-            self._btn_build.setIcon(QtGui.QIcon(_pix_connect))
-            self._btn_build.setIconSize(QtCore.QSize(_dpi(30), _dpi(30)))
-        self._btn_build.setFixedSize(_dpi(40), _dpi(40))
-        self._btn_build.clicked.connect(self._on_build_connect)
+            "  • Optionally generates scale shapes (if Auto Scale Shapes is checked)",
+            self._on_build_connect)
 
         _tbl_row = QtWidgets.QHBoxLayout()
         _tbl_row.setSpacing(_RC_SP)
         _tbl_row.setContentsMargins(0, 0, 0, 0)
         _tbl_row.addWidget(self._table, 1)
+        # Sidebar, one column: row tools, gap, link tools. All buttons share
+        # the width "Create Opposite" needs, so the column lines up.
+        _side_col_w = _dpi(64)
         _side_vlay = QtWidgets.QVBoxLayout()
         _side_vlay.setSpacing(_RC_SP)
         _side_vlay.setContentsMargins(0, 0, 0, 0)
-        _side_vlay.addStretch(1)
-        for _b in (btn_connect_sel, btn_disc_sel, btn_disc_all):
+        _side_vlay.addStretch(1)            # centred on the table height
+        _side_hdr = QtWidgets.QLabel("Row Options")
+        _side_hdr.setAlignment(QtCore.Qt.AlignCenter)
+        _side_hdr.setFixedWidth(_side_col_w)
+        _side_hdr.setStyleSheet(_ss("font-size: 10px; font-weight: bold; color: #aaa;"))
+        _side_vlay.addWidget(_side_hdr)
+        for _b in (btn_add, btn_rm, btn_up, btn_dn, btn_opp):
+            _b.setFixedSize(_side_col_w, _dpi(40))
             _side_vlay.addWidget(_b)
-        _side_vlay.addSpacing(_dpi(8))
-        _side_vlay.addWidget(self._btn_build)
+        _side_vlay.addSpacing(_dpi(40))     # gap between the two blocks
+        for _b in (btn_connect_sel, btn_disc_sel):
+            _b.setFixedSize(_side_col_w, _dpi(40))
+            _side_vlay.addWidget(_b)
         _side_vlay.addStretch(1)
         _tbl_row.addLayout(_side_vlay)
 
-        # search_row constrained to table width: sidebar (40px) + spacing on the right
-        _sidebar_w = _dpi(40) + _RC_SP  # btn fixed size + tbl_row spacing
+        # search_row constrained to table width: sidebar column + spacing on the right
+        _sidebar_w = _side_col_w + _RC_SP
         _search_outer = QtWidgets.QHBoxLayout()
         _search_outer.setContentsMargins(0, 0, 0, 0)
         _search_outer.setSpacing(0)
@@ -2236,15 +2246,6 @@ class RigConnectorDialog(QtWidgets.QDialog):
         outer.addLayout(_search_outer)
 
         outer.addLayout(_tbl_row, 1)
-
-        grp_row_opts = QtWidgets.QGroupBox("Row Options")
-        grp_row_opts.setStyleSheet(_ss("QGroupBox { font-size: 11px; }"))
-        side_row = QtWidgets.QHBoxLayout(grp_row_opts)
-        side_row.setSpacing(_RC_SP)
-        side_row.setContentsMargins(_dpi(8), _dpi(4), _dpi(8), _dpi(4))
-        for _b in (btn_add, btn_rm, btn_up, btn_dn, btn_opp):
-            side_row.addWidget(_b)
-        side_row.addStretch(1)
 
         # ── Auto-stagger ──────────────────────────────────────────────────────
         grp_stagger = QtWidgets.QGroupBox("Auto-stagger")
@@ -2263,7 +2264,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._le_stagger_ctrl.setFixedWidth(_dpi(140))
         stagger_row.addWidget(self._le_stagger_ctrl)
 
-        stagger_row.addStretch(1)
+        stagger_row.addSpacing(_dpi(12))
 
         self._combo_stagger_axis = QtWidgets.QComboBox()
         self._combo_stagger_axis.setEditable(True)
@@ -2273,7 +2274,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._combo_stagger_axis.setFixedWidth(_dpi(75))
         stagger_row.addWidget(self._combo_stagger_axis)
 
-        stagger_row.addStretch(1)
+        stagger_row.addSpacing(_dpi(12))
 
         self._stagger_sign = 1.0
         self.btn_stagger_sign = QtWidgets.QToolButton()
@@ -2315,19 +2316,26 @@ class RigConnectorDialog(QtWidgets.QDialog):
             "           Same direction for all. Ideal for zip lips.")
         self._combo_stagger_mode.currentTextChanged.connect(self._on_stagger_mode_changed)
         stagger_row.addWidget(self._combo_stagger_mode)
-
         stagger_row.addStretch(1)
 
-        stagger_row.addWidget(QtWidgets.QLabel("In Max"))
+        stagger_row.addSpacing(_dpi(12))
+
+        # Second line: values, options, create
+        stagger_row2 = QtWidgets.QHBoxLayout()
+        stagger_row2.setContentsMargins(0, 0, 0, 0)
+        stagger_row2.setSpacing(_dpi(4))
+        _stagger_vbox.addLayout(stagger_row2)
+
+        stagger_row2.addWidget(QtWidgets.QLabel("In Max"))
         self._sb_stagger_inmax = QtWidgets.QLineEdit("0.000")
         self._sb_stagger_inmax.setFixedWidth(_dpi(70))
         self._sb_stagger_inmax.setAlignment(QtCore.Qt.AlignCenter)
         _inmax_v = QtGui.QDoubleValidator(0.0, 9999.0, 3, self._sb_stagger_inmax)
         _inmax_v.setLocale(QtCore.QLocale(QtCore.QLocale.English))
         self._sb_stagger_inmax.setValidator(_inmax_v)
-        stagger_row.addWidget(self._sb_stagger_inmax)
+        stagger_row2.addWidget(self._sb_stagger_inmax)
 
-        stagger_row.addStretch(1)
+        stagger_row2.addSpacing(_dpi(12))
 
         self._combo_stagger_curve = QtWidgets.QComboBox()
         self._combo_stagger_curve.addItems(["Uniform", "Ease In", "Ease Out", "Smooth"])
@@ -2338,11 +2346,11 @@ class RigConnectorDialog(QtWidgets.QDialog):
             "Ease In  : slots cluster at the start, spread toward In Max  (t²).\n"
             "Ease Out : slots spread quickly then compress toward In Max  (1−(1−t)²).\n"
             "Smooth   : S-curve, slow at both ends, fast in the middle  (3t²−2t³).")
-        stagger_row.addWidget(self._combo_stagger_curve)
+        stagger_row2.addWidget(self._combo_stagger_curve)
 
-        stagger_row.addStretch(1)
+        stagger_row2.addSpacing(_dpi(12))
 
-        stagger_row.addWidget(QtWidgets.QLabel("Blend"))
+        stagger_row2.addWidget(QtWidgets.QLabel("Blend"))
         self._sb_stagger_falloff = QtWidgets.QLineEdit("0.000")
         self._sb_stagger_falloff.setFixedWidth(_dpi(70))
         self._sb_stagger_falloff.setAlignment(QtCore.Qt.AlignCenter)
@@ -2353,9 +2361,9 @@ class RigConnectorDialog(QtWidgets.QDialog):
             "Overlap amount added on each side of a shape's activation slot.\n"
             "Example: slot [0.2, 0.4] with blend 0.01 ->In Min=0.19, In Max=0.41.\n"
             "First shape never goes below 0; last shape never exceeds In Max.")
-        stagger_row.addWidget(self._sb_stagger_falloff)
+        stagger_row2.addWidget(self._sb_stagger_falloff)
 
-        stagger_row.addStretch(1)
+        stagger_row2.addSpacing(_dpi(12))
 
         self._chk_stagger_proxies = QtWidgets.QCheckBox("As Proxies")
         self._chk_stagger_proxies.setChecked(False)
@@ -2364,14 +2372,14 @@ class RigConnectorDialog(QtWidgets.QDialog):
             "    driven by the stagger controller with the computed In Min / In Max.\n"
             "OFF: applies the controller, axis, In Min and In Max directly\n"
             "    to the selected rows, without adding proxy rows.")
-        stagger_row.addWidget(self._chk_stagger_proxies)
+        stagger_row2.addWidget(self._chk_stagger_proxies)
 
-        stagger_row.addStretch(1)
+        stagger_row2.addStretch(1)
 
         _lbl_create_stagger = QtWidgets.QLabel("Create Stagger")
-        stagger_row.addWidget(_lbl_create_stagger)
-        stagger_row.setAlignment(_lbl_create_stagger, QtCore.Qt.AlignVCenter)
-        stagger_row.setAlignment(self._chk_stagger_proxies, QtCore.Qt.AlignVCenter)
+        stagger_row2.addWidget(_lbl_create_stagger)
+        stagger_row2.setAlignment(_lbl_create_stagger, QtCore.Qt.AlignVCenter)
+        stagger_row2.setAlignment(self._chk_stagger_proxies, QtCore.Qt.AlignVCenter)
         btn_stagger = QtWidgets.QToolButton()
         btn_stagger.setAutoRaise(True)
         btn_stagger.setStyleSheet(_ss("""
@@ -2392,7 +2400,7 @@ class RigConnectorDialog(QtWidgets.QDialog):
             "Blend extends each slot by ±blend (clamped to bounds).\n"
             "Mirror/Symmetric: outer shapes share slot 0, centre shape activates last.")
         btn_stagger.clicked.connect(self._apply_stagger)
-        stagger_row.addWidget(btn_stagger)
+        stagger_row2.addWidget(btn_stagger)
 
         # ── Center row (Mirror / Symmetric only) ──────────────────────────────
         self._center_row_widget = QtWidgets.QWidget()
@@ -2442,12 +2450,31 @@ class RigConnectorDialog(QtWidgets.QDialog):
         self._center_row_widget.setEnabled(False)  # disabled until Mirror/Symmetric selected
         _stagger_vbox.addWidget(self._center_row_widget)
 
-        opts_row = QtWidgets.QHBoxLayout()
-        opts_row.setSpacing(_RC_SP)
-        opts_row.setContentsMargins(0, 0, 0, 0)
-        opts_row.addWidget(grp_row_opts)
-        opts_row.addWidget(grp_stagger)
-        outer.addLayout(opts_row)
+        # Collapsible, closed by default (same header as Soft Blend Pairs)
+        grp_stagger.setTitle("")
+        grp_stagger.setVisible(False)
+        st_header = QtWidgets.QPushButton("▶  Auto-stagger")
+        st_header.setStyleSheet(_ss(
+            "QPushButton { background-color: rgba(255,255,255,28); border: none;"
+            " border-radius: 2px; font-weight: bold; text-align: left;"
+            " padding-left: 6px; }"
+            "QPushButton:hover { background-color: rgba(255,255,255,38); }"))
+        st_header.setSizePolicy(QtWidgets.QSizePolicy.Expanding,
+                                QtWidgets.QSizePolicy.Fixed)
+        st_header.setFixedHeight(_dpi(22))
+
+        def _toggle_stagger():
+            opened = not grp_stagger.isVisible()
+            if opened:
+                self.setMinimumHeight(0)
+            else:
+                QtCore.QTimer.singleShot(50, lambda: self.setMinimumHeight(self.height()))
+            grp_stagger.setVisible(opened)
+            st_header.setText(("▼" if opened else "▶") + "  Auto-stagger")
+
+        st_header.clicked.connect(_toggle_stagger)
+        outer.addWidget(st_header)
+        outer.addWidget(grp_stagger)
 
         # ── Soft Blend Pairs (collapsible, closed by default) ─────────────────
         _HDR_STYLE = (
@@ -2569,6 +2596,18 @@ class RigConnectorDialog(QtWidgets.QDialog):
         _sb_split.addLayout(_left_col, 7)
         _sb_split.addLayout(_right_col, 3)
         lay_sb.addLayout(_sb_split)
+
+        # ── Bottom bar: Disconnect All left, Build & Connect right ────────────
+        _bottom = QtWidgets.QHBoxLayout()
+        _bottom.setContentsMargins(0, _dpi(6), 0, 0)
+        _bottom.addWidget(btn_disc_all)
+        _bottom.addStretch(1)
+        # Same as the other icon buttons of the UI: text [icon button]
+        _lbl_build = QtWidgets.QLabel("Build & Connect")
+        _lbl_build.setAlignment(QtCore.Qt.AlignRight | QtCore.Qt.AlignVCenter)
+        _bottom.addWidget(_lbl_build)
+        _bottom.addWidget(self._btn_build)
+        outer.addLayout(_bottom)
 
         self._updating_controls = False
         self._refresh_key_controls()
@@ -4155,6 +4194,14 @@ class RigConnectorDialog(QtWidgets.QDialog):
             if item and item.text():
                 shape_names.append(item.text())
         if not shape_names:
+            return
+        answer = QtWidgets.QMessageBox.question(
+            self, "Disconnect All",
+            f"Remove the rig network of all {len(shape_names)} shape(s) of the table\n"
+            f"on '{bs_node}'?",
+            QtWidgets.QMessageBox.Yes | QtWidgets.QMessageBox.Cancel,
+            QtWidgets.QMessageBox.Cancel)
+        if answer != QtWidgets.QMessageBox.Yes:
             return
         count = disconnect_rig_shapes(bs_node, shape_names)
         for r in range(self._table.rowCount()):
@@ -6570,9 +6617,14 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         _w_extract, self.btn_extract_only = self._label_icon_btn(
             f"{_icons_dir}/extract_only.png",
             "Extract Only",
-            "Extracts each selected target using the deformer setup already present\n"
-            "on the selected mesh (wrap, proximity wrap, etc.).\n"
-            "No deformer is created or deleted.")
+            "Extracts targets using the deformer setup already present\n"
+            "on the mesh target (wrap, proximity wrap, etc.).\n"
+            "No deformer is created or deleted.\n\n"
+            "Selection (any of):\n"
+            "  • targets in the Shape Editor + mesh target\n"
+            "  • blendShape node + mesh target  → all its targets\n"
+            "  • source mesh, then mesh target  → all targets of its blendShape\n"
+            "Empty targets: see Skip empty.")
         self.btn_extract_only.clicked.connect(self._run_extract_only)
 
         self._align_label_icon_btns([_w_wrap, _w_extract])
@@ -6590,15 +6642,77 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
         self.chk_wrap_overwrite.setChecked(True)
         self.chk_wrap_overwrite.setToolTip(
             "Overwrite ON  — if a target with the same name already exists on the\n"
-            "receiver, replace it with the newly extracted version.\n"
+            "receiver, only its deltas are replaced: its connections, group,\n"
+            "position and painted weights are kept.\n"
             "Overwrite OFF — keep the existing target and append a numeric suffix\n"
             "to the new one (e.g. 'jaw' ->'jaw1'), like Maya's native behaviour.")
+        self.chk_keep_groups = QtWidgets.QCheckBox("Keep groups")
+        self.chk_keep_groups.setChecked(True)
+        self.chk_keep_groups.setToolTip(
+            "Keep groups ON — rebuild the Shape Editor groups of the source\n"
+            "blendShape: on the receiver blendShape (Extract Wrap), or as\n"
+            "Outliner groups under the extracted shapes group (Extract Only).\n"
+            "Existing groups with the same name are reused; empty groups are\n"
+            "not created; the receiver's own targets are not moved.")
+        # ── Extract Settings (inline collapsible like Tool Settings) ──
+        self._ws_toggle = QtWidgets.QToolButton()
+        self._ws_toggle.setText("  Extract Settings")
+        self._ws_toggle.setArrowType(QtCore.Qt.RightArrow)
+        self._ws_toggle.setToolButtonStyle(QtCore.Qt.ToolButtonTextBesideIcon)
+        self._ws_toggle.setSizePolicy(QtWidgets.QSizePolicy.Expanding, QtWidgets.QSizePolicy.Fixed)
+        self._ws_toggle.setFixedHeight(_dpi(18))
+        self._ws_toggle.setStyleSheet(
+            _ss("QToolButton { background: transparent; border: none; "
+            "font-size: 10px; color: #888888; text-align: center; }"
+            "QToolButton:hover { color: #aaaaaa; }"))
+        ws_widget = QtWidgets.QWidget()
+        ws_widget.setVisible(False)
+        lay_ws = QtWidgets.QVBoxLayout(ws_widget)
+        lay_ws.setContentsMargins(_dpi(12), _dpi(2), 0, 0)
+        lay_ws.setSpacing(_dpi(4))
+
+        def _toggle_ws():
+            visible = not ws_widget.isVisible()
+            ws_widget.setVisible(visible)
+            self._ws_toggle.setArrowType(
+                QtCore.Qt.DownArrow if visible else QtCore.Qt.RightArrow)
+
+        self._ws_toggle.clicked.connect(_toggle_ws)
+        lay_wrap_setup.addWidget(self._ws_toggle)
+        lay_wrap_setup.addWidget(ws_widget)
+
+        row_wrap_groups = QtWidgets.QHBoxLayout()
+        row_wrap_groups.addWidget(self.chk_keep_groups)
+        row_wrap_groups.addStretch()
+        lay_ws.addLayout(row_wrap_groups)
+
+        self.chk_skip_empty = QtWidgets.QCheckBox("Skip empty")
+        self.chk_skip_empty.setChecked(True)
+        self.chk_skip_empty.setToolTip(
+            "Skip empty ON — a target that moves no vertex of the mesh target by\n"
+            "the threshold or more is not extracted (Extract Wrap and Extract Only).\n"
+            "With Overwrite, an existing target of the same name is then left as is.")
+        self.le_skip_threshold = QtWidgets.QLineEdit(f"{SKIP_EMPTY_THRESHOLD:g}")
+        self.le_skip_threshold.setFixedWidth(_dpi(52))
+        self.le_skip_threshold.setAlignment(QtCore.Qt.AlignCenter)
+        self.le_skip_threshold.setValidator(QtGui.QRegularExpressionValidator(
+            QtCore.QRegularExpression(r"\d*\.?\d*"), self.le_skip_threshold))
+        self.le_skip_threshold.setToolTip(
+            "Threshold — smallest vertex move that counts as a change.")
+        self.chk_skip_empty.toggled.connect(self.le_skip_threshold.setEnabled)
+        row_wrap_skip = QtWidgets.QHBoxLayout()
+        row_wrap_skip.setSpacing(_dpi(4))
+        row_wrap_skip.addWidget(self.chk_skip_empty)
+        row_wrap_skip.addWidget(self.le_skip_threshold)
+        row_wrap_skip.addStretch()
+        lay_ws.addLayout(row_wrap_skip)
+
         row_wrap_row1 = QtWidgets.QHBoxLayout()
         row_wrap_row1.setSpacing(_dpi(8))
         row_wrap_row1.addWidget(self.chk_connect_targets)
         row_wrap_row1.addWidget(self.chk_wrap_overwrite)
         row_wrap_row1.addStretch()
-        lay_wrap_setup.addLayout(row_wrap_row1)
+        lay_ws.addLayout(row_wrap_row1)
 
         row_bake_rig = QtWidgets.QHBoxLayout()
         row_bake_rig.setSpacing(_dpi(4))
@@ -8573,6 +8687,9 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Secondary Meshes ──────────────────────────────────────────────────
         self.chk_connect_targets.setChecked(True)
+        self.chk_keep_groups.setChecked(True)
+        self.chk_skip_empty.setChecked(True)
+        self.le_skip_threshold.setText(f"{SKIP_EMPTY_THRESHOLD:g}")
         self._connect_mode = "child"
         self._update_connect_tooltip()
 
@@ -11741,6 +11858,14 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             )
         self.chk_connect_targets.setToolTip(tip)
 
+    def _skip_threshold_or_none(self):
+        if not self.chk_skip_empty.isChecked():
+            return None
+        try:
+            return float(self.le_skip_threshold.text())
+        except ValueError:   # empty or "." -> default
+            return SKIP_EMPTY_THRESHOLD
+
     def _show_connect_mode_menu(self, pos):
         menu = QtWidgets.QMenu(self)
         act_child  = menu.addAction("Connect as Child")
@@ -11760,7 +11885,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     @undo_chunk
     def _run_wrap_extract(self):
-        sel    = cmds.ls(sl=True, type='transform') or []
+        sel    = cmds.ls(sl=True, type='transform', long=True) or []
         meshes = [s for s in sel if cmds.listRelatives(s, shapes=True, type='mesh')]
 
         if len(meshes) < 2:
@@ -11774,7 +11899,7 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         # ── Resolve BS node and targets ────────────────────────────────────
         ui_targets = get_selected_targets()
-        auto_mode  = not ui_targets  # True ->wrap all targets, then prune near-zero
+        auto_mode  = not ui_targets  # True ->wrap all targets of the master mesh's BS
 
         if ui_targets:
             bs_nodes = list({t[0] for t in ui_targets})
@@ -11845,38 +11970,24 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
             batch_results = extract_targets_via_wrap_batch(
                 bs_node, base_mesh, receiver_meshes, targets,
                 overwrite=self.chk_wrap_overwrite.isChecked(),
-                on_receiver_start=_on_receiver)
+                on_receiver_start=_on_receiver,
+                keep_groups=self.chk_keep_groups.isChecked(),
+                skip_threshold=self._skip_threshold_or_none())
         except Exception as e:
             cmds.progressWindow(endProgress=True)
             traceback.print_exc()
             self._set_status(f"✗ Wrap Extract: {e}", error=True)
             return
 
-        # ── Post-process per receiver: prune, connect, report ─────────
+        # ── Post-process per receiver: connect, report ────────────────
         total_kept   = 0
-        total_pruned = 0
+        total_skipped = 0
         receiver_reports = []
 
-        for receiver, (bs_target, log) in zip(receiver_meshes, batch_results):
-            # Prune near-zero targets in auto mode
-            pruned = 0
-            if auto_mode:
-                for _orig, actual_name, _ in log:
-                    try:
-                        idx = get_bs_weight_attribute_logical_index(bs_target, actual_name)
-                    except RuntimeError:
-                        continue
-                    deltas = get_target_deltas(bs_target, idx)
-                    if not any(
-                        (dx*dx + dy*dy + dz*dz) >= 1e-6
-                        for dx, dy, dz in deltas.values()
-                    ):
-                        mel.eval(f"blendShapeDeleteTargetGroup {bs_target} {idx};")
-                        pruned += 1
-
-            kept = len(log) - pruned
-            total_kept   += kept
-            total_pruned += pruned
+        for receiver, (bs_target, log, skipped_names) in zip(receiver_meshes, batch_results):
+            kept   = len(log)
+            total_kept    += kept
+            total_skipped += len(skipped_names)
 
             if self.chk_connect_targets.isChecked():
                 if self._connect_mode == "child":
@@ -11921,8 +12032,8 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
         cmds.progressWindow(endProgress=True)
         parts = [f"✓ Wrap Extract: {', '.join(receiver_reports)}"]
-        if total_pruned:
-            parts.append(f"{total_pruned} pruned (near-zero)")
+        if total_skipped:
+            parts.append(f"{total_skipped} empty target(s) skipped")
         if self.chk_connect_targets.isChecked():
             mode_label = "child" if self._connect_mode == "child" else "parent"
             parts.append(f"connected ({mode_label})")
@@ -11930,39 +12041,76 @@ class BlendshapeEditorUI(MayaQWidgetDockableMixin, QtWidgets.QWidget):
 
     @undo_chunk
     def _run_extract_only(self):
-        targets = self._get_targets_or_warn()
-        if not targets:
+        """Three ways to choose what is extracted, checked in this order:
+          1. targets selected in the Shape Editor + 1 mesh target
+          2. a blendShape node + 1 mesh target           -> all its targets
+          3. a source mesh, then a mesh target            -> all targets of the
+                                                             source mesh's blendShape
+        With Skip empty ON, targets that do not move the mesh target are skipped."""
+        usage = ("select targets in the Shape Editor + mesh target, "
+                 "or a blendShape node + mesh target, "
+                 "or source mesh then mesh target")
+        sel      = cmds.ls(sl=True, long=True) or []
+        meshes   = [s for s in sel if cmds.nodeType(s) == 'transform'
+                    and cmds.listRelatives(s, shapes=True, type='mesh')]
+        bs_sel   = [s for s in sel if cmds.nodeType(s) == 'blendShape']
+        ui_targets = get_selected_targets()
+
+        targets = None
+        if ui_targets:
+            mode = "selected targets"
+            bs_nodes = list({t[0] for t in ui_targets})
+            if len(bs_nodes) > 1:
+                self._set_status(
+                    "✗ Extract Only: all selected targets must be on the same blendShape node",
+                    error=True)
+                return
+            bs_node = bs_nodes[0]
+            targets = ui_targets
+            if len(meshes) != 1:
+                self._set_status(
+                    "✗ Extract Only: targets are selected in the Shape Editor — "
+                    "select only the mesh target in the scene", error=True)
+                return
+            mesh_target = meshes[0]
+        elif bs_sel:
+            if len(bs_sel) > 1 or len(meshes) != 1:
+                self._set_status(
+                    "✗ Extract Only: select one blendShape node + one mesh target",
+                    error=True)
+                return
+            bs_node, mesh_target = bs_sel[0], meshes[0]
+            mode = f"all targets of {bs_node}"
+        elif len(meshes) == 2:
+            source, mesh_target = meshes
+            bs_node = _find_blendshape_on_mesh(source)
+            if not bs_node:
+                self._set_status(
+                    f"✗ Extract Only: no blendShape found on '{source.split('|')[-1]}'",
+                    error=True)
+                return
+            mode = f"all targets of {bs_node}"
+        else:
+            self._set_status(f"✗ Extract Only: {usage}", error=True)
             return
 
-        bs_nodes = list({t[0] for t in targets})
-        if len(bs_nodes) > 1:
-            self._set_status(
-                "✗ Extract Only: all selected targets must be on the same blendShape node",
-                error=True)
-            return
-
-        bs_node = bs_nodes[0]
-
-        sel    = cmds.ls(sl=True, type='transform') or []
-        meshes = [s for s in sel if cmds.listRelatives(s, shapes=True, type='mesh')]
-        if not meshes:
-            self._set_status(
-                "✗ Extract Only: select a mesh in the scene to extract onto", error=True)
-            return
-        if len(meshes) > 1:
-            self._set_status(
-                "✗ Extract Only: select only one mesh", error=True)
-            return
-
-        mesh_target = meshes[0]
         try:
-            grp, extracted = extract_targets_only(bs_node, mesh_target, targets)
-            n_total = len(extracted)
-            self._set_status(
-                f"✓ Extract Only: {n_total} shape{'s' if n_total > 1 else ''} ->'{grp}'")
+            grp, extracted, skipped = extract_targets_only(
+                bs_node, mesh_target, targets,
+                skip_threshold=self._skip_threshold_or_none(),
+                keep_groups=self.chk_keep_groups.isChecked())
         except Exception as e:
             traceback.print_exc()
             self._set_status(f"✗ Extract Only: {e}", error=True)
+            return
+
+        n_total = len(extracted)
+        msg = f"✓ Extract Only ({mode}): {n_total} shape{'s' if n_total != 1 else ''}"
+        if grp:
+            msg += f" ->'{grp}'"
+        if skipped:
+            msg += f"  {len(skipped)} empty target(s) skipped"
+        self._set_status(msg)
 
     @undo_chunk
     def _run_connect_targets_A_to_B(self):
